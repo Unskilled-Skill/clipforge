@@ -118,6 +118,7 @@ async fn tick(
                 if let Some(client) = guard.as_ref() {
                     let _ = ensure_autogame_source(client).await;
                     crate::setup::ensure_replay_buffer_config(client).await;
+                    crate::setup::ensure_audio_devices(client).await;
                 }
             }
         }

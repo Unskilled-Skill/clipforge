@@ -213,6 +213,60 @@ pub async fn ensure_replay_buffer_config(client: &obws::Client) {
     }
 }
 
+/// Detect audio capture sources bound to devices that no longer exist
+/// (unplugged headset, changed default) and reset them to "default" —
+/// otherwise OBS silently records silence on every track.
+pub async fn ensure_audio_devices(client: &obws::Client) {
+    let Ok(inputs) = client.inputs().list(None).await else {
+        return;
+    };
+    for input in inputs {
+        if !input.kind.starts_with("wasapi_") {
+            continue;
+        }
+        let id = obws::requests::inputs::InputId::Name(&input.id.name);
+        let Ok(settings) = client
+            .inputs()
+            .settings::<serde_json::Value>(id)
+            .await
+        else {
+            continue;
+        };
+        let device = settings
+            .settings
+            .get("device_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
+            .to_string();
+        if device == "default" {
+            continue;
+        }
+        let Ok(items) = client
+            .inputs()
+            .properties_list_property_items(
+                obws::requests::inputs::InputId::Name(&input.id.name),
+                "device_id",
+            )
+            .await
+        else {
+            continue;
+        };
+        let still_exists = items.iter().any(|i| {
+            i.value.as_str().is_some_and(|v| v == device)
+        });
+        if !still_exists {
+            let _ = client
+                .inputs()
+                .set_settings(obws::requests::inputs::SetSettings {
+                    input: obws::requests::inputs::InputId::Name(&input.id.name),
+                    settings: &serde_json::json!({ "device_id": "default" }),
+                    overlay: Some(true),
+                })
+                .await;
+        }
+    }
+}
+
 /// Fill in machine-specific defaults on first run: detected OBS path,
 /// the user's Videos folder for clips, and the websocket password.
 pub fn localize_settings(app: &AppHandle, settings: &mut crate::clips::Settings) -> bool {
