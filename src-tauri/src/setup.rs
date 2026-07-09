@@ -267,6 +267,70 @@ pub async fn ensure_audio_devices(client: &obws::Client) {
     }
 }
 
+/// Enforce the track layout the export dropdown promises:
+///   track 1 = full mix, track 2 = desktop/game only, track 3 = mic only.
+/// Extra desktop captures of the SAME device are detached from all tracks
+/// (they only double the volume and pollute the mic track).
+pub async fn ensure_audio_tracks(client: &obws::Client) {
+    use obws::requests::inputs::InputId;
+
+    let Ok(inputs) = client.inputs().list(None).await else {
+        return;
+    };
+
+    let mut seen_output_devices: Vec<String> = Vec::new();
+    for input in inputs {
+        let is_mic = input.kind.starts_with("wasapi_input");
+        let is_desktop = input.kind.starts_with("wasapi_output");
+        if !is_mic && !is_desktop {
+            continue;
+        }
+        let name = input.id.name.clone();
+
+        let desired: [Option<bool>; 6] = if is_mic {
+            // mix + mic-only
+            [Some(true), Some(false), Some(true), Some(false), Some(false), Some(false)]
+        } else {
+            let device = client
+                .inputs()
+                .settings::<serde_json::Value>(InputId::Name(&name))
+                .await
+                .ok()
+                .and_then(|s| {
+                    s.settings
+                        .get("device_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                })
+                .unwrap_or_else(|| "default".into());
+            if seen_output_devices.contains(&device) {
+                // duplicate desktop capture — take it off every track
+                [Some(false); 6]
+            } else {
+                seen_output_devices.push(device);
+                // mix + desktop-only
+                [Some(true), Some(true), Some(false), Some(false), Some(false), Some(false)]
+            }
+        };
+
+        let current = client
+            .inputs()
+            .audio_tracks(InputId::Name(&name))
+            .await
+            .unwrap_or([false; 6]);
+        let needs_change = desired
+            .iter()
+            .zip(current.iter())
+            .any(|(want, have)| want.is_some_and(|w| w != *have));
+        if needs_change {
+            let _ = client
+                .inputs()
+                .set_audio_tracks(InputId::Name(&name), desired)
+                .await;
+        }
+    }
+}
+
 /// Fill in machine-specific defaults on first run: detected OBS path,
 /// the user's Videos folder for clips, and the websocket password.
 pub fn localize_settings(app: &AppHandle, settings: &mut crate::clips::Settings) -> bool {

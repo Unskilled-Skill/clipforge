@@ -119,6 +119,7 @@ async fn tick(
                     let _ = ensure_autogame_source(client).await;
                     crate::setup::ensure_replay_buffer_config(client).await;
                     crate::setup::ensure_audio_devices(client).await;
+                    crate::setup::ensure_audio_tracks(client).await;
                 }
             }
         }
