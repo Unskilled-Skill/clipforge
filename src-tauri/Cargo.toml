@@ -27,14 +27,23 @@ tokio = { version = "1.52.3", features = ["full"] }
 tauri-plugin-global-shortcut = "2.3.2"
 futures-util = "0.3.32"
 trash = "5.2.6"
-sysinfo = "0.39.5"
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_UI_Shell"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-notification = "2.3.3"
 notify = "8.2.0"
 tauri-plugin-single-instance = "2.4.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 regex = "1.13.0"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
+
+[profile.release]
+# Management-layer app: nothing CPU-hot lives here (OBS/ffmpeg do the work),
+# so optimize for size — faster download, less RAM, better cache locality.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -230,8 +230,29 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
+/// Settings cache keyed by file mtime — three background loops read
+/// settings every few seconds; the file changes only on user edits.
+static SETTINGS_CACHE: std::sync::Mutex<Option<(u64, Settings)>> = std::sync::Mutex::new(None);
+
 pub fn load_settings_inner(app: &AppHandle) -> Settings {
-    load_settings(app.clone()).unwrap_or_default()
+    let mtime = settings_path(app)
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    {
+        let cache = SETTINGS_CACHE.lock().unwrap();
+        if let Some((cached_mtime, settings)) = cache.as_ref() {
+            if *cached_mtime == mtime {
+                return settings.clone();
+            }
+        }
+    }
+    let settings = load_settings(app.clone()).unwrap_or_default();
+    *SETTINGS_CACHE.lock().unwrap() = Some((mtime, settings.clone()));
+    settings
 }
 
 #[tauri::command]
@@ -384,7 +405,38 @@ pub struct BlackAnalysis {
     pub is_black: bool,
 }
 
+/// Duration cache keyed by (path, mtime) — probing spawns a process, and
+/// the library refreshes often while files rarely change.
+static DURATION_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, (u64, f64)>>> =
+    std::sync::Mutex::new(None);
+
 fn clip_duration(ffmpeg: &PathBuf, path: &str) -> Result<f64, String> {
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    {
+        let cache = DURATION_CACHE.lock().unwrap();
+        if let Some(map) = cache.as_ref() {
+            if let Some((cached_mtime, duration)) = map.get(path) {
+                if *cached_mtime == mtime {
+                    return Ok(*duration);
+                }
+            }
+        }
+    }
+    let duration = probe_duration(ffmpeg, path)?;
+    DURATION_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(Default::default)
+        .insert(path.to_string(), (mtime, duration));
+    Ok(duration)
+}
+
+fn probe_duration(ffmpeg: &PathBuf, path: &str) -> Result<f64, String> {
     let ffprobe = ffmpeg.with_file_name("ffprobe.exe");
     let result = hidden_cmd(ffprobe)
         .args([

@@ -396,7 +396,9 @@ function App() {
   }
 
   function onVideoTime(t: number) {
-    setCurrentTime(t);
+    // Throttle re-renders during playback — the playhead doesn't need
+    // sub-100ms precision and each update re-renders the editor tree.
+    setCurrentTime((prev) => (Math.abs(t - prev) < 0.15 ? prev : t));
     const video = videoRef.current;
     if (!previewing || !video) return;
     if (t >= trimEnd) {
