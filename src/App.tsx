@@ -3,6 +3,8 @@ import { convertFileSrc, invoke, isTauri, listen } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowLeft,
+  ArrowRight,
+  BookOpen,
   Camera,
   CheckCircle,
   Circle,
@@ -179,6 +181,8 @@ function App() {
   const [renameValue, setRenameValue] = useState("");
   const [setup, setSetup] = useState<{ obs_installed: boolean; ffmpeg_installed: boolean } | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardStep, setOnboardStep] = useState(0);
   const dragging = useRef<"start" | "end" | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -190,6 +194,12 @@ function App() {
     setToast(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 4000);
+  }
+
+  function finishOnboarding() {
+    localStorage.setItem("clipforge_onboarded", "1");
+    setShowOnboarding(false);
+    setOnboardStep(0);
   }
 
   const refreshClips = useCallback(async (dir?: string) => {
@@ -242,6 +252,9 @@ function App() {
         .then(setSetup)
         .catch(() => {});
       setBooting(false);
+      if (!localStorage.getItem("clipforge_onboarded")) {
+        setShowOnboarding(true);
+      }
       // Thumbnails come after the splash — they take a few seconds.
       invoke<Record<string, ThumbInfo>>("gen_thumbnails", { dir: s.clips_dir })
         .then(setThumbs)
@@ -686,6 +699,16 @@ function App() {
           <button className="nav-item" onClick={() => setShowSettings(true)}>
             <GearSix size={17} />
             Settings
+          </button>
+          <button
+            className="nav-item"
+            onClick={() => {
+              setOnboardStep(0);
+              setShowOnboarding(true);
+            }}
+          >
+            <BookOpen size={17} />
+            Tutorial
           </button>
         </nav>
 
@@ -1352,6 +1375,242 @@ function App() {
                   />
                 </label>
               </section>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showOnboarding && (
+        <div className="modal-backdrop" onClick={() => setShowOnboarding(false)}>
+          <div className="modal onboarding-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <BookOpen size={19} color="#7f9bff" weight="fill" />
+              <span className="modal-title">
+                {onboardStep === 0 && "Welcome to ClipForge"}
+                {onboardStep === 1 && "One-time setup"}
+                {onboardStep === 2 && "Capture settings"}
+                {onboardStep === 3 && "Using ClipForge"}
+                {onboardStep === 4 && "You're all set"}
+              </span>
+              <div className="lib-spacer" />
+              <span className="field-label">{onboardStep + 1} / 5</span>
+              <button className="modal-close" onClick={() => setShowOnboarding(false)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="modal-body onboard-body">
+              {onboardStep === 0 && (
+                <section className="set-group">
+                  <p className="onboard-copy">
+                    ClipForge keeps a rolling buffer of your gameplay through OBS. Hit a hotkey (or
+                    let auto-clip catch a kill) and the last stretch of footage saves as a clip —
+                    no manual recording, no huge files piling up.
+                  </p>
+                  <p className="onboard-copy">
+                    This walkthrough covers setup, capture settings, and how to trim + export a
+                    clip. Takes under a minute.
+                  </p>
+                </section>
+              )}
+
+              {onboardStep === 1 && (
+                <section className="set-group">
+                  <span className="set-label">REQUIRED SOFTWARE</span>
+                  <div className="onboard-check">
+                    {setup?.obs_installed ? (
+                      <CheckCircle size={16} weight="fill" color="#40dd80" />
+                    ) : (
+                      <Circle size={16} color="#767a85" />
+                    )}
+                    <span>OBS Studio {setup?.obs_installed ? "— installed" : "— required to record"}</span>
+                    {!setup?.obs_installed && (
+                      <button
+                        className="setup-btn"
+                        disabled={installing !== null}
+                        onClick={async () => {
+                          setInstalling("OBS Studio");
+                          try {
+                            await invoke("winget_install", { id: "OBSProject.OBSStudio" });
+                            setSetup(await invoke("setup_status"));
+                          } catch (e) {
+                            setError(String(e));
+                          } finally {
+                            setInstalling(null);
+                          }
+                        }}
+                      >
+                        {installing === "OBS Studio" ? "installing…" : "Install"}
+                      </button>
+                    )}
+                  </div>
+                  <div className="onboard-check">
+                    {setup?.ffmpeg_installed ? (
+                      <CheckCircle size={16} weight="fill" color="#40dd80" />
+                    ) : (
+                      <Circle size={16} color="#767a85" />
+                    )}
+                    <span>
+                      ffmpeg {setup?.ffmpeg_installed ? "— installed" : "— needed for trims & exports"}
+                    </span>
+                    {!setup?.ffmpeg_installed && (
+                      <button
+                        className="setup-btn"
+                        disabled={installing !== null}
+                        onClick={async () => {
+                          setInstalling("ffmpeg");
+                          try {
+                            await invoke("winget_install", { id: "Gyan.FFmpeg" });
+                            setSetup(await invoke("setup_status"));
+                            await refreshClips();
+                          } catch (e) {
+                            setError(String(e));
+                          } finally {
+                            setInstalling(null);
+                          }
+                        }}
+                      >
+                        {installing === "ffmpeg" ? "installing…" : "Install"}
+                      </button>
+                    )}
+                  </div>
+                  <div className="onboard-check">
+                    {status.connected ? (
+                      <CheckCircle size={16} weight="fill" color="#40dd80" />
+                    ) : (
+                      <Circle size={16} color="#767a85" />
+                    )}
+                    <span>
+                      OBS connection{" "}
+                      {status.connected
+                        ? `— ${status.obs_version ?? "connected"}`
+                        : "— connects automatically once OBS is running"}
+                    </span>
+                    {!status.connected && setup?.obs_installed && (
+                      <button className="setup-btn" disabled={connecting} onClick={() => connect(settings)}>
+                        {connecting ? "connecting…" : "Connect"}
+                      </button>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {onboardStep === 2 && (
+                <section className="set-group">
+                  <p className="onboard-copy">
+                    Clip length controls how far back a save reaches — OBS keeps this much
+                    footage buffered in RAM at all times.
+                  </p>
+                  <label className="set-col">
+                    <span className="field-label">
+                      Clip length (seconds) — ~
+                      {Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB RAM at current
+                      setting
+                    </span>
+                    <input
+                      className="mono"
+                      type="number"
+                      min={15}
+                      max={900}
+                      step={15}
+                      value={settings.replay_seconds}
+                      onChange={(e) =>
+                        saveSettings({
+                          ...settings,
+                          replay_seconds: Math.min(900, Math.max(15, Number(e.target.value) || 15)),
+                        })
+                      }
+                    />
+                  </label>
+                  <div className="toggle-card">
+                    <div className="toggle-text">
+                      <span className="toggle-title">Auto-launch OBS</span>
+                      <span className="toggle-desc">Start OBS hidden when it isn't running</span>
+                    </div>
+                    <button
+                      className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
+                      onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
+                    >
+                      <span className="knob" />
+                    </button>
+                  </div>
+                  <div className="toggle-card">
+                    <div className="toggle-text">
+                      <span className="toggle-title">Auto buffer</span>
+                      <span className="toggle-desc">Arm when a game runs, disarm when it exits</span>
+                    </div>
+                    <button
+                      className={`switch ${settings.auto_manage_buffer ? "on" : ""}`}
+                      onClick={() =>
+                        saveSettings({ ...settings, auto_manage_buffer: !settings.auto_manage_buffer })
+                      }
+                    >
+                      <span className="knob" />
+                    </button>
+                  </div>
+                  <span className="field-label">
+                    More capture options (fps, bitrate, encoder, hotkeys) live in Settings.
+                  </span>
+                </section>
+              )}
+
+              {onboardStep === 3 && (
+                <section className="set-group">
+                  <p className="onboard-copy">Once a clip saves, it shows up in your Library.</p>
+                  <ul className="onboard-list">
+                    <li>Click a clip to open the trimmer.</li>
+                    <li>
+                      <kbd>[</kbd> sets the trim start, <kbd>]</kbd> sets the trim end.
+                    </li>
+                    <li>
+                      <kbd>space</kbd> plays/pauses, <kbd>←</kbd>
+                      <kbd>→</kbd> steps a frame, <kbd>shift</kbd>+arrows steps 1s.
+                    </li>
+                    <li>
+                      Hit <strong>Export for Discord</strong> to render a size-budgeted MP4 ready
+                      to share.
+                    </li>
+                    <li>
+                      Star a clip to keep it exempt from auto-cleanup; use{" "}
+                      <strong>Scan for black</strong> to catch dead recordings.
+                    </li>
+                  </ul>
+                </section>
+              )}
+
+              {onboardStep === 4 && (
+                <section className="set-group">
+                  <p className="onboard-copy">
+                    That's everything. Play a game, save a clip, and it lands in your Library
+                    ready to trim and share. Revisit this walkthrough anytime from the{" "}
+                    <strong>Tutorial</strong> button in the sidebar.
+                  </p>
+                </section>
+              )}
+            </div>
+            <div className="onboard-footer">
+              <div className="onboard-dots">
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <span key={i} className={`onboard-dot ${i === onboardStep ? "active" : ""}`} />
+                ))}
+              </div>
+              <div className="onboard-actions">
+                {onboardStep > 0 && (
+                  <button className="btn-ghost" onClick={() => setOnboardStep((s) => s - 1)}>
+                    <ArrowLeft size={15} />
+                    Back
+                  </button>
+                )}
+                {onboardStep < 4 ? (
+                  <button className="btn-ghost apply-btn" onClick={() => setOnboardStep((s) => s + 1)}>
+                    Next
+                    <ArrowRight size={15} />
+                  </button>
+                ) : (
+                  <button className="btn-ghost apply-btn" onClick={finishOnboarding}>
+                    Done
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
