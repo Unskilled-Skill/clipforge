@@ -226,6 +226,137 @@ pub async fn ensure_replay_buffer_config(client: &obws::Client, replay_seconds: 
     }
 }
 
+/// Encoder ids OBS registered, parsed from its newest log (obs-websocket
+/// has no encoder-list request).
+fn detect_obs_encoders() -> Vec<String> {
+    let Ok(appdata) = std::env::var("APPDATA") else {
+        return Vec::new();
+    };
+    let logs = std::path::PathBuf::from(appdata).join("obs-studio/logs");
+    let Ok(entries) = std::fs::read_dir(&logs) else {
+        return Vec::new();
+    };
+    let newest = entries
+        .filter_map(|e| e.ok())
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+    let Some(newest) = newest else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(newest.path()) else {
+        return Vec::new();
+    };
+    let re = regex::Regex::new(r"^\s*-\s+([a-z0-9_]+)\s+\(").unwrap();
+    let mut ids: Vec<String> = raw
+        .lines()
+        .filter_map(|l| re.captures(l))
+        .map(|c| c[1].to_string())
+        .filter(|id| id.contains("264") || id.contains("265") || id.contains("hevc") || id.contains("av1"))
+        .collect();
+    ids.dedup();
+    ids
+}
+
+/// Map a codec preference to this machine's best hardware encoder id.
+fn pick_encoder(pref: &str, available: &[String]) -> Option<String> {
+    let hw = |id: &String| id.contains("amf") || id.contains("nvenc") || id.contains("qsv");
+    let find = |codec: &[&str]| {
+        available
+            .iter()
+            .find(|id| hw(id) && codec.iter().any(|c| id.contains(c)))
+            .cloned()
+    };
+    match pref {
+        "av1" => find(&["av1"]),
+        "hevc" => find(&["hevc", "265"]),
+        "h264" => find(&["264", "avc"]).or_else(|| Some("obs_x264".into())),
+        // auto: best codec this GPU offers
+        _ => find(&["av1"])
+            .or_else(|| find(&["hevc", "265"]))
+            .or_else(|| find(&["264", "avc"])),
+    }
+}
+
+/// Apply the app's capture settings (fps / resolution / encoder / bitrate)
+/// to OBS. Stops the replay buffer when something changed so the new
+/// values take effect on the next arm.
+pub async fn ensure_video_settings(client: &obws::Client, settings: &crate::clips::Settings) {
+    use obws::requests::profiles::SetParameter;
+
+    let mut changed = false;
+
+    if let Ok(video) = client.config().video_settings().await {
+        let fps = settings.video_fps.clamp(30, 240);
+        let (out_w, out_h) = if settings.video_height == 0 {
+            (video.base_width, video.base_height)
+        } else {
+            let h = settings.video_height.min(video.base_height);
+            let w = (h as f64 * video.base_width as f64 / video.base_height as f64 / 2.0).round()
+                as u32
+                * 2;
+            (w, h)
+        };
+        if video.fps_numerator != fps
+            || video.fps_denominator != 1
+            || video.output_width != out_w
+            || video.output_height != out_h
+        {
+            let _ = client
+                .config()
+                .set_video_settings(obws::requests::config::SetVideoSettings {
+                    fps_numerator: Some(fps),
+                    fps_denominator: Some(1),
+                    base_width: None,
+                    base_height: None,
+                    output_width: Some(out_w),
+                    output_height: Some(out_h),
+                })
+                .await;
+            changed = true;
+        }
+    }
+
+    // Encoder: only touched when we can resolve a valid id for this GPU.
+    if let Some(encoder) = pick_encoder(&settings.encoder_pref, &detect_obs_encoders()) {
+        let current = client
+            .profiles()
+            .parameter("AdvOut", "RecEncoder")
+            .await
+            .ok()
+            .and_then(|p| p.value);
+        if current.as_deref() != Some(encoder.as_str()) {
+            let _ = client
+                .profiles()
+                .set_parameter(SetParameter {
+                    category: "AdvOut",
+                    name: "RecEncoder",
+                    value: Some(&encoder),
+                })
+                .await;
+            changed = true;
+        }
+    }
+
+    // Bitrate lives in the profile's recordEncoder.json; OBS reads it when
+    // the profile loads, so this part only lands after an OBS restart.
+    if let Ok(profiles) = client.profiles().list().await {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let path = std::path::PathBuf::from(appdata)
+                .join("obs-studio/basic/profiles")
+                .join(profiles.current.replace(' ', "_"))
+                .join("recordEncoder.json");
+            let desired = format!("{{\"bitrate\":{}}}", (settings.bitrate_mbps * 1000.0) as u64);
+            let current = std::fs::read_to_string(&path).unwrap_or_default();
+            if current.trim() != desired && path.parent().is_some_and(|p| p.exists()) {
+                let _ = std::fs::write(&path, desired);
+            }
+        }
+    }
+
+    if changed && client.replay_buffer().status().await.unwrap_or(false) {
+        let _ = client.replay_buffer().stop().await;
+    }
+}
+
 /// Detect audio capture sources bound to devices that no longer exist
 /// (unplugged headset, changed default) and reset them to "default" —
 /// otherwise OBS silently records silence on every track.

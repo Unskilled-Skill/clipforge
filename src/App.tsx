@@ -49,6 +49,10 @@ interface Settings {
   auto_clip: boolean;
   auto_clip_delay_s: number;
   replay_seconds: number;
+  video_fps: number;
+  video_height: number;
+  bitrate_mbps: number;
+  encoder_pref: string;
 }
 
 interface SupervisorState {
@@ -1156,6 +1160,66 @@ function App() {
                     }
                   />
                 </label>
+                <div className="set-row">
+                  <label className="set-col">
+                    <span className="field-label">FPS</span>
+                    <select
+                      className="audio-select wide"
+                      value={settings.video_fps}
+                      onChange={(e) => saveSettings({ ...settings, video_fps: Number(e.target.value) })}
+                    >
+                      <option value={30}>30</option>
+                      <option value={60}>60</option>
+                      <option value={120}>120</option>
+                    </select>
+                  </label>
+                  <label className="set-col">
+                    <span className="field-label">Resolution</span>
+                    <select
+                      className="audio-select wide"
+                      value={settings.video_height}
+                      onChange={(e) => saveSettings({ ...settings, video_height: Number(e.target.value) })}
+                    >
+                      <option value={0}>Native</option>
+                      <option value={1440}>1440p</option>
+                      <option value={1080}>1080p</option>
+                      <option value={720}>720p</option>
+                    </select>
+                  </label>
+                  <label className="set-col">
+                    <span className="field-label">Bitrate (Mbps)</span>
+                    <input
+                      className="mono"
+                      type="number"
+                      min={4}
+                      max={100}
+                      value={settings.bitrate_mbps}
+                      onChange={(e) =>
+                        saveSettings({
+                          ...settings,
+                          bitrate_mbps: Math.min(100, Math.max(4, Number(e.target.value) || 4)),
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="set-col">
+                    <span className="field-label">Encoder</span>
+                    <select
+                      className="audio-select wide"
+                      value={settings.encoder_pref}
+                      onChange={(e) => saveSettings({ ...settings, encoder_pref: e.target.value })}
+                    >
+                      <option value="auto">Auto (best)</option>
+                      <option value="av1">AV1</option>
+                      <option value="hevc">HEVC</option>
+                      <option value="h264">H264</option>
+                    </select>
+                  </label>
+                </div>
+                <span className="field-label">
+                  FPS / resolution / encoder apply within seconds. Bitrate applies on the next OBS
+                  restart.
+                </span>
               </section>
 
               <section className="set-group">

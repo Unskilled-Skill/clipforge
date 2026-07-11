@@ -553,6 +553,8 @@ button:disabled { opacity: 0.55; cursor: default; }
 .btn-delete.star.on { color: #f5c518; }
 .btn-delete.star:hover { border-color: rgba(245, 197, 24, 0.4); color: #f5c518; }
 
+.audio-select.wide { width: 100%; }
+
 .audio-select {
   height: 38px;
   padding: 0 10px;

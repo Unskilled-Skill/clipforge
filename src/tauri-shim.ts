@@ -22,6 +22,10 @@ const mockSettings = {
   auto_clip: false,
   auto_clip_delay_s: 8,
   replay_seconds: 180,
+  video_fps: 60,
+  video_height: 0,
+  bitrate_mbps: 20,
+  encoder_pref: "auto",
 };
 
 let mockFavorites: string[] = [];

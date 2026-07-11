@@ -84,10 +84,31 @@ pub struct Settings {
     /// Replay buffer length — how far back a clip reaches.
     #[serde(default = "default_replay_seconds")]
     pub replay_seconds: f64,
+    /// Recording FPS (30/60/120).
+    #[serde(default = "default_fps")]
+    pub video_fps: u32,
+    /// Output height; 0 = native canvas resolution.
+    #[serde(default)]
+    pub video_height: u32,
+    /// Recording bitrate in Mbps.
+    #[serde(default = "default_bitrate")]
+    pub bitrate_mbps: f64,
+    /// "auto" | "av1" | "hevc" | "h264" — mapped to this GPU's encoder.
+    #[serde(default = "default_encoder")]
+    pub encoder_pref: String,
 }
 
 fn default_replay_seconds() -> f64 {
     180.0
+}
+fn default_fps() -> u32 {
+    60
+}
+fn default_bitrate() -> f64 {
+    20.0
+}
+fn default_encoder() -> String {
+    "auto".into()
 }
 
 fn default_auto_clip_delay() -> f64 {
@@ -127,6 +148,10 @@ impl Default for Settings {
             auto_clip: false,
             auto_clip_delay_s: default_auto_clip_delay(),
             replay_seconds: default_replay_seconds(),
+            video_fps: default_fps(),
+            video_height: 0,
+            bitrate_mbps: default_bitrate(),
+            encoder_pref: default_encoder(),
         }
     }
 }

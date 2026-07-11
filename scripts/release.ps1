@@ -13,7 +13,7 @@ Set-Location $repo
 $conf = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
 if ($conf.version -ne $Version) { throw "tauri.conf.json version is $($conf.version), expected $Version" }
 
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$repo\.tauri-signing\clipforge.key"
+$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content "$repo\.tauri-signing\clipforge.key" -Raw).Trim()
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
 cmd /c "npm run tauri build -- --bundles nsis 2>&1"

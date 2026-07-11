@@ -121,6 +121,7 @@ async fn tick(
                         .await;
                     crate::setup::ensure_audio_devices(client).await;
                     crate::setup::ensure_audio_tracks(client).await;
+                    crate::setup::ensure_video_settings(client, &settings).await;
                 }
             }
         }
