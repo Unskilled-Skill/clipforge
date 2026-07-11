@@ -2,6 +2,11 @@
 // browser (vite dev without Tauri) with mock data for design work.
 import { convertFileSrc as realConvert, invoke as realInvoke } from "@tauri-apps/api/core";
 import { listen as realListen } from "@tauri-apps/api/event";
+import {
+  confirm as realConfirmDialog,
+  open as realOpenDialog,
+  type OpenDialogOptions,
+} from "@tauri-apps/plugin-dialog";
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -77,6 +82,14 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return { obs_installed: true, ffmpeg_installed: true };
     case "winget_install":
       return null;
+    case "reset_settings":
+      return mockSettings;
+    case "list_game_capture_sources":
+      return [] as { exe: string; kind: string }[];
+    case "add_game_capture_source":
+      return null;
+    case "test_capture_source":
+      return { capturing: true, brightness: 120 };
     default:
       return null;
   }
@@ -96,5 +109,14 @@ export const convertFileSrc: typeof realConvert = inTauri
 export const listen: typeof realListen = inTauri
   ? realListen
   : ((() => Promise.resolve(() => {})) as typeof realListen);
+
+export const openDialog = inTauri
+  ? realOpenDialog
+  : async (opts?: OpenDialogOptions) =>
+      opts?.directory ? "D:/RECORDINGS/Clips" : "C:/Program Files/obs-studio/bin/64bit/obs64.exe";
+
+export const confirmDialog: typeof realConfirmDialog = inTauri
+  ? realConfirmDialog
+  : (async () => true) as typeof realConfirmDialog;
 
 export const isTauri = inTauri;

@@ -74,6 +74,9 @@ async fn tick(
         if settings.password.is_none() {
             crate::setup::enable_websocket_server(false);
         }
+        // Also pre-seed global.ini so a freshly (silently) installed OBS
+        // doesn't stall its first launch behind the Auto-Configuration Wizard.
+        crate::setup::suppress_autoconfig_wizard(false);
         if *launch_cooldown > 0 {
             *launch_cooldown -= 1;
         } else if settings.auto_launch_obs {

@@ -2,7 +2,8 @@
 //! monitor and its process is not a known non-game. Catches games that
 //! are missing from the user's exe list.
 
-use windows::Win32::Foundation::{CloseHandle, HWND, RECT};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
@@ -11,7 +12,8 @@ use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible,
 };
 
 /// Processes that go fullscreen but are never games.
@@ -93,4 +95,65 @@ pub fn fullscreen_game() -> Option<String> {
         }
         Some(name)
     }
+}
+
+struct WindowSearch {
+    target_pid: u32,
+    found: Option<(String, String)>,
+}
+
+unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let search = &mut *(lparam.0 as *mut WindowSearch);
+
+    if !IsWindowVisible(hwnd).as_bool() {
+        return true.into();
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid != search.target_pid {
+        return true.into();
+    }
+
+    let mut title_buf = [0u16; 512];
+    let title_len = GetWindowTextW(hwnd, &mut title_buf);
+    if title_len == 0 {
+        // Same process can own several windows (invisible helper windows,
+        // tooltips); keep looking for one with an actual title.
+        return true.into();
+    }
+    let mut class_buf = [0u16; 256];
+    let class_len = GetClassNameW(hwnd, &mut class_buf);
+
+    search.found = Some((
+        String::from_utf16_lossy(&title_buf[..title_len as usize]),
+        String::from_utf16_lossy(&class_buf[..class_len.max(0) as usize]),
+    ));
+    false.into()
+}
+
+/// Find the main visible window of a running process, for OBS's
+/// `"title:class:executable"` window-capture selector format. Requires the
+/// process to actually be running (needs a live window to point OBS at).
+pub fn find_window_for_exe(exe: &str) -> Option<(String, String)> {
+    let target = exe.to_lowercase();
+    let mut system = sysinfo::System::new_all();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let pid = system
+        .processes()
+        .values()
+        .find(|p| p.name().to_string_lossy().to_lowercase() == target)?
+        .pid()
+        .as_u32();
+
+    let mut search = WindowSearch {
+        target_pid: pid,
+        found: None,
+    };
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_windows_proc),
+            LPARAM(&mut search as *mut WindowSearch as isize),
+        );
+    }
+    search.found
 }

@@ -116,6 +116,51 @@ pub fn enable_websocket_server(obs_running: bool) -> bool {
     true
 }
 
+/// OBS shows a blocking Auto-Configuration Wizard on its very first launch
+/// (checked via `global.ini`'s `[General] FirstRun` flag — see OBSBasic.cpp).
+/// A silently-installed OBS has never set that flag, so without this the
+/// wizard would pop up and stall the whole zero-touch setup on first launch.
+/// Only safe while OBS is not running (same reason as `enable_websocket_server`).
+pub fn suppress_autoconfig_wizard(obs_running: bool) {
+    if obs_running {
+        return;
+    }
+    let Ok(appdata) = std::env::var("APPDATA") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(appdata).join("obs-studio/global.ini");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let ini = std::fs::read_to_string(&path).unwrap_or_default();
+    if ini.lines().any(|l| l.trim() == "FirstRun=true") {
+        return;
+    }
+    let mut out = String::new();
+    let mut in_general = false;
+    let mut wrote = false;
+    for line in ini.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_general && !wrote {
+                out.push_str("FirstRun=true\n");
+                wrote = true;
+            }
+            in_general = trimmed.eq_ignore_ascii_case("[General]");
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if in_general && !wrote {
+        out.push_str("FirstRun=true\n");
+        wrote = true;
+    }
+    if !wrote {
+        out.push_str("[General]\nFirstRun=true\n");
+    }
+    let _ = std::fs::write(&path, out);
+}
+
 #[derive(Serialize, Clone)]
 pub struct SetupStatus {
     pub obs_installed: bool,

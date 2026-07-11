@@ -1,3 +1,4 @@
+use base64::Engine;
 use futures_util::{pin_mut, StreamExt};
 use obws::{events::Event, Client};
 use serde::Serialize;
@@ -110,6 +111,20 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf) {
 
     // Keep the folder under the storage cap; favorites survive.
     let _ = crate::clips::enforce_storage_cap(app);
+}
+
+/// Surface a failure the same way a save success is surfaced — sound + OS
+/// notification, not just an in-app banner. The app is normally minimized
+/// or behind a fullscreen game exactly when this matters (hotkey pressed,
+/// startup hotkey registration failed), so anything window-only is
+/// invisible at the moment a friend would actually need to see it.
+pub fn notify_failure(app: &AppHandle, title: &str, reason: &str) {
+    unsafe {
+        use windows::core::w;
+        use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
+        let _ = PlaySoundW(w!("SystemHand"), None, SND_ALIAS | SND_ASYNC);
+    }
+    let _ = app.notification().builder().title(title).body(reason).show();
 }
 
 /// Managed state: the live obs-websocket connection, if any.
@@ -297,4 +312,167 @@ pub async fn ensure_autogame_source(client: &Client) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The universal `any_fullscreen` hook (`ensure_autogame_source`) misses a
+/// lot of games in practice — anti-cheat, exclusive fullscreen, and some
+/// borderless titles just don't get hooked by it. This binds a dedicated
+/// source directly to one game's specific window instead, which OBS hooks
+/// far more reliably. Requires the game to be running right now so we have
+/// an actual window to point OBS at.
+///
+/// `kind` is either `"window_capture"` (BitBlt/WGC — often the more reliable
+/// pick in practice) or `"game_capture"` (the DXGI hook — needed for some
+/// exclusive-fullscreen or anti-cheat titles that block window capture).
+fn game_capture_source_name(exe: &str) -> String {
+    format!("Capture: {exe}")
+}
+
+const CAPTURE_KINDS: [&str; 2] = ["window_capture", "game_capture"];
+
+#[tauri::command]
+pub async fn add_game_capture_source(
+    state: tauri::State<'_, ObsState>,
+    exe: String,
+    kind: String,
+) -> Result<(), String> {
+    if !CAPTURE_KINDS.contains(&kind.as_str()) {
+        return Err(format!("unknown capture kind: {kind}"));
+    }
+    let (title, class) = crate::fullscreen::find_window_for_exe(&exe)
+        .ok_or_else(|| format!("{exe} isn't running (or has no visible window) right now — launch it first, then add the source"))?;
+    let window = format!("{title}:{class}:{exe}");
+    let name = game_capture_source_name(&exe);
+
+    let guard = state.client.lock().await;
+    let client = guard.as_ref().ok_or("not connected")?;
+
+    // Replace any stale source for this game — same name, possibly a
+    // different kind than last time, or a window/title that's since changed.
+    for existing_kind in CAPTURE_KINDS {
+        let existing = client
+            .inputs()
+            .list(Some(existing_kind))
+            .await
+            .map_err(|e| e.to_string())?;
+        if existing.iter().any(|i| i.id.name == name) {
+            let _ = client.inputs().remove(name.as_str().into()).await;
+        }
+    }
+
+    let scene = client
+        .scenes()
+        .current_program_scene()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let settings = if kind == "game_capture" {
+        serde_json::json!({ "capture_mode": "window", "window": window })
+    } else {
+        serde_json::json!({ "window": window })
+    };
+
+    client
+        .inputs()
+        .create(obws::requests::inputs::Create {
+            scene: scene.id.into(),
+            input: &name,
+            kind: &kind,
+            settings: Some(settings),
+            enabled: Some(true),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_game_capture_source(
+    state: tauri::State<'_, ObsState>,
+    exe: String,
+) -> Result<(), String> {
+    let guard = state.client.lock().await;
+    let client = guard.as_ref().ok_or("not connected")?;
+    client
+        .inputs()
+        .remove(game_capture_source_name(&exe).as_str().into())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct GameSource {
+    pub exe: String,
+    pub kind: String,
+}
+
+/// Which games currently have a dedicated capture source configured (as
+/// opposed to relying on the universal AutoGame fallback), and which kind.
+#[tauri::command]
+pub async fn list_game_capture_sources(
+    state: tauri::State<'_, ObsState>,
+) -> Result<Vec<GameSource>, String> {
+    let guard = state.client.lock().await;
+    let client = guard.as_ref().ok_or("not connected")?;
+    let mut out = Vec::new();
+    for kind in CAPTURE_KINDS {
+        let inputs = client
+            .inputs()
+            .list(Some(kind))
+            .await
+            .map_err(|e| e.to_string())?;
+        out.extend(inputs.into_iter().filter_map(|i| {
+            i.id.name
+                .strip_prefix("Capture: ")
+                .map(|exe| GameSource {
+                    exe: exe.to_string(),
+                    kind: kind.to_string(),
+                })
+        }));
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+pub struct CaptureTest {
+    pub capturing: bool,
+    pub brightness: f64,
+}
+
+/// Grab a screenshot of a source and check it isn't just a black/blank
+/// frame — the only reliable way to tell a capture source actually works,
+/// short of asking the user to eyeball OBS's own preview.
+#[tauri::command]
+pub async fn test_capture_source(
+    state: tauri::State<'_, ObsState>,
+    name: String,
+) -> Result<CaptureTest, String> {
+    let guard = state.client.lock().await;
+    let client = guard.as_ref().ok_or("not connected")?;
+    let data = client
+        .sources()
+        .take_screenshot(obws::requests::sources::TakeScreenshot {
+            source: name.as_str().into(),
+            format: "png",
+            width: Some(160),
+            height: Some(90),
+            compression_quality: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // obs-websocket returns a data URI ("data:image/png;base64,....").
+    let b64 = data.split(',').next_back().unwrap_or(&data);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| e.to_string())?;
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let gray = img.to_luma8();
+    let sum: u64 = gray.pixels().map(|p| p.0[0] as u64).sum();
+    let brightness = sum as f64 / gray.len() as f64;
+
+    Ok(CaptureTest {
+        capturing: brightness > 6.0,
+        brightness,
+    })
 }

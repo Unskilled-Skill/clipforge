@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke, isTauri, listen } from "./tauri-shim";
+import { confirmDialog, convertFileSrc, invoke, isTauri, listen, openDialog } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  ArrowCounterClockwise,
   ArrowLeft,
   ArrowRight,
   BookOpen,
@@ -183,6 +184,13 @@ function App() {
   const [installing, setInstalling] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardStep, setOnboardStep] = useState(0);
+  const [resetting, setResetting] = useState(false);
+  const [gameSources, setGameSources] = useState<{ exe: string; kind: string }[]>([]);
+  const [sourceBusy, setSourceBusy] = useState<string | null>(null);
+  const [sourceTest, setSourceTest] = useState<
+    Record<string, { capturing: boolean; brightness: number } | "error">
+  >({});
+  const [kindChoice, setKindChoice] = useState<Record<string, string>>({});
   const dragging = useRef<"start" | "end" | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -298,6 +306,43 @@ function App() {
       unlisteners.forEach((p) => p.then((un) => un()));
     };
   }, [refreshClips]);
+
+  useEffect(() => {
+    if (!showSettings) return;
+    setSourceTest({});
+    invoke<{ exe: string; kind: string }[]>("list_game_capture_sources")
+      .then(setGameSources)
+      .catch(() => setGameSources([]));
+  }, [showSettings]);
+
+  async function addGameSource(exe: string, kind: string) {
+    setSourceBusy(exe);
+    setError(null);
+    try {
+      await invoke("add_game_capture_source", { exe, kind });
+      setGameSources(await invoke<{ exe: string; kind: string }[]>("list_game_capture_sources"));
+      showToast(`Capture source added for ${exe}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSourceBusy(null);
+    }
+  }
+
+  async function testGameSource(exe: string) {
+    setSourceBusy(exe);
+    try {
+      const result = await invoke<{ capturing: boolean; brightness: number }>(
+        "test_capture_source",
+        { name: `Capture: ${exe}` }
+      );
+      setSourceTest((s) => ({ ...s, [exe]: result }));
+    } catch {
+      setSourceTest((s) => ({ ...s, [exe]: "error" }));
+    } finally {
+      setSourceBusy(null);
+    }
+  }
 
   function selectClip(clip: ClipInfo) {
     setSelected(clip);
@@ -530,6 +575,29 @@ function App() {
   async function saveSettings(s: Settings) {
     setSettings(s);
     await invoke("save_settings", { settings: s });
+  }
+
+  async function resetSettings() {
+    const ok = await confirmDialog(
+      "This resets every ClipForge setting (hotkeys, capture, storage cap, connection) back to defaults. Your clips are not affected.",
+      { title: "Reset to defaults", kind: "warning" }
+    );
+    if (!ok) return;
+    setResetting(true);
+    try {
+      const fresh = await invoke<Settings>("reset_settings");
+      setSettings(fresh);
+      setHkSave(fresh.hotkey_save);
+      setHkShort(fresh.hotkey_short);
+      await invoke("set_hotkeys", { save: fresh.hotkey_save, short: fresh.hotkey_short });
+      setSetup(await invoke("setup_status"));
+      await refreshClips(fresh.clips_dir);
+      showToast("Settings reset to defaults");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setResetting(false);
+    }
   }
 
   async function deleteClip(clip: ClipInfo) {
@@ -1128,6 +1196,10 @@ function App() {
               <GearSix size={19} color="#7f9bff" weight="fill" />
               <span className="modal-title">Settings</span>
               <div className="lib-spacer" />
+              <button className="btn-ghost reset-btn" disabled={resetting} onClick={resetSettings}>
+                <ArrowCounterClockwise size={14} />
+                {resetting ? "resetting…" : "Reset to defaults"}
+              </button>
               <button className="modal-close" onClick={() => setShowSettings(false)}>
                 <X size={16} />
               </button>
@@ -1157,6 +1229,31 @@ function App() {
                   onChange={(e) => setSettings({ ...settings, password: e.target.value })}
                   placeholder="obs-websocket password (auto-detected normally)"
                 />
+                <div className="set-row">
+                  <input
+                    className="mono"
+                    value={settings.obs_path}
+                    onChange={(e) => setSettings({ ...settings, obs_path: e.target.value })}
+                    onBlur={() => invoke("save_settings", { settings })}
+                    placeholder="obs64.exe path (auto-detected normally)"
+                  />
+                  <button
+                    className="btn-ghost"
+                    onClick={async () => {
+                      const picked = await openDialog({
+                        defaultPath: settings.obs_path,
+                        filters: [{ name: "OBS executable", extensions: ["exe"] }],
+                      });
+                      if (typeof picked === "string") {
+                        const next = { ...settings, obs_path: picked };
+                        setSettings(next);
+                        await invoke("save_settings", { settings: next });
+                      }
+                    }}
+                  >
+                    Browse
+                  </button>
+                </div>
                 <button className="btn-ghost apply-btn" onClick={() => connect(settings)} disabled={connecting}>
                   {connecting ? "connecting…" : "Apply & connect"}
                 </button>
@@ -1352,16 +1449,89 @@ function App() {
                   }
                   onBlur={() => invoke("save_settings", { settings })}
                 />
+                <span className="field-label">
+                  A universal capture hook catches most fullscreen games automatically, but it
+                  misses plenty (anti-cheat, borderless, some exclusive-fullscreen titles). If a
+                  game's clips come out black, add a dedicated source below while that game is
+                  running, then test it.
+                </span>
+                {settings.game_exes.map((exe) => {
+                  const source = gameSources.find((g) => g.exe === exe);
+                  const isRunning = sup?.game?.toLowerCase() === exe.toLowerCase();
+                  const test = sourceTest[exe];
+                  const kind = kindChoice[exe] ?? source?.kind ?? "window_capture";
+                  return (
+                    <div key={exe} className="onboard-check">
+                      {source ? (
+                        <CheckCircle size={16} weight="fill" color="#40dd80" />
+                      ) : (
+                        <Circle size={16} color="#767a85" />
+                      )}
+                      <span>
+                        {exe} —{" "}
+                        {source
+                          ? `dedicated ${source.kind === "window_capture" ? "window capture" : "game capture"}`
+                          : "universal capture only"}
+                        {test === "error" && " — test failed"}
+                        {test && test !== "error" && (test.capturing ? " — capturing ✓" : " — looks black ✗")}
+                        {!isRunning && " (launch it to add/test)"}
+                      </span>
+                      <select
+                        className="audio-select"
+                        value={kind}
+                        disabled={sourceBusy !== null}
+                        onChange={(e) => setKindChoice((k) => ({ ...k, [exe]: e.target.value }))}
+                      >
+                        <option value="window_capture">Window Capture</option>
+                        <option value="game_capture">Game Capture</option>
+                      </select>
+                      <button
+                        className="setup-btn"
+                        disabled={!isRunning || sourceBusy !== null}
+                        onClick={() => addGameSource(exe, kind)}
+                      >
+                        {sourceBusy === exe ? "working…" : source ? "Redo" : "Add source"}
+                      </button>
+                      {source && (
+                        <button
+                          className="setup-btn"
+                          disabled={!isRunning || sourceBusy !== null}
+                          onClick={() => testGameSource(exe)}
+                        >
+                          Test
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </section>
 
               <section className="set-group">
                 <span className="set-label">STORAGE</span>
-                <input
-                  className="mono"
-                  value={settings.clips_dir}
-                  onChange={(e) => setSettings({ ...settings, clips_dir: e.target.value })}
-                  onBlur={() => invoke("save_settings", { settings })}
-                />
+                <div className="set-row">
+                  <input
+                    className="mono"
+                    value={settings.clips_dir}
+                    onChange={(e) => setSettings({ ...settings, clips_dir: e.target.value })}
+                    onBlur={() => invoke("save_settings", { settings })}
+                  />
+                  <button
+                    className="btn-ghost"
+                    onClick={async () => {
+                      const picked = await openDialog({
+                        directory: true,
+                        defaultPath: settings.clips_dir,
+                      });
+                      if (typeof picked === "string") {
+                        const next = { ...settings, clips_dir: picked };
+                        setSettings(next);
+                        await invoke("save_settings", { settings: next });
+                      }
+                    }}
+                  >
+                    Browse
+                  </button>
+                </div>
                 <label className="set-col">
                   <span className="field-label">
                     Max storage (GB) — oldest non-favorites auto-recycled, 0 = off

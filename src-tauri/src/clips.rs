@@ -255,14 +255,34 @@ pub fn load_settings_inner(app: &AppHandle) -> Settings {
     settings
 }
 
+/// Loads settings, creating and localizing them on the spot for a brand new
+/// user (no settings.json yet): detected OBS path, a real clips folder that
+/// actually exists on this machine, and the websocket password if OBS has
+/// already minted one. Without this, a new user's first frontend boot would
+/// race the backend's own async localization and briefly see bogus defaults
+/// (e.g. a dev machine's leftover clips folder).
 #[tauri::command]
 pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
     let path = settings_path(&app)?;
-    if !path.exists() {
-        return Ok(Settings::default());
-    }
-    let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
+    let mut settings = if path.exists() {
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&raw).map_err(|e| e.to_string())?
+    } else {
+        Settings::default()
+    };
+    crate::setup::localize_settings(&app, &mut settings);
+    Ok(settings)
+}
+
+/// Reset to defaults, then immediately re-run the same machine-specific
+/// detection first launch does (OBS path, clips folder, websocket password)
+/// so the reset app is still fully set up, not just blanked.
+#[tauri::command]
+pub fn reset_settings(app: AppHandle) -> Result<Settings, String> {
+    let mut settings = Settings::default();
+    crate::setup::localize_settings(&app, &mut settings);
+    save_settings(app, settings.clone())?;
+    Ok(settings)
 }
 
 #[tauri::command]

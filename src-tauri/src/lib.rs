@@ -188,6 +188,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(ObsState::default())
         .manage(obs::CurrentGame::default())
         .plugin(
@@ -215,6 +216,7 @@ pub fn run() {
                         match obs::save_replay(state.inner()).await {
                             Ok(()) => {}
                             Err(e) => {
+                                obs::notify_failure(&app, "Clip not saved", &e);
                                 let _ = app.emit("clip-error", e);
                             }
                         }
@@ -256,7 +258,16 @@ pub fn run() {
                 parse_hotkeys(&settings.hotkey_save, &settings.hotkey_short)
                     .unwrap_or_else(|_| parse_hotkeys("alt+f10", "shift+alt+f10").unwrap());
             app.manage(Hotkeys(Mutex::new((save, short))));
-            let _ = register_hotkeys(app.handle(), save, short);
+            if let Err(e) = register_hotkeys(app.handle(), save, short) {
+                obs::notify_failure(
+                    app.handle(),
+                    "ClipForge hotkey not active",
+                    &format!(
+                        "{} is already used by another app — open Settings to rebind it. ({e})",
+                        settings.hotkey_save
+                    ),
+                );
+            }
 
             let _ = app
                 .asset_protocol_scope()
@@ -319,8 +330,13 @@ pub fn run() {
             obs::obs_status,
             obs::start_replay_buffer,
             obs::save_replay_cmd,
+            obs::add_game_capture_source,
+            obs::remove_game_capture_source,
+            obs::list_game_capture_sources,
+            obs::test_capture_source,
             clips::load_settings,
             clips::save_settings,
+            clips::reset_settings,
             clips::list_clips,
             clips::trim_clip,
             clips::delete_clip,

@@ -1086,3 +1086,6 @@ details.advanced > *:not(summary) { margin-top: 10px; }
 }
 .onboard-dot.active { background: #7f9bff; }
 .onboard-actions { display: flex; gap: 10px; }
+
+.reset-btn { height: 32px; padding: 0 12px; font-size: 12.5px; color: #ffa94d; }
+.reset-btn:hover:not(:disabled) { border-color: rgba(255, 169, 77, 0.4); }
