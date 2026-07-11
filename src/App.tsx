@@ -46,6 +46,8 @@ interface Settings {
   hotkey_short: string;
   short_clip_seconds: number;
   max_storage_gb: number;
+  auto_clip: boolean;
+  auto_clip_delay_s: number;
 }
 
 interface SupervisorState {
@@ -256,6 +258,11 @@ function App() {
       }),
       listen<string>("clip-error", (e) => setError(e.payload)),
       listen("clips-changed", () => refreshClips()),
+      listen("auto-clip-armed", () => showToast("Kill detected — clipping in a few seconds…")),
+      listen("auto-clipped", () => showToast("Auto-clipped!")),
+      listen<string>("update-installing", (e) =>
+        showToast(`Updating to v${e.payload} — restarting shortly…`)
+      ),
       listen("obs-disconnected", () => {
         setStatus({ connected: false, replay_buffer_active: false, obs_version: null });
       }),
@@ -1147,6 +1154,21 @@ function App() {
                   <button
                     className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
                     onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
+                  >
+                    <span className="knob" />
+                  </button>
+                </div>
+                <div className="toggle-card">
+                  <div className="toggle-text">
+                    <span className="toggle-title">Auto-clip kills</span>
+                    <span className="toggle-desc">
+                      CS2 / Dota 2 / League only (official event APIs). Saves a clip a few seconds
+                      after your kill — multikills land in one clip. Other games: hotkey.
+                    </span>
+                  </div>
+                  <button
+                    className={`switch ${settings.auto_clip ? "on" : ""}`}
+                    onClick={() => saveSettings({ ...settings, auto_clip: !settings.auto_clip })}
                   >
                     <span className="knob" />
                   </button>

@@ -1,3 +1,4 @@
+mod autoclip;
 mod clips;
 mod fullscreen;
 mod obs;
@@ -221,13 +222,34 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            // Login start goes straight to the tray — no window popup.
+            Some(vec!["--hidden"]),
         ))
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::run(handle));
+            tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));
+
+            // Silent self-update from GitHub Releases, once per launch.
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri_plugin_updater::UpdaterExt;
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                let Ok(updater) = update_handle.updater() else {
+                    return;
+                };
+                let Ok(Some(update)) = updater.check().await else {
+                    return;
+                };
+                let _ = update_handle.emit("update-installing", update.version.clone());
+                if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
+                    update_handle.restart();
+                }
+            });
 
             let settings = clips::load_settings_inner(app.handle());
             let (save, short) =
@@ -247,6 +269,14 @@ pub fn run() {
             {
                 use tauri_plugin_autostart::ManagerExt;
                 let _ = app.autolaunch().enable();
+            }
+
+            // Launched by autostart: stay in the tray, everything else
+            // (OBS launch, buffer management) runs headless as usual.
+            if std::env::args().any(|a| a == "--hidden") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
             }
 
             // Tray icon: left-click shows the window, menu has show/quit.

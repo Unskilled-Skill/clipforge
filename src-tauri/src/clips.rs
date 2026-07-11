@@ -75,6 +75,16 @@ pub struct Settings {
     /// 0 disables the cap.
     #[serde(default = "default_max_storage_gb")]
     pub max_storage_gb: f64,
+    /// Off by default — only useful for CS2/Dota/LoL or log-trigger setups.
+    #[serde(default)]
+    pub auto_clip: bool,
+    /// Seconds to wait after the last kill before saving (multikill window).
+    #[serde(default = "default_auto_clip_delay")]
+    pub auto_clip_delay_s: f64,
+}
+
+fn default_auto_clip_delay() -> f64 {
+    8.0
 }
 
 fn default_max_storage_gb() -> f64 {
@@ -107,6 +117,8 @@ impl Default for Settings {
             hotkey_short: default_hotkey_short(),
             short_clip_seconds: default_short_secs(),
             max_storage_gb: default_max_storage_gb(),
+            auto_clip: false,
+            auto_clip_delay_s: default_auto_clip_delay(),
         }
     }
 }

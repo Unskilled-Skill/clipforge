@@ -19,6 +19,8 @@ const mockSettings = {
   hotkey_short: "shift+alt+f10",
   short_clip_seconds: 30,
   max_storage_gb: 100,
+  auto_clip: false,
+  auto_clip_delay_s: 8,
 };
 
 let mockFavorites: string[] = [];
