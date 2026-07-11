@@ -168,8 +168,8 @@ pub async fn winget_install(id: String) -> Result<(), String> {
 }
 
 /// Make sure the replay buffer is enabled in the connected OBS profile —
-/// both output modes — without touching the user's other settings.
-pub async fn ensure_replay_buffer_config(client: &obws::Client) {
+/// both output modes — and matches the configured clip length.
+pub async fn ensure_replay_buffer_config(client: &obws::Client, replay_seconds: f64) {
     use obws::requests::profiles::SetParameter;
     for (category, name) in [("AdvOut", "RecRB"), ("SimpleOutput", "RecRB")] {
         let current = client
@@ -189,27 +189,40 @@ pub async fn ensure_replay_buffer_config(client: &obws::Client) {
                 .await;
         }
     }
-    // Fresh OBS installs default to a ~20s buffer — raise anything under
-    // 60s to 120s, leave deliberate longer settings alone.
-    for category in ["AdvOut", "SimpleOutput"] {
-        let secs: f64 = client
-            .profiles()
-            .parameter(category, "RecRBTime")
-            .await
-            .ok()
-            .and_then(|p| p.value)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0);
-        if secs < 60.0 {
-            let _ = client
+    // Buffer length follows the ClipForge "clip length" setting exactly,
+    // and the RAM cap is sized to fit so the tail never gets truncated
+    // (~4.5 MB/s covers a 25 Mbps recording plus audio).
+    let secs = replay_seconds.clamp(15.0, 900.0);
+    let size_mb = ((secs * 4.5).ceil() as u64).max(512);
+    let mut changed = false;
+    for (name, value) in [
+        ("RecRBTime", format!("{}", secs as u64)),
+        ("RecRBSize", size_mb.to_string()),
+    ] {
+        for category in ["AdvOut", "SimpleOutput"] {
+            let current = client
                 .profiles()
-                .set_parameter(SetParameter {
-                    category,
-                    name: "RecRBTime",
-                    value: Some("120"),
-                })
-                .await;
+                .parameter(category, name)
+                .await
+                .ok()
+                .and_then(|p| p.value);
+            if current.as_deref() != Some(value.as_str()) {
+                let _ = client
+                    .profiles()
+                    .set_parameter(SetParameter {
+                        category,
+                        name,
+                        value: Some(&value),
+                    })
+                    .await;
+                changed = true;
+            }
         }
+    }
+    // OBS applies the new length only on a buffer (re)start — stop it,
+    // the supervisor re-arms it on the next tick if a game is running.
+    if changed && client.replay_buffer().status().await.unwrap_or(false) {
+        let _ = client.replay_buffer().stop().await;
     }
 }
 

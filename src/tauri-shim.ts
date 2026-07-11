@@ -21,6 +21,7 @@ const mockSettings = {
   max_storage_gb: 100,
   auto_clip: false,
   auto_clip_delay_s: 8,
+  replay_seconds: 180,
 };
 
 let mockFavorites: string[] = [];

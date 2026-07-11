@@ -117,7 +117,8 @@ async fn tick(
                 let guard = obs_state.client.lock().await;
                 if let Some(client) = guard.as_ref() {
                     let _ = ensure_autogame_source(client).await;
-                    crate::setup::ensure_replay_buffer_config(client).await;
+                    crate::setup::ensure_replay_buffer_config(client, settings.replay_seconds)
+                        .await;
                     crate::setup::ensure_audio_devices(client).await;
                     crate::setup::ensure_audio_tracks(client).await;
                 }

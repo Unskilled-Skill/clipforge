@@ -48,6 +48,7 @@ interface Settings {
   max_storage_gb: number;
   auto_clip: boolean;
   auto_clip_delay_s: number;
+  replay_seconds: number;
 }
 
 interface SupervisorState {
@@ -1131,6 +1132,31 @@ function App() {
                   {connecting ? "connecting…" : "Apply & connect"}
                 </button>
               </details>
+
+              <section className="set-group">
+                <span className="set-label">CAPTURE</span>
+                <label className="set-col">
+                  <span className="field-label">
+                    Clip length (seconds) — how far back a save reaches. Longer = more RAM while
+                    a game runs (~{Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB at
+                    current setting). Applies to OBS automatically.
+                  </span>
+                  <input
+                    className="mono"
+                    type="number"
+                    min={15}
+                    max={900}
+                    step={15}
+                    value={settings.replay_seconds}
+                    onChange={(e) =>
+                      saveSettings({
+                        ...settings,
+                        replay_seconds: Math.min(900, Math.max(15, Number(e.target.value) || 15)),
+                      })
+                    }
+                  />
+                </label>
+              </section>
 
               <section className="set-group">
                 <span className="set-label">AUTOMATION</span>

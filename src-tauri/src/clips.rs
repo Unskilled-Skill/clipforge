@@ -81,6 +81,13 @@ pub struct Settings {
     /// Seconds to wait after the last kill before saving (multikill window).
     #[serde(default = "default_auto_clip_delay")]
     pub auto_clip_delay_s: f64,
+    /// Replay buffer length — how far back a clip reaches.
+    #[serde(default = "default_replay_seconds")]
+    pub replay_seconds: f64,
+}
+
+fn default_replay_seconds() -> f64 {
+    180.0
 }
 
 fn default_auto_clip_delay() -> f64 {
@@ -119,6 +126,7 @@ impl Default for Settings {
             max_storage_gb: default_max_storage_gb(),
             auto_clip: false,
             auto_clip_delay_s: default_auto_clip_delay(),
+            replay_seconds: default_replay_seconds(),
         }
     }
 }

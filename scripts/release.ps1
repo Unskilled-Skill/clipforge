@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$Notes = "Update"
 )
-$ErrorActionPreference = "Stop"
+# Note: no $ErrorActionPreference = Stop — tauri/npm print info to stderr,
+# which PowerShell 5.1 would otherwise treat as a terminating error.
 $repo = Split-Path $PSScriptRoot -Parent
 Set-Location $repo
 
@@ -15,7 +16,7 @@ if ($conf.version -ne $Version) { throw "tauri.conf.json version is $($conf.vers
 $env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$repo\.tauri-signing\clipforge.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
-npm run tauri build -- --bundles nsis
+cmd /c "npm run tauri build -- --bundles nsis 2>&1"
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
 $exe = "$repo\src-tauri\target\release\bundle\nsis\clipforge_${Version}_x64-setup.exe"
