@@ -18,6 +18,7 @@ import {
   Gauge,
   GearSix,
   MagnifyingGlass,
+  PencilSimple,
   Play,
   Repeat,
   Scissors,
@@ -181,6 +182,8 @@ function App() {
   const [montaging, setMontaging] = useState(false);
   const [targetMb, setTargetMb] = useState(10);
   const [renaming, setRenaming] = useState(false);
+  const [libRenamePath, setLibRenamePath] = useState<string | null>(null);
+  const [libRenameValue, setLibRenameValue] = useState("");
   const [renameValue, setRenameValue] = useState("");
   const [setup, setSetup] = useState<{ obs_installed: boolean; ffmpeg_installed: boolean } | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
@@ -323,6 +326,16 @@ function App() {
       .catch(() => setGameSources([]));
   }, [showSettings]);
 
+  // Keep the selection in sync with what actually exists — drop any selected
+  // clip that got deleted, so the Montage/Delete count never counts ghosts.
+  useEffect(() => {
+    setMontageSel((prev) => {
+      const live = new Set(clips.map((c) => c.path));
+      const next = new Set([...prev].filter((p) => live.has(p)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [clips]);
+
   async function addGameSource(exe: string, kind: string) {
     setSourceBusy(exe);
     setError(null);
@@ -448,6 +461,28 @@ function App() {
     }
   }
 
+  async function deleteSelected() {
+    const paths = clips.filter((c) => montageSel.has(c.path)).map((c) => c.path);
+    if (paths.length === 0) return;
+    const ok = await confirmDialog(
+      `Move ${paths.length} selected clip${paths.length > 1 ? "s" : ""} to the Recycle Bin?`,
+      { title: "Delete selected", kind: "warning" }
+    );
+    if (!ok) return;
+    setError(null);
+    try {
+      for (const path of paths) {
+        await invoke("delete_clip", { path });
+      }
+      setMontageSel(new Set());
+      showToast(`Deleted ${paths.length} clips`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      await refreshClips();
+    }
+  }
+
   async function exportGif() {
     if (!selected) return;
     setError(null);
@@ -491,6 +526,29 @@ function App() {
         setFavorites(await invoke<string[]>("toggle_favorite", { path: newPath }));
       }
       setSelected({ ...selected, path: newPath, name: newPath.split("/").pop() ?? renameValue });
+      await refreshClips();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function startLibRename(clip: ClipInfo) {
+    setLibRenamePath(clip.path);
+    setLibRenameValue(clip.name.replace(/\.[^.]+$/, ""));
+  }
+
+  async function commitLibRename(clip: ClipInfo) {
+    const value = libRenameValue.trim();
+    setLibRenamePath(null);
+    const base = clip.name.replace(/\.[^.]+$/, "");
+    if (!value || value === base) return;
+    try {
+      const wasFav = favorites.includes(clip.path);
+      const newPath = await invoke<string>("rename_clip", { path: clip.path, newName: value });
+      if (wasFav) {
+        await invoke("toggle_favorite", { path: clip.path });
+        setFavorites(await invoke<string[]>("toggle_favorite", { path: newPath }));
+      }
       await refreshClips();
     } catch (e) {
       setError(String(e));
@@ -1006,11 +1064,23 @@ function App() {
                   Delete {blackCount} black
                 </button>
               )}
-              {montageSel.size >= 2 && (
-                <button className="btn-discord" onClick={exportMontage} disabled={montaging}>
-                  <FilmStrip size={15} weight="fill" />
-                  {montaging ? "rendering…" : `Montage ${montageSel.size} clips`}
-                </button>
+              {montageSel.size >= 1 && (
+                <>
+                  <span className="sel-count">{montageSel.size} selected</span>
+                  {montageSel.size >= 2 && (
+                    <button className="btn-discord" onClick={exportMontage} disabled={montaging}>
+                      <FilmStrip size={15} weight="fill" />
+                      {montaging ? "rendering…" : `Montage ${montageSel.size}`}
+                    </button>
+                  )}
+                  <button className="btn-danger" onClick={deleteSelected} disabled={montaging}>
+                    <Trash size={15} />
+                    Delete {montageSel.size}
+                  </button>
+                  <button className="btn-ghost" onClick={() => setMontageSel(new Set())}>
+                    Clear
+                  </button>
+                </>
               )}
             </header>
 
@@ -1073,7 +1143,7 @@ function App() {
                         )}
                         <button
                           className={`card-select ${montageSel.has(c.path) ? "on" : ""}`}
-                          title="Select for montage"
+                          title="Select (montage or delete)"
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleMontage(c);
@@ -1114,7 +1184,34 @@ function App() {
                       </button>
                     </div>
                     <div className="card-text">
-                      <span className="card-title">{c.name}</span>
+                      {libRenamePath === c.path ? (
+                        <input
+                          className="card-rename"
+                          autoFocus
+                          value={libRenameValue}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setLibRenameValue(e.target.value)}
+                          onBlur={() => commitLibRename(c)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitLibRename(c);
+                            if (e.key === "Escape") setLibRenamePath(null);
+                          }}
+                        />
+                      ) : (
+                        <span className="card-title">
+                          {c.name}
+                          <button
+                            className="card-rename-btn"
+                            title="Rename"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startLibRename(c);
+                            }}
+                          >
+                            <PencilSimple size={13} />
+                          </button>
+                        </span>
+                      )}
                       <span className="card-meta">
                         {formatSize(c.size_bytes)} <span className="meta-dot" /> {relativeTime(c.modified_ms)}
                       </span>

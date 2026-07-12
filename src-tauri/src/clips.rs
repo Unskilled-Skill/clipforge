@@ -802,10 +802,18 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<String>) -> Result<Strin
             "[outv]",
             "-map",
             "[outa]",
+            // Quality-based (CRF) x264 instead of a fixed 16 Mbps: the old
+            // constant bitrate ballooned montages well past the combined size
+            // of their source clips. CRF 21 tracks the content and keeps the
+            // output near (usually under) the inputs' total size.
             "-c:v",
-            &best_h264_encoder(&ffmpeg),
-            "-b:v",
-            "16000k",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "21",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-b:a",

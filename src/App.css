@@ -607,7 +607,36 @@ button:disabled { opacity: 0.55; cursor: default; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+.card-rename-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: #6c6f7a;
+  opacity: 0;
+  border-radius: 5px;
+}
+.card:hover .card-rename-btn { opacity: 1; }
+.card-rename-btn:hover { color: #eceef3; background: #22242e; }
+.card-rename {
+  background: #1a1c23;
+  border: 1px solid #4c6ef5;
+  border-radius: 6px;
+  padding: 4px 7px;
+  color: #eceef3;
+  font-size: 13px;
+  font-family: inherit;
+  width: 100%;
+}
+.sel-count { font-size: 12px; color: #8a8f9a; font-weight: 600; }
 .card-meta {
   display: flex;
   align-items: center;
