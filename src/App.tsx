@@ -1302,7 +1302,11 @@ function App() {
       </main>
 
       {showAppPicker && (
-        <div className="modal-backdrop" onClick={() => setShowAppPicker(false)}>
+        <div
+          className="modal-backdrop"
+          style={{ zIndex: 200 }}
+          onClick={() => setShowAppPicker(false)}
+        >
           <div className="modal app-picker" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <GameController size={19} color="#7f9bff" weight="fill" />
