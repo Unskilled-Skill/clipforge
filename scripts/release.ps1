@@ -18,14 +18,20 @@ if ($conf.version -ne $Version) { throw "tauri.conf.json version is $($conf.vers
 # password differently than the CLI's `-p ""` does and hangs on a prompt
 # that never reaches this non-interactive shell.
 $override = "$repo\tauri-override.json"
-'{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -Path $override -Encoding utf8NoBOM
+# Windows PowerShell 5.1 has no utf8NoBOM encoding, and a BOM breaks the JSON
+# parser tauri uses for --config, so write the file via .NET without a BOM.
+[IO.File]::WriteAllText($override, '{"bundle":{"createUpdaterArtifacts":false}}', (New-Object System.Text.UTF8Encoding($false)))
 cmd /c "npm run tauri build -- --bundles nsis --config `"$override`" 2>&1"
 $buildExit = $LASTEXITCODE
 Remove-Item $override -Force -ErrorAction SilentlyContinue
 if ($buildExit -ne 0) { throw "build failed" }
 
 $exe = "$repo\src-tauri\target\release\bundle\nsis\clipforge_${Version}_x64-setup.exe"
-npx tauri signer sign -f "$repo\.tauri-signing\clipforge.key" -p "" "$exe"
+# Pass the (empty) key password via env var, NOT `-p ""`: PowerShell drops an
+# empty-string argument to a native command, which makes the signer prompt
+# interactively and fail in this non-interactive shell.
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+npx tauri signer sign -f "$repo\.tauri-signing\clipforge.key" "$exe"
 if ($LASTEXITCODE -ne 0) { throw "signing failed" }
 $sig = Get-Content "$exe.sig" -Raw
 
