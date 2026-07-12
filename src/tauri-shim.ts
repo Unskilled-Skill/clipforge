@@ -2,6 +2,7 @@
 // browser (vite dev without Tauri) with mock data for design work.
 import { convertFileSrc as realConvert, invoke as realInvoke } from "@tauri-apps/api/core";
 import { listen as realListen } from "@tauri-apps/api/event";
+import { getVersion as realGetVersion } from "@tauri-apps/api/app";
 import {
   confirm as realConfirmDialog,
   open as realOpenDialog,
@@ -82,6 +83,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return { obs_installed: true, ffmpeg_installed: true };
     case "winget_install":
       return null;
+    case "launch_obs":
+      return null;
     case "reset_settings":
       return mockSettings;
     case "list_game_capture_sources":
@@ -89,7 +92,7 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
     case "add_game_capture_source":
       return null;
     case "test_capture_source":
-      return { capturing: true, brightness: 120 };
+      return { capturing: true };
     default:
       return null;
   }
@@ -118,5 +121,9 @@ export const openDialog = inTauri
 export const confirmDialog: typeof realConfirmDialog = inTauri
   ? realConfirmDialog
   : (async () => true) as typeof realConfirmDialog;
+
+export const getVersion: typeof realGetVersion = inTauri
+  ? realGetVersion
+  : (async () => "dev") as typeof realGetVersion;
 
 export const isTauri = inTauri;

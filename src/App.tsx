@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { confirmDialog, convertFileSrc, invoke, isTauri, listen, openDialog } from "./tauri-shim";
+import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowCounterClockwise,
@@ -188,9 +188,11 @@ function App() {
   const [gameSources, setGameSources] = useState<{ exe: string; kind: string }[]>([]);
   const [sourceBusy, setSourceBusy] = useState<string | null>(null);
   const [sourceTest, setSourceTest] = useState<
-    Record<string, { capturing: boolean; brightness: number } | "error">
+    Record<string, { capturing: boolean } | "error">
   >({});
   const [kindChoice, setKindChoice] = useState<Record<string, string>>({});
+  const [appVersion, setAppVersion] = useState("");
+  const [launchingObs, setLaunchingObs] = useState(false);
   const dragging = useRef<"start" | "end" | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -245,6 +247,7 @@ function App() {
 
   useEffect(() => {
     (async () => {
+      getVersion().then(setAppVersion).catch(() => {});
       const s = await invoke<Settings>("load_settings");
       setSettings(s);
       setHkSave(s.hotkey_save);
@@ -332,10 +335,9 @@ function App() {
   async function testGameSource(exe: string) {
     setSourceBusy(exe);
     try {
-      const result = await invoke<{ capturing: boolean; brightness: number }>(
-        "test_capture_source",
-        { name: `Capture: ${exe}` }
-      );
+      const result = await invoke<{ capturing: boolean }>("test_capture_source", {
+        name: `Capture: ${exe}`,
+      });
       setSourceTest((s) => ({ ...s, [exe]: result }));
     } catch {
       setSourceTest((s) => ({ ...s, [exe]: "error" }));
@@ -749,7 +751,7 @@ function App() {
           </div>
           <div className="brand-text">
             <span className="brand-name">ClipForge</span>
-            <span className="brand-ver">v2.0</span>
+            <span className="brand-ver">{appVersion ? `v${appVersion}` : ""}</span>
           </div>
         </div>
 
@@ -814,7 +816,32 @@ function App() {
       </aside>
 
       <main className="main">
-        {error && <div className="error-bar">{error}</div>}
+        {error && (
+          <div className="error-bar">
+            <span>{error}</span>
+            {/connect|websocket|not connected|obs/i.test(error) && (
+              <button
+                className="setup-btn"
+                disabled={launchingObs}
+                onClick={async () => {
+                  setLaunchingObs(true);
+                  try {
+                    await invoke("launch_obs");
+                    setError(null);
+                    showToast("Launching OBS — connecting…");
+                    setTimeout(() => connect(settings), 4000);
+                  } catch (e) {
+                    setError(String(e));
+                  } finally {
+                    setLaunchingObs(false);
+                  }
+                }}
+              >
+                {launchingObs ? "launching…" : "Launch OBS"}
+              </button>
+            )}
+          </div>
+        )}
         {setup && (!setup.obs_installed || !setup.ffmpeg_installed) && (
           <div className="setup-bar">
             <Warning size={15} weight="fill" />
@@ -1452,8 +1479,9 @@ function App() {
                 <span className="field-label">
                   A universal capture hook catches most fullscreen games automatically, but it
                   misses plenty (anti-cheat, borderless, some exclusive-fullscreen titles). If a
-                  game's clips come out black, add a dedicated source below while that game is
-                  running, then test it.
+                  game's clips come out black, add a dedicated source (matched by its .exe, so it
+                  works whether or not the game is open). Test confirms the source is live in OBS;
+                  if it's active but clips are still black, switch the capture type and re-add.
                 </span>
                 {settings.game_exes.map((exe) => {
                   const source = gameSources.find((g) => g.exe === exe);
@@ -1473,8 +1501,7 @@ function App() {
                           ? `dedicated ${source.kind === "window_capture" ? "window capture" : "game capture"}`
                           : "universal capture only"}
                         {test === "error" && " — test failed"}
-                        {test && test !== "error" && (test.capturing ? " — capturing ✓" : " — looks black ✗")}
-                        {!isRunning && " (launch it to add/test)"}
+                        {test && test !== "error" && (test.capturing ? " — active in OBS ✓" : " — not active ✗")}
                       </span>
                       <select
                         className="audio-select"
@@ -1487,7 +1514,7 @@ function App() {
                       </select>
                       <button
                         className="setup-btn"
-                        disabled={!isRunning || sourceBusy !== null}
+                        disabled={sourceBusy !== null}
                         onClick={() => addGameSource(exe, kind)}
                       >
                         {sourceBusy === exe ? "working…" : source ? "Redo" : "Add source"}
@@ -1495,7 +1522,8 @@ function App() {
                       {source && (
                         <button
                           className="setup-btn"
-                          disabled={!isRunning || sourceBusy !== null}
+                          disabled={sourceBusy !== null}
+                          title={isRunning ? "" : "Launch the game first for a meaningful result"}
                           onClick={() => testGameSource(exe)}
                         >
                           Test

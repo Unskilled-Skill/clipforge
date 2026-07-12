@@ -354,6 +354,7 @@ pub fn run() {
             clips::rename_clip,
             setup::setup_status,
             setup::winget_install,
+            setup::launch_obs,
             set_hotkeys,
         ])
         .run(tauri::generate_context!())

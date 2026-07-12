@@ -161,6 +161,35 @@ pub fn suppress_autoconfig_wizard(obs_running: bool) {
     let _ = std::fs::write(&path, out);
 }
 
+/// Launch OBS hidden to the tray, on demand (e.g. from the connection-error
+/// bar). Mirrors the supervisor's auto-launch spawn; the supervisor then
+/// connects on its next tick. No-op-ish if OBS is already running — OBS's
+/// single-instance guard just focuses the existing process.
+#[tauri::command]
+pub fn launch_obs(app: AppHandle) -> Result<(), String> {
+    let mut settings = crate::clips::load_settings_inner(&app);
+    if !std::path::Path::new(&settings.obs_path).exists() {
+        localize_settings(&app, &mut settings);
+    }
+    let exe = std::path::PathBuf::from(&settings.obs_path);
+    if !exe.exists() {
+        return Err("OBS isn't installed — install it from the setup bar first".into());
+    }
+    // Make sure the websocket server is on and the wizard won't block, same
+    // as first-run bootstrap, before we start it.
+    if settings.password.is_none() {
+        enable_websocket_server(false);
+    }
+    suppress_autoconfig_wizard(false);
+    let dir = exe.parent().ok_or("bad OBS path")?;
+    crate::clips::hidden_cmd(&exe)
+        .current_dir(dir)
+        .args(["--minimize-to-tray", "--disable-shutdown-check"])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("couldn't launch OBS: {e}"))
+}
+
 #[derive(Serialize, Clone)]
 pub struct SetupStatus {
     pub obs_installed: bool,

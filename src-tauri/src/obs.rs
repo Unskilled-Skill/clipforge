@@ -1,4 +1,3 @@
-use base64::Engine;
 use futures_util::{pin_mut, StreamExt};
 use obws::{events::Event, Client};
 use serde::Serialize;
@@ -317,9 +316,9 @@ pub async fn ensure_autogame_source(client: &Client) -> Result<(), String> {
 /// The universal `any_fullscreen` hook (`ensure_autogame_source`) misses a
 /// lot of games in practice — anti-cheat, exclusive fullscreen, and some
 /// borderless titles just don't get hooked by it. This binds a dedicated
-/// source directly to one game's specific window instead, which OBS hooks
-/// far more reliably. Requires the game to be running right now so we have
-/// an actual window to point OBS at.
+/// source to one game, matched by executable name so it survives window
+/// title/class changes across game updates and works whether or not the
+/// game is running right now (OBS just starts capturing once it launches).
 ///
 /// `kind` is either `"window_capture"` (BitBlt/WGC — often the more reliable
 /// pick in practice) or `"game_capture"` (the DXGI hook — needed for some
@@ -329,6 +328,8 @@ fn game_capture_source_name(exe: &str) -> String {
 }
 
 const CAPTURE_KINDS: [&str; 2] = ["window_capture", "game_capture"];
+/// OBS `enum window_priority`: 0 = class, 1 = title, 2 = executable.
+const WINDOW_PRIORITY_EXE: i32 = 2;
 
 #[tauri::command]
 pub async fn add_game_capture_source(
@@ -339,9 +340,13 @@ pub async fn add_game_capture_source(
     if !CAPTURE_KINDS.contains(&kind.as_str()) {
         return Err(format!("unknown capture kind: {kind}"));
     }
-    let (title, class) = crate::fullscreen::find_window_for_exe(&exe)
-        .ok_or_else(|| format!("{exe} isn't running (or has no visible window) right now — launch it first, then add the source"))?;
-    let window = format!("{title}:{class}:{exe}");
+    // Best-effort real title/class for a nicer label in OBS; matching is by
+    // executable (priority below) either way, so an empty title/class when
+    // the game isn't running is fine.
+    let window = match crate::fullscreen::find_window_for_exe(&exe) {
+        Some((title, class)) => format!("{title}:{class}:{exe}"),
+        None => format!("::{exe}"),
+    };
     let name = game_capture_source_name(&exe);
 
     let guard = state.client.lock().await;
@@ -349,16 +354,11 @@ pub async fn add_game_capture_source(
 
     // Replace any stale source for this game — same name, possibly a
     // different kind than last time, or a window/title that's since changed.
-    for existing_kind in CAPTURE_KINDS {
-        let existing = client
-            .inputs()
-            .list(Some(existing_kind))
-            .await
-            .map_err(|e| e.to_string())?;
-        if existing.iter().any(|i| i.id.name == name) {
-            let _ = client.inputs().remove(name.as_str().into()).await;
-        }
-    }
+    // Input names are unique across ALL kinds in OBS, so an unconditional
+    // remove-by-name is both simpler and more robust than filtering by kind
+    // (kind filters can miss versioned-kind mismatches, leaving a stale
+    // source that makes the create below fail with ResourceAlreadyExists).
+    let _ = client.inputs().remove(name.as_str().into()).await;
 
     let scene = client
         .scenes()
@@ -367,9 +367,19 @@ pub async fn add_game_capture_source(
         .map_err(|e| e.to_string())?;
 
     let settings = if kind == "game_capture" {
-        serde_json::json!({ "capture_mode": "window", "window": window })
+        serde_json::json!({
+            "capture_mode": "window",
+            "window": window,
+            "priority": WINDOW_PRIORITY_EXE,
+            "capture_cursor": true,
+            "anti_cheat_hook": true,
+        })
     } else {
-        serde_json::json!({ "window": window })
+        serde_json::json!({
+            "window": window,
+            "priority": WINDOW_PRIORITY_EXE,
+            "cursor": true,
+        })
     };
 
     client
@@ -436,12 +446,16 @@ pub async fn list_game_capture_sources(
 #[derive(Serialize)]
 pub struct CaptureTest {
     pub capturing: bool,
-    pub brightness: f64,
 }
 
-/// Grab a screenshot of a source and check it isn't just a black/blank
-/// frame — the only reliable way to tell a capture source actually works,
-/// short of asking the user to eyeball OBS's own preview.
+/// Ask OBS whether the source is actively rendering in the program output.
+///
+/// Deliberately uses `GetSourceActive`, NOT a source screenshot: forcing a
+/// screenshot render of a game-capture hook can freeze OBS's preview and the
+/// hook itself, which is exactly what broke on real hardware. This is a
+/// lightweight query with no render side effects. It confirms the source is
+/// live in the scene; whether the picture is actually the game (vs. black) is
+/// something the user still confirms by eye or by saving a test clip.
 #[tauri::command]
 pub async fn test_capture_source(
     state: tauri::State<'_, ObsState>,
@@ -449,30 +463,12 @@ pub async fn test_capture_source(
 ) -> Result<CaptureTest, String> {
     let guard = state.client.lock().await;
     let client = guard.as_ref().ok_or("not connected")?;
-    let data = client
+    let status = client
         .sources()
-        .take_screenshot(obws::requests::sources::TakeScreenshot {
-            source: name.as_str().into(),
-            format: "png",
-            width: Some(160),
-            height: Some(90),
-            compression_quality: None,
-        })
+        .active(name.as_str().into())
         .await
         .map_err(|e| e.to_string())?;
-
-    // obs-websocket returns a data URI ("data:image/png;base64,....").
-    let b64 = data.split(',').next_back().unwrap_or(&data);
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| e.to_string())?;
-    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-    let gray = img.to_luma8();
-    let sum: u64 = gray.pixels().map(|p| p.0[0] as u64).sum();
-    let brightness = sum as f64 / gray.len() as f64;
-
     Ok(CaptureTest {
-        capturing: brightness > 6.0,
-        brightness,
+        capturing: status.active || status.showing,
     })
 }

@@ -247,7 +247,11 @@ kbd {
   color: #f0605f;
   padding: 8px 30px;
   font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
+.error-bar span { flex: 1; }
 
 .setup-bar {
   display: flex;
