@@ -60,6 +60,10 @@ pub struct Settings {
     pub auto_connect: bool,
     #[serde(default = "default_game_exes")]
     pub game_exes: Vec<String>,
+    /// Exes the fullscreen auto-learn must never re-add to `game_exes`
+    /// (removed games, and non-games that were wrongly auto-detected).
+    #[serde(default)]
+    pub game_blacklist: Vec<String>,
     #[serde(default = "default_true")]
     pub auto_launch_obs: bool,
     #[serde(default = "default_true")]
@@ -138,6 +142,7 @@ impl Default for Settings {
             clips_dir: DEFAULT_CLIPS_DIR.into(),
             auto_connect: false,
             game_exes: default_game_exes(),
+            game_blacklist: Vec::new(),
             auto_launch_obs: true,
             auto_manage_buffer: true,
             obs_path: default_obs_path(),
@@ -281,6 +286,20 @@ pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
 pub fn reset_settings(app: AppHandle) -> Result<Settings, String> {
     let mut settings = Settings::default();
     crate::setup::localize_settings(&app, &mut settings);
+    save_settings(app, settings.clone())?;
+    Ok(settings)
+}
+
+/// Stop watching a game: drop it from `game_exes` and add it to the blacklist
+/// so the fullscreen auto-learn won't silently re-add it next time it runs.
+#[tauri::command]
+pub fn remove_watched_game(app: AppHandle, exe: String) -> Result<Settings, String> {
+    let mut settings = load_settings_inner(&app);
+    let key = exe.to_lowercase();
+    settings.game_exes.retain(|g| g.to_lowercase() != key);
+    if !settings.game_blacklist.iter().any(|g| g.to_lowercase() == key) {
+        settings.game_blacklist.push(exe);
+    }
     save_settings(app, settings.clone())?;
     Ok(settings)
 }

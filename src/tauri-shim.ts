@@ -18,6 +18,7 @@ const mockSettings = {
   clips_dir: "D:/RECORDINGS/Clips",
   auto_connect: true,
   game_exes: ["cs2.exe", "valorant-win64-shipping.exe", "rainbowsix.exe"],
+  game_blacklist: [],
   auto_launch_obs: true,
   auto_manage_buffer: true,
   obs_path: "C:/Program Files/obs-studio/bin/64bit/obs64.exe",
@@ -85,7 +86,17 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return null;
     case "launch_obs":
       return null;
+    case "apply_obs_config":
+      return null;
+    case "list_running_apps":
+      return [
+        { exe: "minecraft.windows.exe", title: "Minecraft" },
+        { exe: "chrome.exe", title: "Google Chrome" },
+        { exe: "spotify.exe", title: "Spotify" },
+      ];
     case "reset_settings":
+      return mockSettings;
+    case "remove_watched_game":
       return mockSettings;
     case "list_game_capture_sources":
       return [] as { exe: string; kind: string }[];

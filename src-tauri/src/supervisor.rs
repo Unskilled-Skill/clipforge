@@ -120,6 +120,7 @@ async fn tick(
                 let guard = obs_state.client.lock().await;
                 if let Some(client) = guard.as_ref() {
                     let _ = ensure_autogame_source(client).await;
+                    crate::setup::ensure_output_config(client, &settings.clips_dir).await;
                     crate::setup::ensure_replay_buffer_config(client, settings.replay_seconds)
                         .await;
                     crate::setup::ensure_audio_devices(client).await;
@@ -147,8 +148,11 @@ async fn tick(
     session_games.retain(|g| running.contains(g));
     if let Some(fg) = crate::fullscreen::fullscreen_game() {
         // Auto-learn: remember this exe permanently so next time the game
-        // arms the buffer even windowed or before it goes fullscreen.
-        if session_games.insert(fg.clone())
+        // arms the buffer even windowed or before it goes fullscreen — unless
+        // the user blacklisted it (removed game / wrongly-detected non-game).
+        let blacklisted = settings.game_blacklist.iter().any(|g| g.to_lowercase() == fg);
+        if !blacklisted
+            && session_games.insert(fg.clone())
             && !settings.game_exes.iter().any(|g| g.to_lowercase() == fg)
         {
             settings.game_exes.push(fg);

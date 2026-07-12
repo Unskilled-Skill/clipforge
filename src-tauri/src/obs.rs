@@ -241,6 +241,26 @@ pub async fn obs_status(state: tauri::State<'_, ObsState>) -> Result<ObsStatus, 
     }
 }
 
+/// Re-push all ClipForge-managed OBS config (output path, tracks, replay
+/// length, audio routing, video settings) right now, instead of waiting for
+/// the next reconnect. Called by the frontend after the user changes settings
+/// like the clips folder so the change lands in OBS immediately.
+#[tauri::command]
+pub async fn apply_obs_config(
+    app: AppHandle,
+    state: tauri::State<'_, ObsState>,
+) -> Result<(), String> {
+    let settings = crate::clips::load_settings_inner(&app);
+    let guard = state.client.lock().await;
+    let client = guard.as_ref().ok_or("not connected")?;
+    crate::setup::ensure_output_config(client, &settings.clips_dir).await;
+    crate::setup::ensure_replay_buffer_config(client, settings.replay_seconds).await;
+    crate::setup::ensure_audio_devices(client).await;
+    crate::setup::ensure_audio_tracks(client).await;
+    crate::setup::ensure_video_settings(client, &settings).await;
+    Ok(())
+}
+
 /// Make sure the replay buffer is running (it is off by default when OBS starts).
 #[tauri::command]
 pub async fn start_replay_buffer(state: tauri::State<'_, ObsState>) -> Result<(), String> {

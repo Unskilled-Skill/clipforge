@@ -190,6 +190,25 @@ pub fn launch_obs(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("couldn't launch OBS: {e}"))
 }
 
+#[derive(Serialize)]
+pub struct RunningApp {
+    pub exe: String,
+    pub title: String,
+}
+
+/// Running apps with a visible window, for the "add a game from what's
+/// running" picker (friendlier than browsing Program Files for an exe).
+#[tauri::command]
+pub fn list_running_apps() -> Vec<RunningApp> {
+    crate::fullscreen::running_windowed_apps()
+        .into_iter()
+        .map(|a| RunningApp {
+            exe: a.exe,
+            title: a.title,
+        })
+        .collect()
+}
+
 #[derive(Serialize, Clone)]
 pub struct SetupStatus {
     pub obs_installed: bool,
@@ -298,6 +317,54 @@ pub async fn ensure_replay_buffer_config(client: &obws::Client, replay_seconds: 
     if changed && client.replay_buffer().status().await.unwrap_or(false) {
         let _ = client.replay_buffer().stop().await;
     }
+}
+
+/// Point OBS at ClipForge's clips folder and force the output layout the app
+/// depends on: Advanced output mode (Simple mode can't record the separate
+/// audio tracks the export dropdown offers), recording path = `clips_dir`
+/// (otherwise clips save wherever OBS defaults and never show in the library),
+/// and record tracks 1+2+3 enabled (mix / game / mic). Returns whether it
+/// changed anything so callers can restart the replay buffer to apply it.
+pub async fn ensure_output_config(client: &obws::Client, clips_dir: &str) -> bool {
+    use obws::requests::profiles::SetParameter;
+    // OBS stores the recording path with native separators on Windows.
+    let path = clips_dir.replace('/', "\\");
+    let mut changed = false;
+    let desired: [(&str, &str, String); 7] = [
+        ("Output", "Mode", "Advanced".into()),
+        ("AdvOut", "RecType", "Standard".into()),
+        ("AdvOut", "RecFilePath", path.clone()),
+        ("SimpleOutput", "FilePath", path.clone()),
+        // Bitmask: track1(1) | track2(2) | track3(4) = 7.
+        ("AdvOut", "RecTracks", "7".into()),
+        // Fragmented mp4: plays in the in-app <video> preview (mkv doesn't),
+        // holds multiple audio tracks, and survives a crash mid-recording.
+        ("AdvOut", "RecFormat2", "hybrid_mp4".into()),
+        ("SimpleOutput", "RecFormat2", "hybrid_mp4".into()),
+    ];
+    for (category, name, value) in desired {
+        let current = client
+            .profiles()
+            .parameter(category, name)
+            .await
+            .ok()
+            .and_then(|p| p.value);
+        if current.as_deref() != Some(value.as_str()) {
+            let _ = client
+                .profiles()
+                .set_parameter(SetParameter {
+                    category,
+                    name,
+                    value: Some(&value),
+                })
+                .await;
+            changed = true;
+        }
+    }
+    if changed && client.replay_buffer().status().await.unwrap_or(false) {
+        let _ = client.replay_buffer().stop().await;
+    }
+    changed
 }
 
 /// Encoder ids OBS registered, parsed from its newest log (obs-websocket

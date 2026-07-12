@@ -5,6 +5,7 @@ import {
   ArrowCounterClockwise,
   ArrowLeft,
   ArrowRight,
+  ArrowsClockwise,
   BookOpen,
   Camera,
   CheckCircle,
@@ -42,6 +43,7 @@ interface Settings {
   clips_dir: string;
   auto_connect: boolean;
   game_exes: string[];
+  game_blacklist: string[];
   auto_launch_obs: boolean;
   auto_manage_buffer: boolean;
   obs_path: string;
@@ -191,8 +193,11 @@ function App() {
     Record<string, { capturing: boolean } | "error">
   >({});
   const [kindChoice, setKindChoice] = useState<Record<string, string>>({});
+  const [showAppPicker, setShowAppPicker] = useState(false);
+  const [runningApps, setRunningApps] = useState<{ exe: string; title: string }[]>([]);
   const [appVersion, setAppVersion] = useState("");
   const [launchingObs, setLaunchingObs] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const dragging = useRef<"start" | "end" | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -341,6 +346,59 @@ function App() {
       setSourceTest((s) => ({ ...s, [exe]: result }));
     } catch {
       setSourceTest((s) => ({ ...s, [exe]: "error" }));
+    } finally {
+      setSourceBusy(null);
+    }
+  }
+
+  // Add an exe to the watch list (from the running-apps picker or a folder
+  // browse). Also drops it from the blacklist in case it was removed before.
+  async function addGameByExe(rawExe: string) {
+    if (!settings) return;
+    const exe = rawExe.toLowerCase();
+    if (settings.game_exes.some((g) => g.toLowerCase() === exe)) {
+      showToast(`${exe} is already watched`);
+      return;
+    }
+    const next: Settings = {
+      ...settings,
+      game_exes: [...settings.game_exes, exe],
+      game_blacklist: settings.game_blacklist.filter((g) => g.toLowerCase() !== exe),
+    };
+    setSettings(next);
+    await invoke("save_settings", { settings: next });
+    showToast(`Added ${exe} — add a capture source for it below`);
+  }
+
+  async function openAppPicker() {
+    try {
+      setRunningApps(await invoke<{ exe: string; title: string }[]>("list_running_apps"));
+      setShowAppPicker(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function addGameFromFolder() {
+    const picked = await openDialog({
+      filters: [{ name: "Game executable", extensions: ["exe"] }],
+    });
+    if (typeof picked !== "string") return;
+    const exe = picked.split(/[\\/]/).pop();
+    if (exe) await addGameByExe(exe);
+  }
+
+  async function removeGame(exe: string) {
+    setSourceBusy(exe);
+    try {
+      const fresh = await invoke<Settings>("remove_watched_game", { exe });
+      setSettings(fresh);
+      // Tear down its OBS source too; ignore if there wasn't one.
+      invoke("remove_game_capture_source", { exe }).catch(() => {});
+      setGameSources((list) => list.filter((g) => g.exe !== exe));
+      showToast(`Removed ${exe} — won't be auto-added again`);
+    } catch (e) {
+      setError(String(e));
     } finally {
       setSourceBusy(null);
     }
@@ -577,6 +635,20 @@ function App() {
   async function saveSettings(s: Settings) {
     setSettings(s);
     await invoke("save_settings", { settings: s });
+    // Push the change straight to OBS (path, tracks, length, video). Best
+    // effort — fails harmlessly when OBS isn't connected yet.
+    invoke("apply_obs_config").catch(() => {});
+  }
+
+  // Persist a new clips folder, point OBS's recording output at it, and
+  // reload the library from the new location — all without an app restart.
+  async function applyClipsDir(dir: string) {
+    const next = { ...settingsRef.current!, clips_dir: dir };
+    setSettings(next);
+    await invoke("save_settings", { settings: next });
+    invoke("apply_obs_config").catch(() => {});
+    await refreshClips(dir);
+    showToast("Clips folder updated");
   }
 
   async function resetSettings() {
@@ -911,6 +983,19 @@ function App() {
                   placeholder="Search clips…"
                 />
               </div>
+              <button
+                className="btn-ghost"
+                onClick={async () => {
+                  setRefreshing(true);
+                  await refreshClips();
+                  setRefreshing(false);
+                }}
+                disabled={refreshing}
+                title="Reload clips from disk"
+              >
+                <ArrowsClockwise size={15} />
+                {refreshing ? "refreshing…" : "Refresh"}
+              </button>
               <button className="btn-ghost" onClick={scanBlack} disabled={scanning || clips.length === 0}>
                 <Sparkle size={15} />
                 {scanning ? "scanning…" : "Scan for black"}
@@ -1216,6 +1301,66 @@ function App() {
         )}
       </main>
 
+      {showAppPicker && (
+        <div className="modal-backdrop" onClick={() => setShowAppPicker(false)}>
+          <div className="modal app-picker" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <GameController size={19} color="#7f9bff" weight="fill" />
+              <span className="modal-title">Add a game</span>
+              <div className="lib-spacer" />
+              <button className="modal-close" onClick={() => setShowAppPicker(false)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <span className="field-label">
+                Pick a running app to watch as a game. Not listed? Use “Find .exe in folder”.
+              </span>
+              <div className="app-list">
+                {runningApps.length === 0 && (
+                  <span className="field-label">No running windowed apps found.</span>
+                )}
+                {runningApps.map((a) => {
+                  const already = settings.game_exes.some((g) => g.toLowerCase() === a.exe);
+                  return (
+                    <div key={a.exe} className="onboard-check">
+                      <span>
+                        <strong>{a.title}</strong> — <span className="mono">{a.exe}</span>
+                      </span>
+                      <button
+                        className="setup-btn"
+                        disabled={already}
+                        onClick={async () => {
+                          await addGameByExe(a.exe);
+                          setShowAppPicker(false);
+                        }}
+                      >
+                        {already ? "added" : "Add"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="set-row">
+                <button className="btn-ghost" onClick={openAppPicker}>
+                  <ArrowsClockwise size={15} />
+                  Refresh list
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={async () => {
+                    setShowAppPicker(false);
+                    await addGameFromFolder();
+                  }}
+                >
+                  Find .exe in folder…
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showSettings && (
         <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -1476,6 +1621,15 @@ function App() {
                   }
                   onBlur={() => invoke("save_settings", { settings })}
                 />
+                <div className="set-row">
+                  <button className="btn-ghost apply-btn" onClick={openAppPicker}>
+                    <GameController size={15} />
+                    Add from running apps
+                  </button>
+                  <button className="btn-ghost" onClick={addGameFromFolder}>
+                    Find .exe in folder…
+                  </button>
+                </div>
                 <span className="field-label">
                   A universal capture hook catches most fullscreen games automatically, but it
                   misses plenty (anti-cheat, borderless, some exclusive-fullscreen titles). If a
@@ -1529,9 +1683,22 @@ function App() {
                           Test
                         </button>
                       )}
+                      <button
+                        className="row-remove"
+                        disabled={sourceBusy !== null}
+                        title="Remove & never auto-add again"
+                        onClick={() => removeGame(exe)}
+                      >
+                        <X size={13} />
+                      </button>
                     </div>
                   );
                 })}
+                {settings.game_blacklist.length > 0 && (
+                  <span className="field-label">
+                    Blacklisted (won't auto-add): {settings.game_blacklist.join(", ")}
+                  </span>
+                )}
               </section>
 
               <section className="set-group">
@@ -1541,7 +1708,7 @@ function App() {
                     className="mono"
                     value={settings.clips_dir}
                     onChange={(e) => setSettings({ ...settings, clips_dir: e.target.value })}
-                    onBlur={() => invoke("save_settings", { settings })}
+                    onBlur={() => applyClipsDir(settings.clips_dir)}
                   />
                   <button
                     className="btn-ghost"
@@ -1551,9 +1718,8 @@ function App() {
                         defaultPath: settings.clips_dir,
                       });
                       if (typeof picked === "string") {
-                        const next = { ...settings, clips_dir: picked };
-                        setSettings(next);
-                        await invoke("save_settings", { settings: next });
+                        setSettings({ ...settings, clips_dir: picked });
+                        await applyClipsDir(picked);
                       }
                     }}
                   >

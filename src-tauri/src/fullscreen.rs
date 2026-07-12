@@ -131,6 +131,73 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL 
     false.into()
 }
 
+struct AppList {
+    /// (hwnd pid, window title) for every visible titled top-level window.
+    windows: Vec<(u32, String)>,
+}
+
+unsafe extern "system" fn enum_all_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let list = &mut *(lparam.0 as *mut AppList);
+    if !IsWindowVisible(hwnd).as_bool() {
+        return true.into();
+    }
+    let mut title_buf = [0u16; 512];
+    let title_len = GetWindowTextW(hwnd, &mut title_buf);
+    if title_len == 0 {
+        return true.into();
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return true.into();
+    }
+    list.windows.push((
+        pid,
+        String::from_utf16_lossy(&title_buf[..title_len as usize]),
+    ));
+    true.into()
+}
+
+/// A running app the user could pick as a game to watch.
+pub struct RunningApp {
+    pub exe: String,
+    pub title: String,
+}
+
+/// Every currently-running app that owns a visible, titled window — for a
+/// "pick from what's running" list, so the user doesn't have to hunt down an
+/// exe in Program Files. Deduped by exe, obvious non-games filtered out.
+pub fn running_windowed_apps() -> Vec<RunningApp> {
+    let mut list = AppList { windows: Vec::new() };
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_all_windows_proc),
+            LPARAM(&mut list as *mut AppList as isize),
+        );
+    }
+
+    let mut system = sysinfo::System::new_all();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+
+    let mut out: Vec<RunningApp> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (pid, title) in list.windows {
+        let Some(proc) = system.process(sysinfo::Pid::from_u32(pid)) else {
+            continue;
+        };
+        let exe = proc.name().to_string_lossy().to_lowercase();
+        if BLOCKLIST.contains(&exe.as_str()) || exe == "clipforge.exe" {
+            continue;
+        }
+        if !seen.insert(exe.clone()) {
+            continue;
+        }
+        out.push(RunningApp { exe, title });
+    }
+    out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    out
+}
+
 /// Find the main visible window of a running process, for OBS's
 /// `"title:class:executable"` window-capture selector format. Requires the
 /// process to actually be running (needs a live window to point OBS at).

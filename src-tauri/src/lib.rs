@@ -330,6 +330,7 @@ pub fn run() {
             obs::obs_status,
             obs::start_replay_buffer,
             obs::save_replay_cmd,
+            obs::apply_obs_config,
             obs::add_game_capture_source,
             obs::remove_game_capture_source,
             obs::list_game_capture_sources,
@@ -337,6 +338,7 @@ pub fn run() {
             clips::load_settings,
             clips::save_settings,
             clips::reset_settings,
+            clips::remove_watched_game,
             clips::list_clips,
             clips::trim_clip,
             clips::delete_clip,
@@ -355,6 +357,7 @@ pub fn run() {
             setup::setup_status,
             setup::winget_install,
             setup::launch_obs,
+            setup::list_running_apps,
             set_hotkeys,
         ])
         .run(tauri::generate_context!())
