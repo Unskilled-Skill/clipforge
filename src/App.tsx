@@ -1448,12 +1448,14 @@ function App() {
                     type="number"
                     min={15}
                     max={900}
-                    step={15}
                     value={settings.replay_seconds}
                     onChange={(e) =>
+                      setSettings({ ...settings, replay_seconds: Number(e.target.value) })
+                    }
+                    onBlur={() =>
                       saveSettings({
                         ...settings,
-                        replay_seconds: Math.min(900, Math.max(15, Number(e.target.value) || 15)),
+                        replay_seconds: Math.min(900, Math.max(15, settings.replay_seconds || 15)),
                       })
                     }
                   />
@@ -1879,12 +1881,14 @@ function App() {
                       type="number"
                       min={15}
                       max={900}
-                      step={15}
                       value={settings.replay_seconds}
                       onChange={(e) =>
+                        setSettings({ ...settings, replay_seconds: Number(e.target.value) })
+                      }
+                      onBlur={() =>
                         saveSettings({
                           ...settings,
-                          replay_seconds: Math.min(900, Math.max(15, Number(e.target.value) || 15)),
+                          replay_seconds: Math.min(900, Math.max(15, settings.replay_seconds || 15)),
                         })
                       }
                     />
