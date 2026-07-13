@@ -19,6 +19,7 @@ const mockSettings = {
   auto_connect: true,
   game_exes: ["cs2.exe", "valorant-win64-shipping.exe", "rainbowsix.exe"],
   game_blacklist: [],
+  vc_exe: "discord.exe",
   auto_launch_obs: true,
   auto_manage_buffer: true,
   obs_path: "C:/Program Files/obs-studio/bin/64bit/obs64.exe",
@@ -74,6 +75,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return 3;
     case "gen_waveform":
       return "mock://waveform";
+    case "gen_waveforms":
+      return [0, 1, 2, 3, 4].map((track) => ({ track, waveform: `mock://wave-${track}` }));
     case "export_montage":
     case "export_gif":
     case "export_frame":

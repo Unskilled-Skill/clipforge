@@ -335,8 +335,8 @@ pub async fn ensure_output_config(client: &obws::Client, clips_dir: &str) -> boo
         ("AdvOut", "RecType", "Standard".into()),
         ("AdvOut", "RecFilePath", path.clone()),
         ("SimpleOutput", "FilePath", path.clone()),
-        // Bitmask: track1(1) | track2(2) | track3(4) = 7.
-        ("AdvOut", "RecTracks", "7".into()),
+        // Bitmask tracks 1-5: mix(1)|game(2)|vc(4)|desktop(8)|mic(16) = 31.
+        ("AdvOut", "RecTracks", "31".into()),
         // Fragmented mp4: plays in the in-app <video> preview (mkv doesn't),
         // holds multiple audio tracks, and survives a crash mid-recording.
         ("AdvOut", "RecFormat2", "hybrid_mp4".into()),
@@ -552,10 +552,13 @@ pub async fn ensure_audio_devices(client: &obws::Client) {
     }
 }
 
-/// Enforce the track layout the export dropdown promises:
-///   track 1 = full mix, track 2 = desktop/game only, track 3 = mic only.
-/// Extra desktop captures of the SAME device are detached from all tracks
-/// (they only double the volume and pollute the mic track).
+/// Track layout the export dropdown promises:
+///   1 = full mix, 2 = game, 3 = voice chat, 4 = desktop, 5 = mic.
+/// Desktop output feeds mix(1) + desktop(4); mic feeds mix(1) + mic(5).
+/// Game and voice-chat isolation live on tracks 2/3 via dedicated
+/// application-audio-capture sources (see `ensure_split_audio`) — they are
+/// NOT added to the mix here since they already come through desktop, so the
+/// mix wouldn't double them. Extra duplicate desktop captures are muted.
 pub async fn ensure_audio_tracks(client: &obws::Client) {
     use obws::requests::inputs::InputId;
 
@@ -573,8 +576,8 @@ pub async fn ensure_audio_tracks(client: &obws::Client) {
         let name = input.id.name.clone();
 
         let desired: [Option<bool>; 6] = if is_mic {
-            // mix + mic-only
-            [Some(true), Some(false), Some(true), Some(false), Some(false), Some(false)]
+            // mix + mic-only (track 5)
+            [Some(true), Some(false), Some(false), Some(false), Some(true), Some(false)]
         } else {
             let device = client
                 .inputs()
@@ -593,8 +596,8 @@ pub async fn ensure_audio_tracks(client: &obws::Client) {
                 [Some(false); 6]
             } else {
                 seen_output_devices.push(device);
-                // mix + desktop-only
-                [Some(true), Some(true), Some(false), Some(false), Some(false), Some(false)]
+                // mix + desktop-only (track 4)
+                [Some(true), Some(false), Some(false), Some(true), Some(false), Some(false)]
             }
         };
 
@@ -614,6 +617,68 @@ pub async fn ensure_audio_tracks(client: &obws::Client) {
                 .await;
         }
     }
+}
+
+/// Isolate game and voice-chat audio onto their own tracks via OBS
+/// Application Audio Capture (`wasapi_process_output_capture`), matched by
+/// executable. Game audio → track 2, voice chat → track 3. `game_exe` is the
+/// currently-active game (None leaves the game source untouched).
+pub async fn ensure_split_audio(client: &obws::Client, game_exe: Option<&str>, vc_exe: &str) {
+    if let Some(game) = game_exe {
+        upsert_process_audio(client, "GameAudio", game, 1).await;
+    }
+    if !vc_exe.trim().is_empty() {
+        upsert_process_audio(client, "VCAudio", vc_exe, 2).await;
+    }
+}
+
+/// Create-or-update an application-audio-capture input bound to `exe`, routed
+/// to exactly one recording track (`track_index`, 0-based). Matched by
+/// executable (priority 2) so it works whether or not the app is running yet.
+async fn upsert_process_audio(client: &obws::Client, name: &str, exe: &str, track_index: usize) {
+    use obws::requests::inputs::{InputId, SetSettings};
+    const KIND: &str = "wasapi_process_output_capture";
+    // priority 2 = match by executable (OBS window_priority enum).
+    let settings = serde_json::json!({ "window": format!("::{exe}"), "priority": 2 });
+
+    let exists = client
+        .inputs()
+        .list(Some(KIND))
+        .await
+        .map(|v| v.iter().any(|i| i.id.name == name))
+        .unwrap_or(false);
+
+    if exists {
+        let _ = client
+            .inputs()
+            .set_settings(SetSettings {
+                input: InputId::Name(name),
+                settings: &settings,
+                overlay: Some(true),
+            })
+            .await;
+    } else {
+        let Ok(scene) = client.scenes().current_program_scene().await else {
+            return;
+        };
+        let _ = client
+            .inputs()
+            .create(obws::requests::inputs::Create {
+                scene: scene.id.into(),
+                input: name,
+                kind: KIND,
+                settings: Some(settings),
+                enabled: Some(true),
+            })
+            .await;
+    }
+
+    let mut tracks: [Option<bool>; 6] = [Some(false); 6];
+    tracks[track_index] = Some(true);
+    let _ = client
+        .inputs()
+        .set_audio_tracks(InputId::Name(name), tracks)
+        .await;
 }
 
 /// Fill in machine-specific defaults on first run: detected OBS path,

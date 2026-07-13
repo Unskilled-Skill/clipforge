@@ -257,6 +257,13 @@ pub async fn apply_obs_config(
     crate::setup::ensure_replay_buffer_config(client, settings.replay_seconds).await;
     crate::setup::ensure_audio_devices(client).await;
     crate::setup::ensure_audio_tracks(client).await;
+    let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
+    crate::setup::ensure_split_audio(
+        client,
+        active_game.as_deref().or_else(|| settings.game_exes.first().map(String::as_str)),
+        &settings.vc_exe,
+    )
+    .await;
     crate::setup::ensure_video_settings(client, &settings).await;
     Ok(())
 }

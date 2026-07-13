@@ -350,6 +350,7 @@ pub fn run() {
             clips::run_storage_cleanup,
             clips::list_audio_tracks,
             clips::gen_waveform,
+            clips::gen_waveforms,
             clips::export_montage,
             clips::export_gif,
             clips::export_frame,

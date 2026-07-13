@@ -64,6 +64,9 @@ pub struct Settings {
     /// (removed games, and non-games that were wrongly auto-detected).
     #[serde(default)]
     pub game_blacklist: Vec<String>,
+    /// Voice-chat app whose audio gets its own recording track (Discord etc.).
+    #[serde(default = "default_vc_exe")]
+    pub vc_exe: String,
     #[serde(default = "default_true")]
     pub auto_launch_obs: bool,
     #[serde(default = "default_true")]
@@ -123,6 +126,9 @@ fn default_max_storage_gb() -> f64 {
     100.0
 }
 
+fn default_vc_exe() -> String {
+    "discord.exe".into()
+}
 fn default_hotkey_save() -> String {
     "alt+f10".into()
 }
@@ -143,6 +149,7 @@ impl Default for Settings {
             auto_connect: false,
             game_exes: default_game_exes(),
             game_blacklist: Vec::new(),
+            vc_exe: default_vc_exe(),
             auto_launch_obs: true,
             auto_manage_buffer: true,
             obs_path: default_obs_path(),
@@ -644,7 +651,7 @@ pub async fn export_discord(
     target_mb: f64,
     start: f64,
     end: f64,
-    audio_track: Option<u32>,
+    audio_tracks: Option<Vec<u32>>,
 ) -> Result<String, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let full = clip_duration(&ffmpeg, &input)?;
@@ -677,11 +684,31 @@ pub async fn export_discord(
         "scale=-2:1080"
     };
 
-    // Pick one audio stream: 0 = mix, 1 = game, 2 = mic (OBS track layout).
-    // Clamp to what the file actually has — old clips may be single-track.
-    let tracks = audio_stream_count(&ffmpeg, &input);
-    let track = audio_track.unwrap_or(0).min(tracks.saturating_sub(1));
-    let audio_map = format!("0:a:{track}");
+    // Tracks the user wants kept (OBS layout: 0=mix, 1=game, 2=vc, 3=desktop,
+    // 4=mic). Clamp to what the file actually has — old clips are single-track
+    // — dedupe, and fall back to the full mix if nothing valid is selected.
+    let count = audio_stream_count(&ffmpeg, &input);
+    let mut keep: Vec<u32> = audio_tracks
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| *t < count)
+        .collect();
+    keep.sort_unstable();
+    keep.dedup();
+    if keep.is_empty() {
+        keep.push(0);
+    }
+
+    // One filter graph does both the video scale and the audio: a single kept
+    // track passes through, multiple get summed with amix (normalize=0 keeps
+    // their levels since they're already separate sources, not a remix).
+    let audio_filter = if keep.len() == 1 {
+        format!("[0:a:{}]anull[aout]", keep[0])
+    } else {
+        let labels: String = keep.iter().map(|t| format!("[0:a:{t}]")).collect();
+        format!("{labels}amix=inputs={}:normalize=0[aout]", keep.len())
+    };
+    let filter_complex = format!("[0:v:0]{scale}[vout];{audio_filter}");
 
     let result = hidden_cmd(&ffmpeg)
         .args([
@@ -693,18 +720,18 @@ pub async fn export_discord(
             &format!("{end:.2}"),
             "-i",
             &input,
+            "-filter_complex",
+            &filter_complex,
             "-map",
-            "0:v:0",
+            "[vout]",
             "-map",
-            &audio_map,
+            "[aout]",
             "-c:v",
             &best_h264_encoder(&ffmpeg),
             "-b:v",
             &format!("{video_kbps:.0}k"),
             "-maxrate",
             &format!("{:.0}k", video_kbps * 1.2),
-            "-vf",
-            scale,
             "-c:a",
             "aac",
             "-b:a",
@@ -758,6 +785,55 @@ pub async fn gen_waveform(input: String) -> Result<String, String> {
         }
     }
     Ok(out.to_string_lossy().replace('\\', "/"))
+}
+
+#[derive(Serialize)]
+pub struct TrackWave {
+    pub track: u32,
+    pub waveform: String,
+}
+
+/// One waveform image per audio stream, so the editor can show each track
+/// (mix / game / voice / desktop / mic) stacked with its own keep-checkbox.
+#[tauri::command]
+pub async fn gen_waveforms(input: String) -> Result<Vec<TrackWave>, String> {
+    let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
+    let count = audio_stream_count(&ffmpeg, &input);
+    let input_path = PathBuf::from(&input);
+    let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+
+    let mut out = Vec::new();
+    for i in 0..count {
+        let wpath = dir.join(format!("{stem}.wave{i}.png"));
+        if !wpath.exists() {
+            // Per-track failure is non-fatal — a silent track just yields a
+            // flat image, and we still want the rest of the tracks.
+            let _ = hidden_cmd(&ffmpeg)
+                .args([
+                    "-hide_banner",
+                    "-y",
+                    "-i",
+                    &input,
+                    "-filter_complex",
+                    &format!(
+                        "[0:a:{i}]aformat=channel_layouts=mono,compand,showwavespic=s=1200x40:colors=#6b8bff"
+                    ),
+                    "-frames:v",
+                    "1",
+                ])
+                .arg(&wpath)
+                .output();
+        }
+        if wpath.exists() {
+            out.push(TrackWave {
+                track: i,
+                waveform: wpath.to_string_lossy().replace('\\', "/"),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Concatenate clips into one montage video (normalized 1080p60, AV1 archive

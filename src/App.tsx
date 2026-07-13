@@ -45,6 +45,7 @@ interface Settings {
   auto_connect: boolean;
   game_exes: string[];
   game_blacklist: string[];
+  vc_exe: string;
   auto_launch_obs: boolean;
   auto_manage_buffer: boolean;
   obs_path: string;
@@ -144,6 +145,37 @@ function gameColor(game: string) {
   return "#7f9bff";
 }
 
+// Label each audio track by what it actually contains, which depends on how
+// many tracks the clip has: new clips record the full 5-track split, while
+// older clips used a 3-track (mix/desktop/mic) or 2-track layout. Guessing
+// from the count keeps the labels matching the real audio per track.
+function trackLabels(count: number): { i: number; label: string }[] {
+  if (count >= 5) {
+    return [
+      { i: 0, label: "🔊 mix" },
+      { i: 1, label: "🎮 game" },
+      { i: 2, label: "💬 voice" },
+      { i: 3, label: "🖥️ desktop" },
+      { i: 4, label: "🎤 mic" },
+    ];
+  }
+  if (count === 3) {
+    return [
+      { i: 0, label: "🔊 mix" },
+      { i: 1, label: "🖥️ desktop" },
+      { i: 2, label: "🎤 mic" },
+    ];
+  }
+  if (count === 2) {
+    return [
+      { i: 0, label: "🔊 mix" },
+      { i: 1, label: "🎤 mic" },
+    ];
+  }
+  if (count <= 1) return [{ i: 0, label: "🔊 audio" }];
+  return Array.from({ length: count }, (_, i) => ({ i, label: `track ${i + 1}` }));
+}
+
 function App() {
   const [status, setStatus] = useState<ObsStatus>({
     connected: false,
@@ -176,8 +208,8 @@ function App() {
   const [loopPreview, setLoopPreview] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [audioTracks, setAudioTracks] = useState(1);
-  const [audioTrack, setAudioTrack] = useState(0);
-  const [waveform, setWaveform] = useState<string | null>(null);
+  const [audioKeep, setAudioKeep] = useState<Set<number>>(new Set([0]));
+  const [trackWaves, setTrackWaves] = useState<{ track: number; waveform: string }[]>([]);
   const [montageSel, setMontageSel] = useState<Set<string>>(new Set());
   const [montaging, setMontaging] = useState(false);
   const [targetMb, setTargetMb] = useState(10);
@@ -197,6 +229,7 @@ function App() {
   >({});
   const [kindChoice, setKindChoice] = useState<Record<string, string>>({});
   const [showAppPicker, setShowAppPicker] = useState(false);
+  const [vcPicker, setVcPicker] = useState(false);
   const [runningApps, setRunningApps] = useState<{ exe: string; title: string }[]>([]);
   const [appVersion, setAppVersion] = useState("");
   const [launchingObs, setLaunchingObs] = useState(false);
@@ -326,6 +359,12 @@ function App() {
       .catch(() => setGameSources([]));
   }, [showSettings]);
 
+  // Re-apply the keep-checkboxes to live playback whenever they change.
+  useEffect(() => {
+    syncPlaybackAudio();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioKeep, selected]);
+
   // Keep the selection in sync with what actually exists — drop any selected
   // clip that got deleted, so the Montage/Delete count never counts ghosts.
   useEffect(() => {
@@ -424,16 +463,29 @@ function App() {
     setDuration(0);
     setCurrentTime(0);
     setPreviewing(false);
-    setAudioTrack(0);
+    setAudioKeep(new Set([0]));
     setAudioTracks(1);
-    setWaveform(null);
+    setTrackWaves([]);
     setRenaming(false);
     invoke<number>("list_audio_tracks", { input: clip.path })
       .then(setAudioTracks)
       .catch(() => {});
-    invoke<string>("gen_waveform", { input: clip.path })
-      .then(setWaveform)
+    invoke<{ track: number; waveform: string }[]>("gen_waveforms", { input: clip.path })
+      .then(setTrackWaves)
       .catch(() => {});
+  }
+
+  // Mirror the keep-checkboxes onto the <video>'s audio tracks so preview
+  // plays only the checked tracks. Needs the AudioVideoTracks blink feature
+  // (enabled via additionalBrowserArgs); WebView2 may only play the first
+  // enabled track, so preview is a guide — export does the real mix.
+  function syncPlaybackAudio() {
+    const list = (videoRef.current as unknown as { audioTracks?: { length: number; [i: number]: { enabled: boolean } } })
+      ?.audioTracks;
+    if (!list) return;
+    for (let i = 0; i < list.length; i++) {
+      list[i].enabled = audioKeep.has(i);
+    }
   }
 
   function toggleMontage(clip: ClipInfo) {
@@ -804,7 +856,7 @@ function App() {
         targetMb,
         start: trimStart,
         end: trimEnd,
-        audioTrack,
+        audioTracks: [...audioKeep].sort((a, b) => a - b),
       });
       showToast("Exported and copied to clipboard — Ctrl+V in Discord");
       await refreshClips();
@@ -1277,6 +1329,7 @@ function App() {
                 onLoadedMetadata={(e) => {
                   setDuration(e.currentTarget.duration);
                   setTrimEnd(Math.floor(e.currentTarget.duration));
+                  syncPlaybackAudio();
                 }}
                 onTimeUpdate={(e) => onVideoTime(e.currentTarget.currentTime)}
               />
@@ -1306,30 +1359,65 @@ function App() {
                 </span>
               </div>
               {duration > 0 && (
-                <div
-                  ref={timelineRef}
-                  className="timeline"
-                  onPointerDown={onTimelineDown}
-                  onPointerMove={onTimelineMove}
-                  onPointerUp={onTimelineUp}
-                >
-                  <div className="ticks" />
-                  {waveform && (
-                    <img className="waveform" src={convertFileSrc(waveform)} alt="" draggable={false} />
-                  )}
-                  <div
-                    className="range"
-                    style={{
-                      left: `${(trimStart / duration) * 100}%`,
-                      width: `${((trimEnd - trimStart) / duration) * 100}%`,
-                    }}
-                  />
-                  <div className="playhead" style={{ left: `${(currentTime / duration) * 100}%` }} />
-                  <div className="handle" style={{ left: `${(trimStart / duration) * 100}%` }}>
-                    <span className="grip" />
+                <div className="multitrack">
+                  <div className="mt-labels">
+                    <div className="mt-label mt-vid-label">🎬 video</div>
+                    {trackLabels(audioTracks).map((t) => {
+                      const on = audioKeep.has(t.i);
+                      return (
+                        <label key={t.i} className={`mt-label ${on ? "on" : ""}`} title="Keep in export">
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={(e) =>
+                              setAudioKeep((prev) => {
+                                const next = new Set(prev);
+                                e.target.checked ? next.add(t.i) : next.delete(t.i);
+                                return next;
+                              })
+                            }
+                          />
+                          {t.label}
+                        </label>
+                      );
+                    })}
                   </div>
-                  <div className="handle" style={{ left: `${(trimEnd / duration) * 100}%` }}>
-                    <span className="grip" />
+                  <div
+                    ref={timelineRef}
+                    className="mt-tracks"
+                    onPointerDown={onTimelineDown}
+                    onPointerMove={onTimelineMove}
+                    onPointerUp={onTimelineUp}
+                  >
+                    <div className="mt-lane mt-vid">
+                      {thumbs[selected.path] && (
+                        <img src={convertFileSrc(thumbs[selected.path].thumb)} alt="" draggable={false} />
+                      )}
+                    </div>
+                    {trackLabels(audioTracks).map((t) => {
+                      const wave = trackWaves.find((w) => w.track === t.i);
+                      return (
+                        <div key={t.i} className={`mt-lane ${audioKeep.has(t.i) ? "" : "off"}`}>
+                          {wave && (
+                            <img src={convertFileSrc(wave.waveform)} alt="" draggable={false} />
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div
+                      className="mt-range"
+                      style={{
+                        left: `${(trimStart / duration) * 100}%`,
+                        width: `${((trimEnd - trimStart) / duration) * 100}%`,
+                      }}
+                    />
+                    <div className="mt-playhead" style={{ left: `${(currentTime / duration) * 100}%` }} />
+                    <div className="mt-handle" style={{ left: `${(trimStart / duration) * 100}%` }}>
+                      <span className="grip" />
+                    </div>
+                    <div className="mt-handle" style={{ left: `${(trimEnd / duration) * 100}%` }}>
+                      <span className="grip" />
+                    </div>
                   </div>
                 </div>
               )}
@@ -1340,18 +1428,6 @@ function App() {
                 <Gauge size={15} weight="fill" />
                 ~{Math.round(kbps)} kbps · {goodQuality ? "good" : "trim shorter"}
               </div>
-              {audioTracks > 1 && (
-                <select
-                  className="audio-select"
-                  value={audioTrack}
-                  onChange={(e) => setAudioTrack(Number(e.target.value))}
-                  title="Audio for the Discord export"
-                >
-                  <option value={0}>🔊 full mix</option>
-                  <option value={1}>🎮 game only</option>
-                  {audioTracks > 2 && <option value={2}>🎤 mic only</option>}
-                </select>
-              )}
               <div className="lib-spacer" />
               <button className="btn-trim icon-only" title="Save current frame as PNG" onClick={exportFrame}>
                 <Camera size={16} />
@@ -1456,6 +1532,50 @@ function App() {
                 >
                   Find .exe in folder…
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {vcPicker && (
+        <div className="modal-backdrop" style={{ zIndex: 200 }} onClick={() => setVcPicker(false)}>
+          <div className="modal app-picker" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <GameController size={19} color="#7f9bff" weight="fill" />
+              <span className="modal-title">Pick voice-chat app</span>
+              <div className="lib-spacer" />
+              <button className="modal-close" onClick={() => setVcPicker(false)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <span className="field-label">
+                Choose the app whose audio goes on the voice-chat track.
+              </span>
+              <div className="app-list">
+                {runningApps.length === 0 && (
+                  <span className="field-label">No running windowed apps found.</span>
+                )}
+                {runningApps.map((a) => (
+                  <div key={a.exe} className="onboard-check">
+                    <span>
+                      <strong>{a.title}</strong> — <span className="mono">{a.exe}</span>
+                    </span>
+                    <button
+                      className="setup-btn"
+                      disabled={settings?.vc_exe.toLowerCase() === a.exe}
+                      onClick={async () => {
+                        if (!settings) return;
+                        await saveSettings({ ...settings, vc_exe: a.exe });
+                        setVcPicker(false);
+                        showToast(`Voice-chat audio set to ${a.exe}`);
+                      }}
+                    >
+                      {settings?.vc_exe.toLowerCase() === a.exe ? "current" : "Use"}
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -1708,6 +1828,43 @@ function App() {
                     />
                   </label>
                 </div>
+              </section>
+
+              <section className="set-group">
+                <span className="set-label">SPLIT AUDIO</span>
+                <span className="field-label">
+                  Clips record 5 audio tracks — full mix, game, voice chat, desktop, mic — so
+                  exports can isolate any of them. Voice-chat and game audio are captured per-app;
+                  set your voice app's .exe below (game audio follows the running game).
+                </span>
+                <label className="set-col">
+                  <span className="field-label">Voice-chat app (.exe)</span>
+                  <div className="set-row">
+                    <input
+                      className="mono"
+                      value={settings.vc_exe}
+                      onChange={(e) => setSettings({ ...settings, vc_exe: e.target.value })}
+                      onBlur={() => saveSettings(settings)}
+                      placeholder="discord.exe"
+                    />
+                    <button
+                      className="btn-ghost"
+                      onClick={async () => {
+                        try {
+                          const apps = await invoke<{ exe: string; title: string }[]>(
+                            "list_running_apps"
+                          );
+                          setRunningApps(apps);
+                          setVcPicker(true);
+                        } catch (e) {
+                          setError(String(e));
+                        }
+                      }}
+                    >
+                      Pick app
+                    </button>
+                  </div>
+                </label>
               </section>
 
               <section className="set-group">

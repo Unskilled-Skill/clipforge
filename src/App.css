@@ -637,6 +637,94 @@ button:disabled { opacity: 0.55; cursor: default; }
   width: 100%;
 }
 .sel-count { font-size: 12px; color: #8a8f9a; font-weight: 600; }
+
+/* multitrack editor: labels column + aligned time-lanes with one playhead */
+.multitrack { display: flex; gap: 10px; margin-top: 10px; }
+.mt-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 104px;
+  flex-shrink: 0;
+}
+.mt-label {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid #1e2028;
+  background: #121319;
+  font-size: 12px;
+  font-weight: 600;
+  color: #767a85;
+  cursor: pointer;
+  user-select: none;
+}
+.mt-label.on { color: #eceef3; border-color: #33406e; background: #161a26; }
+.mt-label input { accent-color: #4c6ef5; margin: 0; flex-shrink: 0; }
+.mt-vid-label { height: 46px; color: #c3c6cf; cursor: default; }
+
+.mt-tracks {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  touch-action: none;
+}
+.mt-lane {
+  height: 40px;
+  background: #0e0f14;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.mt-lane img { width: 100%; height: 100%; object-fit: fill; display: block; }
+.mt-lane.off { opacity: 0.35; }
+.mt-vid { height: 46px; }
+.mt-vid img { object-fit: cover; }
+
+.mt-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(76, 110, 245, 0.16);
+  border-left: 1px solid #4c6ef5;
+  border-right: 1px solid #4c6ef5;
+  pointer-events: none;
+}
+.mt-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #ff5f6d;
+  box-shadow: 0 0 6px rgba(255, 95, 109, 0.7);
+  pointer-events: none;
+  z-index: 3;
+}
+.mt-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #4c6ef5;
+  z-index: 2;
+}
+.mt-handle .grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 22px;
+  border-radius: 3px;
+  background: #4c6ef5;
+}
 .card-meta {
   display: flex;
   align-items: center;

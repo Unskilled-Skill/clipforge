@@ -30,9 +30,18 @@ pub async fn run(app: AppHandle) {
     // counts as running until its process exits — alt-tabbing out must
     // not disarm the buffer mid-match.
     let mut session_games: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Exe the GameAudio split-track is currently bound to; retarget on change.
+    let mut audio_game: Option<String> = None;
 
     loop {
-        let state = tick(&app, &mut system, &mut launch_cooldown, &mut session_games).await;
+        let state = tick(
+            &app,
+            &mut system,
+            &mut launch_cooldown,
+            &mut session_games,
+            &mut audio_game,
+        )
+        .await;
         if let Ok(mut current) = app.state::<crate::obs::CurrentGame>().0.lock() {
             *current = state.game.clone();
         }
@@ -49,6 +58,7 @@ async fn tick(
     system: &mut System,
     launch_cooldown: &mut u8,
     session_games: &mut std::collections::HashSet<String>,
+    audio_game: &mut Option<String>,
 ) -> SupervisorState {
     let mut settings = load_settings_inner(app);
     let mut state = SupervisorState::default();
@@ -125,6 +135,12 @@ async fn tick(
                         .await;
                     crate::setup::ensure_audio_devices(client).await;
                     crate::setup::ensure_audio_tracks(client).await;
+                    crate::setup::ensure_split_audio(
+                        client,
+                        settings.game_exes.first().map(String::as_str),
+                        &settings.vc_exe,
+                    )
+                    .await;
                     crate::setup::ensure_video_settings(client, &settings).await;
                 }
             }
@@ -168,6 +184,13 @@ async fn tick(
 
     let guard = obs_state.client.lock().await;
     if let Some(client) = guard.as_ref() {
+        // Point the GameAudio split-track at the game that's actually running.
+        if let Some(game) = &state.game {
+            if audio_game.as_deref() != Some(game.as_str()) {
+                crate::setup::ensure_split_audio(client, Some(game), &settings.vc_exe).await;
+                *audio_game = Some(game.clone());
+            }
+        }
         state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
         if settings.auto_manage_buffer {
             if state.game.is_some() && !state.buffer_active {
