@@ -202,9 +202,11 @@ body { margin: 0; overflow: hidden; }
 }
 .buffer-pill.armed .buffer-dot { animation: cf-pulse 2s ease-in-out infinite; }
 
+/* opacity/transform only — box-shadow here kept the WebView2 compositor
+   repainting at 60fps the entire time the buffer was armed (~idle CPU drain) */
 @keyframes cf-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(64, 221, 128, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(64, 221, 128, 0); }
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
 }
 
 .game-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
@@ -699,12 +701,14 @@ button:disabled { opacity: 0.55; cursor: default; }
   position: absolute;
   top: 0;
   bottom: 0;
+  left: 0;
   width: 2px;
   margin-left: -1px;
   background: #ff5f6d;
   box-shadow: 0 0 6px rgba(255, 95, 109, 0.7);
   pointer-events: none;
   z-index: 3;
+  will-change: transform;
 }
 .mt-handle {
   position: absolute;

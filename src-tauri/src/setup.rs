@@ -182,12 +182,48 @@ pub fn launch_obs(app: AppHandle) -> Result<(), String> {
     }
     suppress_autoconfig_wizard(false);
     let dir = exe.parent().ok_or("bad OBS path")?;
-    crate::clips::hidden_cmd(&exe)
+
+    // Try a plain spawn first. If OBS is configured to run as administrator
+    // it needs elevation, which CreateProcess can't do (os error 740) — fall
+    // back to ShellExecute, which honours the exe's manifest and shows the
+    // UAC prompt so an elevated OBS can start.
+    let spawned = crate::clips::hidden_cmd(&exe)
         .current_dir(dir)
         .args(["--minimize-to-tray", "--disable-shutdown-check"])
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("couldn't launch OBS: {e}"))
+        .spawn();
+    match spawned {
+        Ok(_) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(740) => shell_launch_elevated(&exe, dir),
+        Err(e) => Err(format!("couldn't launch OBS: {e}")),
+    }
+}
+
+/// Launch a program via ShellExecuteW with the default verb, which triggers
+/// the UAC prompt when the target requires elevation (unlike CreateProcess).
+fn shell_launch_elevated(exe: &std::path::Path, dir: &std::path::Path) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
+
+    let file = HSTRING::from(exe);
+    let params = HSTRING::from("--minimize-to-tray --disable-shutdown-check");
+    let directory = HSTRING::from(dir);
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            &HSTRING::from("open"),
+            &file,
+            &params,
+            &directory,
+            SW_SHOWMINNOACTIVE,
+        )
+    };
+    // ShellExecuteW returns an HINSTANCE > 32 on success.
+    if result.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err("OBS needs administrator rights to launch. Start OBS manually, or turn off \"Run as administrator\" in OBS's shortcut/compatibility settings.".into())
+    }
 }
 
 #[derive(Serialize)]

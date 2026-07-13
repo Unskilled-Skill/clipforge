@@ -293,11 +293,24 @@ pub async fn start_replay_buffer(state: tauri::State<'_, ObsState>) -> Result<()
 pub async fn save_replay(state: &ObsState) -> Result<(), String> {
     let guard = state.client.lock().await;
     let client = guard.as_ref().ok_or("not connected")?;
-    client
-        .replay_buffer()
-        .save()
-        .await
-        .map_err(|e| e.to_string())
+    // If the buffer isn't armed there's nothing to flush — OBS returns a
+    // cryptic "OutputNotRunning". Arm it now (so the next save works) and
+    // tell the user plainly instead of leaking the raw error.
+    if !client.replay_buffer().status().await.unwrap_or(false) {
+        let _ = client.replay_buffer().start().await;
+        return Err(
+            "Replay buffer wasn't recording yet — just started it. Play for a few seconds, then save again."
+                .into(),
+        );
+    }
+    client.replay_buffer().save().await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("OutputNotRunning") {
+            "Replay buffer isn't recording — make sure a game is detected.".into()
+        } else {
+            msg
+        }
+    })
 }
 
 #[tauri::command]

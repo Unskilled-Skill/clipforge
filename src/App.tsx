@@ -198,7 +198,6 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
   const [gameFilter, setGameFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [hkSave, setHkSave] = useState("");
@@ -234,9 +233,10 @@ function App() {
   const [appVersion, setAppVersion] = useState("");
   const [launchingObs, setLaunchingObs] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const dragging = useRef<"start" | "end" | null>(null);
+  const dragging = useRef<"start" | "end" | "scrub" | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<Settings | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   settingsRef.current = settings;
@@ -365,6 +365,57 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioKeep, selected]);
 
+  // Drive the playhead straight from the video clock, moving the DOM node
+  // directly (translateX — no layout, no React re-render). The rAF loop only
+  // runs while the video is actually playing; when paused, 'seeked' events
+  // (scrub, frame-step) reposition it one-shot. Keeps the editor at ~0% CPU
+  // when idle instead of ticking 60fps forever.
+  useEffect(() => {
+    if (!selected) return;
+    const v = videoRef.current;
+    if (!v) return;
+    let raf = 0;
+    let last = -1;
+    const setPos = () => {
+      const d = v.duration || 0;
+      const lane = timelineRef.current;
+      if (d <= 0 || !lane || !playheadRef.current) return;
+      const px = (v.currentTime / d) * lane.clientWidth;
+      if (Math.abs(px - last) > 0.25) {
+        playheadRef.current.style.transform = `translateX(${px}px)`;
+        last = px;
+      }
+    };
+    const tick = () => {
+      setPos();
+      if (previewing) {
+        if (v.currentTime >= trimEnd) {
+          if (loopPreview) v.currentTime = trimStart;
+          else {
+            v.pause();
+            setPreviewing(false);
+          }
+        } else if (v.currentTime < trimStart - 1) {
+          setPreviewing(false);
+        }
+      }
+      raf = v.paused ? 0 : requestAnimationFrame(tick);
+    };
+    const start = () => {
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    v.addEventListener("play", start);
+    v.addEventListener("seeked", setPos);
+    v.addEventListener("loadedmetadata", setPos);
+    start(); // autoPlay may already be running when the effect attaches
+    return () => {
+      cancelAnimationFrame(raf);
+      v.removeEventListener("play", start);
+      v.removeEventListener("seeked", setPos);
+      v.removeEventListener("loadedmetadata", setPos);
+    };
+  }, [selected, previewing, trimStart, trimEnd, loopPreview]);
+
   // Keep the selection in sync with what actually exists — drop any selected
   // clip that got deleted, so the Montage/Delete count never counts ghosts.
   useEffect(() => {
@@ -461,7 +512,6 @@ function App() {
     setTrimStart(0);
     setTrimEnd(0);
     setDuration(0);
-    setCurrentTime(0);
     setPreviewing(false);
     setAudioKeep(new Set([0]));
     setAudioTracks(1);
@@ -623,24 +673,6 @@ function App() {
     video.play();
   }
 
-  function onVideoTime(t: number) {
-    // Throttle re-renders during playback — the playhead doesn't need
-    // sub-100ms precision and each update re-renders the editor tree.
-    setCurrentTime((prev) => (Math.abs(t - prev) < 0.15 ? prev : t));
-    const video = videoRef.current;
-    if (!previewing || !video) return;
-    if (t >= trimEnd) {
-      if (loopPreview) {
-        video.currentTime = trimStart;
-      } else {
-        video.pause();
-        setPreviewing(false);
-      }
-    } else if (t < trimStart - 1) {
-      // user seeked away — drop preview mode
-      setPreviewing(false);
-    }
-  }
 
   function timeAt(clientX: number) {
     const el = timelineRef.current;
@@ -657,8 +689,11 @@ function App() {
     const grabRange = duration * 0.04;
     if (Math.min(startDist, endDist) < grabRange) {
       dragging.current = startDist <= endDist ? "start" : "end";
-    } else if (videoRef.current) {
-      videoRef.current.currentTime = t;
+    } else {
+      // Scrub: seek to the pointer and keep following it as it drags.
+      dragging.current = "scrub";
+      setPreviewing(false);
+      if (videoRef.current) videoRef.current.currentTime = t;
     }
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
   }
@@ -668,8 +703,11 @@ function App() {
     const t = timeAt(e.clientX);
     if (dragging.current === "start") {
       setTrimStart(Math.min(Math.round(t * 10) / 10, trimEnd - 0.5));
-    } else {
+    } else if (dragging.current === "end") {
       setTrimEnd(Math.max(Math.round(t * 10) / 10, trimStart + 0.5));
+    } else if (videoRef.current) {
+      // scrub — video seeks to follow the cursor; playhead tracks it via rAF
+      videoRef.current.currentTime = t;
     }
   }
 
@@ -1331,7 +1369,6 @@ function App() {
                   setTrimEnd(Math.floor(e.currentTarget.duration));
                   syncPlaybackAudio();
                 }}
-                onTimeUpdate={(e) => onVideoTime(e.currentTarget.currentTime)}
               />
             </div>
 
@@ -1411,7 +1448,7 @@ function App() {
                         width: `${((trimEnd - trimStart) / duration) * 100}%`,
                       }}
                     />
-                    <div className="mt-playhead" style={{ left: `${(currentTime / duration) * 100}%` }} />
+                    <div ref={playheadRef} className="mt-playhead" style={{ left: 0 }} />
                     <div className="mt-handle" style={{ left: `${(trimStart / duration) * 100}%` }}>
                       <span className="grip" />
                     </div>
