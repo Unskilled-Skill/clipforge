@@ -27,11 +27,16 @@ Remove-Item $override -Force -ErrorAction SilentlyContinue
 if ($buildExit -ne 0) { throw "build failed" }
 
 $exe = "$repo\src-tauri\target\release\bundle\nsis\clipforge_${Version}_x64-setup.exe"
-# Pass the (empty) key password via env var, NOT `-p ""`: PowerShell drops an
-# empty-string argument to a native command, which makes the signer prompt
-# interactively and fail in this non-interactive shell.
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-npx tauri signer sign -f "$repo\.tauri-signing\clipforge.key" "$exe"
+# The signer's password prompt reads the Windows console device (CONIN$)
+# directly, not stdin — so an empty TAURI_SIGNING_PRIVATE_KEY_PASSWORD or a
+# `< NUL` redirect can't suppress it, and every release used to hang here
+# until Enter was pressed. Git Bash attaches no Windows console, so the
+# prompt can't open and the signer takes the no-password path instantly.
+$bash = Join-Path $env:ProgramFiles "Git\bin\bash.exe"
+if (-not (Test-Path $bash)) { throw "Git Bash not found at $bash (needed to sign without a console prompt)" }
+$keyPosix = ($repo -replace '\\', '/') + "/.tauri-signing/clipforge.key"
+$exePosix = $exe -replace '\\', '/'
+& $bash -lc "TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' npx tauri signer sign -f '$keyPosix' '$exePosix' </dev/null"
 if ($LASTEXITCODE -ne 0) { throw "signing failed" }
 $sig = Get-Content "$exe.sig" -Raw
 
