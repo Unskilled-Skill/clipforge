@@ -249,6 +249,23 @@ pub fn run() {
                 };
                 let _ = update_handle.emit("update-installing", update.version.clone());
                 if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
+                    // Never yank the app out from under a live session: if a
+                    // game is running (buffer armed, maybe mid-match), hold
+                    // the restart until it exits. The installed update simply
+                    // takes effect on the next launch either way.
+                    loop {
+                        let game_running = update_handle
+                            .state::<obs::CurrentGame>()
+                            .0
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.clone())
+                            .is_some();
+                        if !game_running {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
                     update_handle.restart();
                 }
             });

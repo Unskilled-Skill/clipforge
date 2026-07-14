@@ -2,11 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  ArrowCounterClockwise,
   ArrowLeft,
-  ArrowRight,
   ArrowsClockwise,
-  BookOpen,
   Camera,
   CheckCircle,
   Circle,
@@ -19,16 +16,12 @@ import {
   GameController,
   Gauge,
   GearSix,
-  HardDrives,
   Headset,
-  Keyboard,
-  Lightning,
   MagnifyingGlass,
   Microphone,
   Monitor,
   PencilSimple,
   Play,
-  Plugs,
   Repeat,
   Scissors,
   SpeakerHigh,
@@ -38,58 +31,27 @@ import {
   Trash,
   Warning,
   Waveform,
-  X,
 } from "@phosphor-icons/react";
+import { AppPickerModal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
+import type {
+  ClipInfo,
+  ObsStatus,
+  RunningApp,
+  Settings,
+  SetupStatus,
+  SupervisorState,
+  ThumbInfo,
+} from "./types";
 import "./App.css";
 
-interface ObsStatus {
-  connected: boolean;
-  replay_buffer_active: boolean;
-  obs_version: string | null;
-}
-
-interface Settings {
-  host: string;
-  port: number;
-  password: string | null;
-  clips_dir: string;
-  auto_connect: boolean;
-  game_exes: string[];
-  game_blacklist: string[];
-  vc_exe: string;
-  auto_launch_obs: boolean;
-  auto_manage_buffer: boolean;
-  obs_path: string;
-  hotkey_save: string;
-  hotkey_short: string;
-  short_clip_seconds: number;
-  max_storage_gb: number;
-  auto_clip: boolean;
-  auto_clip_delay_s: number;
-  replay_seconds: number;
-  video_fps: number;
-  video_height: number;
-  bitrate_mbps: number;
-  encoder_pref: string;
-}
-
-interface SupervisorState {
-  obs_running: boolean;
-  connected: boolean;
-  game: string | null;
-  buffer_active: boolean;
-}
-
-interface ClipInfo {
-  path: string;
-  name: string;
-  modified_ms: number;
-  size_bytes: number;
-}
-
-interface ThumbInfo {
-  thumb: string;
-  duration: number;
+// Ruler tick positions (seconds) for a clip: coarsest step that still
+// yields a readable ~10 labels.
+function rulerTicks(duration: number): number[] {
+  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300];
+  const step = steps.find((s) => duration / s <= 10) ?? 600;
+  const out: number[] = [];
+  for (let t = step; t < duration; t += step) out.push(t);
+  return out;
 }
 
 // Video bitrate a size-budgeted export gets for a given duration.
@@ -235,6 +197,19 @@ function App() {
       return {};
     }
   });
+  // Last track keep/gain mix per clip, persisted — reopening a clip restores
+  // its export mix instead of resetting to "mix only".
+  const [audioMemory, setAudioMemory] = useState<
+    Record<string, { keep: number[]; gain: Record<number, number> }>
+  >(() => {
+    try {
+      return JSON.parse(localStorage.getItem("clipforge_audio") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  // Card focused by keyboard navigation; -1 = none.
+  const [focusIdx, setFocusIdx] = useState(-1);
   const [hoverPath, setHoverPath] = useState<string | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [diskFree, setDiskFree] = useState<number | null>(null);
@@ -245,7 +220,7 @@ function App() {
   const [libRenamePath, setLibRenamePath] = useState<string | null>(null);
   const [libRenameValue, setLibRenameValue] = useState("");
   const [renameValue, setRenameValue] = useState("");
-  const [setup, setSetup] = useState<{ obs_installed: boolean; ffmpeg_installed: boolean } | null>(null);
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardStep, setOnboardStep] = useState(0);
@@ -258,7 +233,7 @@ function App() {
   const [kindChoice, setKindChoice] = useState<Record<string, string>>({});
   const [showAppPicker, setShowAppPicker] = useState(false);
   const [vcPicker, setVcPicker] = useState(false);
-  const [runningApps, setRunningApps] = useState<{ exe: string; title: string }[]>([]);
+  const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
   const [appVersion, setAppVersion] = useState("");
   const [launchingObs, setLaunchingObs] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -337,7 +312,7 @@ function App() {
         /* dir may not exist yet */
       }
       invoke<string[]>("load_favorites").then(setFavorites).catch(() => {});
-      invoke<{ obs_installed: boolean; ffmpeg_installed: boolean }>("setup_status")
+      invoke<SetupStatus>("setup_status")
         .then(setSetup)
         .catch(() => {});
       setBooting(false);
@@ -542,16 +517,19 @@ function App() {
       const next = new Set([...prev].filter((p) => live.has(p)));
       return next.size === prev.size ? prev : next;
     });
-    // Same for saved trim ranges, or localStorage fills with dead paths.
+    // Same for saved trim ranges and audio mixes, or localStorage fills
+    // with dead paths.
     if (clips.length > 0) {
-      setTrimRanges((prev) => {
-        const live = new Set(clips.map((c) => c.path));
+      const live = new Set(clips.map((c) => c.path));
+      const prune = <T,>(prev: Record<string, T>): Record<string, T> => {
         const stale = Object.keys(prev).filter((p) => !live.has(p));
         if (stale.length === 0) return prev;
         const next = { ...prev };
         stale.forEach((p) => delete next[p]);
         return next;
-      });
+      };
+      setTrimRanges(prune);
+      setAudioMemory(prune);
     }
   }, [clips]);
 
@@ -577,6 +555,32 @@ function App() {
   useEffect(() => {
     localStorage.setItem("clipforge_trims", JSON.stringify(trimRanges));
   }, [trimRanges]);
+
+  // Remember the export mix per clip; the default (mix track only, all
+  // gains at 100%) stores nothing.
+  useEffect(() => {
+    if (!selected) return;
+    const path = selected.path;
+    const keep = [...audioKeep].sort((a, b) => a - b);
+    const gains = Object.entries(trackGain).filter(([, v]) => v !== 1);
+    const isDefault = keep.length === 1 && keep[0] === 0 && gains.length === 0;
+    setAudioMemory((prev) => {
+      if (isDefault) {
+        if (!(path in prev)) return prev;
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      }
+      const gain = Object.fromEntries(gains.map(([k, v]) => [Number(k), v]));
+      const cur = prev[path];
+      if (cur && JSON.stringify(cur) === JSON.stringify({ keep, gain })) return prev;
+      return { ...prev, [path]: { keep, gain } };
+    });
+  }, [audioKeep, trackGain, selected]);
+
+  useEffect(() => {
+    localStorage.setItem("clipforge_audio", JSON.stringify(audioMemory));
+  }, [audioMemory]);
 
   // Watch free space on the clips drive — OBS silently fails to save when
   // the disk fills, so warn well before that.
@@ -678,8 +682,9 @@ function App() {
     setTrimEnd(0);
     setDuration(0);
     setPreviewing(false);
-    setAudioKeep(new Set([0]));
-    setTrackGain({});
+    const mem = audioMemory[clip.path];
+    setAudioKeep(new Set(mem?.keep ?? [0]));
+    setTrackGain(mem?.gain ?? {});
     setAudioTracks(1);
     setTrackWaves([]);
     perTrackOk.current = false;
@@ -740,10 +745,12 @@ function App() {
     setMontaging(true);
     setError(null);
     try {
-      // keep library order (newest first) for the cut order; each clip is
-      // cut to its saved trim range (start=end=0 → whole clip)
-      const inputs = clips
-        .filter((c) => montageSel.has(c.path))
+      // Cut order = selection order (Sets iterate in insertion order; the
+      // numbered badges on the cards show it). Each clip is cut to its
+      // saved trim range (start=end=0 → whole clip).
+      const inputs = [...montageSel]
+        .map((p) => clips.find((c) => c.path === p))
+        .filter((c): c is ClipInfo => !!c)
         .map((c) => {
           const r = trimRanges[c.path];
           return { path: c.path, start: r?.[0] ?? 0, end: r?.[1] ?? 0 };
@@ -985,7 +992,8 @@ function App() {
 
   // Library / settings keyboard shortcuts: Esc backs out (settings → library,
   // selection → clear), Ctrl+A selects everything visible, Delete recycles
-  // the selection. Re-attached per render so closures stay fresh — cheap.
+  // the selection, arrows walk the grid, Enter opens the focused clip.
+  // Re-attached per render so closures stay fresh — cheap.
   useEffect(() => {
     if (selected) return;
     const onKey = (e: KeyboardEvent) => {
@@ -993,17 +1001,38 @@ function App() {
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
       if (e.key === "Escape") {
         if (showSettings) setShowSettings(false);
+        else if (focusIdx !== -1) setFocusIdx(-1);
         else setMontageSel(new Set());
       } else if (!showSettings && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
         setMontageSel(new Set(visibleClips.map((c) => c.path)));
       } else if (!showSettings && e.key === "Delete" && montageSel.size > 0) {
         deleteSelected();
+      } else if (!showSettings && e.key.startsWith("Arrow") && visibleClips.length > 0) {
+        e.preventDefault();
+        // Column count from layout: cards sharing the first card's top row.
+        const cards = document.querySelectorAll<HTMLElement>(".grid .card");
+        let cols = 1;
+        while (cols < cards.length && cards[cols].offsetTop === cards[0].offsetTop) cols++;
+        const delta =
+          e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : e.key === "ArrowDown" ? cols : -cols;
+        const next =
+          focusIdx === -1 ? 0 : Math.max(0, Math.min(visibleClips.length - 1, focusIdx + delta));
+        setFocusIdx(next);
+        cards[next]?.scrollIntoView({ block: "nearest" });
+      } else if (!showSettings && e.key === "Enter" && focusIdx >= 0 && focusIdx < visibleClips.length) {
+        selectClip(visibleClips[focusIdx]);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  // Keyboard focus is positional — a new filter/sort reshuffles the grid,
+  // so the old index would point at a different clip.
+  useEffect(() => {
+    setFocusIdx(-1);
+  }, [gameFilter, search, sortBy]);
 
   async function applyHotkeys(save: string, short: string) {
     setError(null);
@@ -1021,19 +1050,19 @@ function App() {
     }
   }
 
-  // Turn a keydown into a hotkey string like "ctrl+shift+f9".
-  function captureHotkey(e: React.KeyboardEvent): string | null {
-    e.preventDefault();
-    e.stopPropagation();
-    const key = e.key.toLowerCase();
-    if (["control", "shift", "alt", "meta"].includes(key)) return null; // modifier alone
-    const mods = [
-      e.ctrlKey ? "ctrl" : null,
-      e.shiftKey ? "shift" : null,
-      e.altKey ? "alt" : null,
-    ].filter(Boolean);
-    const name = key === " " ? "space" : key;
-    return [...mods, name].join("+");
+  // Winget install of a required tool (OBS / ffmpeg), shared by the setup
+  // banner and the onboarding walkthrough.
+  async function installTool(label: string, wingetId: string) {
+    setInstalling(label);
+    try {
+      await invoke("winget_install", { id: wingetId });
+      setSetup(await invoke("setup_status"));
+      if (label === "ffmpeg") await refreshClips();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setInstalling(null);
+    }
   }
 
   async function saveSettings(s: Settings) {
@@ -1306,6 +1335,11 @@ function App() {
       </aside>
 
       <main className="main">
+        {exportPct != null && (
+          <div className="export-bar">
+            <div className="export-bar-fill" style={{ width: `${exportPct}%` }} />
+          </div>
+        )}
         {error && (
           <div className="error-bar">
             <span>{error}</span>
@@ -1350,17 +1384,7 @@ function App() {
                 <button
                   className="setup-btn"
                   disabled={installing !== null}
-                  onClick={async () => {
-                    setInstalling("OBS Studio");
-                    try {
-                      await invoke("winget_install", { id: "OBSProject.OBSStudio" });
-                      setSetup(await invoke("setup_status"));
-                    } catch (e) {
-                      setError(String(e));
-                    } finally {
-                      setInstalling(null);
-                    }
-                  }}
+                  onClick={() => installTool("OBS Studio", "OBSProject.OBSStudio")}
                 >
                   {installing === "OBS Studio" ? "installing…" : "Install OBS"}
                 </button>
@@ -1372,18 +1396,7 @@ function App() {
                 <button
                   className="setup-btn"
                   disabled={installing !== null}
-                  onClick={async () => {
-                    setInstalling("ffmpeg");
-                    try {
-                      await invoke("winget_install", { id: "Gyan.FFmpeg" });
-                      setSetup(await invoke("setup_status"));
-                      await refreshClips();
-                    } catch (e) {
-                      setError(String(e));
-                    } finally {
-                      setInstalling(null);
-                    }
-                  }}
+                  onClick={() => installTool("ffmpeg", "Gyan.FFmpeg")}
                 >
                   {installing === "ffmpeg" ? "installing…" : "Install ffmpeg"}
                 </button>
@@ -1483,10 +1496,10 @@ function App() {
               </div>
             ) : (
               <div className="grid">
-                {visibleClips.map((c) => (
+                {visibleClips.map((c, i) => (
                   <div
                     key={c.path}
-                    className="card"
+                    className={`card ${i === focusIdx ? "kb-focus" : ""}`}
                     // Shift-click anywhere on the card range-selects instead of
                     // opening; mousedown guard stops the browser text-select.
                     onMouseDown={(e) => e.shiftKey && e.preventDefault()}
@@ -1550,7 +1563,8 @@ function App() {
                           }}
                         >
                           {montageSel.has(c.path) ? (
-                            <CheckCircle size={17} weight="fill" />
+                            // Number = cut position in the montage.
+                            <span className="sel-num">{[...montageSel].indexOf(c.path) + 1}</span>
                           ) : (
                             <Circle size={17} />
                           )}
@@ -1776,6 +1790,7 @@ function App() {
               {duration > 0 && (
                 <div className="multitrack">
                   <div className="mt-labels">
+                    <div className="mt-ruler-spacer" />
                     <div className="mt-label mt-vid-label">
                       <FilmSlate size={14} weight="fill" />
                       video
@@ -1820,6 +1835,13 @@ function App() {
                     onPointerMove={onTimelineMove}
                     onPointerUp={onTimelineUp}
                   >
+                    <div className="mt-ruler">
+                      {rulerTicks(duration).map((t) => (
+                        <span key={t} className="mt-tick" style={{ left: `${(t / duration) * 100}%` }}>
+                          {formatDuration(t)}
+                        </span>
+                      ))}
+                    </div>
                     <div className="mt-lane mt-vid">
                       {thumbs[selected.path] && (
                         <img src={convertFileSrc(thumbs[selected.path].thumb)} alt="" draggable={false} />
@@ -1932,869 +1954,87 @@ function App() {
         )}
 
       {showAppPicker && (
-        <div
-          className="modal-backdrop"
-          style={{ zIndex: 200 }}
-          onClick={() => setShowAppPicker(false)}
-        >
-          <div className="modal app-picker" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <GameController size={19} color="#7f9bff" weight="fill" />
-              <span className="modal-title">Add a game</span>
-              <div className="lib-spacer" />
-              <button className="modal-close" onClick={() => setShowAppPicker(false)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <span className="field-label">
-                Pick a running app to watch as a game. Not listed? Use “Find .exe in folder”.
-              </span>
-              <div className="app-list">
-                {runningApps.length === 0 && (
-                  <span className="field-label">No running windowed apps found.</span>
-                )}
-                {runningApps.map((a) => {
-                  const already = settings.game_exes.some((g) => g.toLowerCase() === a.exe);
-                  return (
-                    <div key={a.exe} className="onboard-check">
-                      <span>
-                        <strong>{a.title}</strong> — <span className="mono">{a.exe}</span>
-                      </span>
-                      <button
-                        className="setup-btn"
-                        disabled={already}
-                        onClick={async () => {
-                          await addGameByExe(a.exe);
-                          setShowAppPicker(false);
-                        }}
-                      >
-                        {already ? "added" : "Add"}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="set-row">
-                <button className="btn-ghost" onClick={openAppPicker}>
-                  <ArrowsClockwise size={15} />
-                  Refresh list
-                </button>
-                <button
-                  className="btn-ghost"
-                  onClick={async () => {
-                    setShowAppPicker(false);
-                    await addGameFromFolder();
-                  }}
-                >
-                  Find .exe in folder…
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AppPickerModal
+          settings={settings}
+          runningApps={runningApps}
+          onAdd={addGameByExe}
+          onRefresh={openAppPicker}
+          onFolder={addGameFromFolder}
+          onClose={() => setShowAppPicker(false)}
+        />
       )}
 
       {vcPicker && (
-        <div className="modal-backdrop" style={{ zIndex: 200 }} onClick={() => setVcPicker(false)}>
-          <div className="modal app-picker" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <GameController size={19} color="#7f9bff" weight="fill" />
-              <span className="modal-title">Pick voice-chat app</span>
-              <div className="lib-spacer" />
-              <button className="modal-close" onClick={() => setVcPicker(false)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <span className="field-label">
-                Choose the app whose audio goes on the voice-chat track.
-              </span>
-              <div className="app-list">
-                {runningApps.length === 0 && (
-                  <span className="field-label">No running windowed apps found.</span>
-                )}
-                {runningApps.map((a) => (
-                  <div key={a.exe} className="onboard-check">
-                    <span>
-                      <strong>{a.title}</strong> — <span className="mono">{a.exe}</span>
-                    </span>
-                    <button
-                      className="setup-btn"
-                      disabled={settings?.vc_exe.toLowerCase() === a.exe}
-                      onClick={async () => {
-                        if (!settings) return;
-                        await saveSettings({ ...settings, vc_exe: a.exe });
-                        setVcPicker(false);
-                        showToast(`Voice-chat audio set to ${a.exe}`);
-                      }}
-                    >
-                      {settings?.vc_exe.toLowerCase() === a.exe ? "current" : "Use"}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
+        <VcPickerModal
+          currentVc={settings.vc_exe}
+          runningApps={runningApps}
+          onPick={async (exe) => {
+            await saveSettings({ ...settings, vc_exe: exe });
+            setVcPicker(false);
+            showToast(`Voice-chat audio set to ${exe}`);
+          }}
+          onClose={() => setVcPicker(false)}
+        />
       )}
 
       {showSettings && (
-        <div className="settings-page">
-            <header className="lib-header">
-              <div className="lib-title">
-                <h1>Settings</h1>
-              </div>
-              <div className="lib-spacer" />
-              <button
-                className="btn-ghost"
-                onClick={() => {
-                  setOnboardStep(0);
-                  setShowOnboarding(true);
-                }}
-              >
-                <BookOpen size={15} />
-                Tutorial
-              </button>
-              <button className="btn-ghost reset-btn" disabled={resetting} onClick={resetSettings}>
-                <ArrowCounterClockwise size={14} />
-                {resetting ? "resetting…" : "Reset to defaults"}
-              </button>
-            </header>
-            <div className="settings-body">
-              <section className="set-group">
-                <div className="set-head">
-                  <div className="set-head-icon"><FilmSlate size={16} weight="fill" /></div>
-                  <div className="set-head-text">
-                    <span className="set-head-title">Capture</span>
-                    <span className="set-head-desc">Buffer length and recording quality</span>
-                  </div>
-                </div>
-                <label className="set-col">
-                  <span className="field-label">
-                    Clip length (seconds) — how far back a save reaches. Longer = more RAM while
-                    a game runs (~{Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB at
-                    current setting). Applies to OBS automatically.
-                  </span>
-                  <input
-                    className="mono"
-                    type="number"
-                    min={15}
-                    max={900}
-                    value={settings.replay_seconds}
-                    onChange={(e) =>
-                      setSettings({ ...settings, replay_seconds: Number(e.target.value) })
-                    }
-                    onBlur={() =>
-                      saveSettings({
-                        ...settings,
-                        replay_seconds: Math.min(900, Math.max(15, settings.replay_seconds || 15)),
-                      })
-                    }
-                  />
-                </label>
-                <div className="set-row">
-                  <label className="set-col">
-                    <span className="field-label">FPS</span>
-                    <select
-                      className="audio-select wide"
-                      value={settings.video_fps}
-                      onChange={(e) => saveSettings({ ...settings, video_fps: Number(e.target.value) })}
-                    >
-                      <option value={30}>30</option>
-                      <option value={60}>60</option>
-                      <option value={120}>120</option>
-                    </select>
-                  </label>
-                  <label className="set-col">
-                    <span className="field-label">Resolution</span>
-                    <select
-                      className="audio-select wide"
-                      value={settings.video_height}
-                      onChange={(e) => saveSettings({ ...settings, video_height: Number(e.target.value) })}
-                    >
-                      <option value={0}>Native</option>
-                      <option value={1440}>1440p</option>
-                      <option value={1080}>1080p</option>
-                      <option value={720}>720p</option>
-                    </select>
-                  </label>
-                  <label className="set-col">
-                    <span className="field-label">Bitrate (Mbps)</span>
-                    <input
-                      className="mono"
-                      type="number"
-                      min={4}
-                      max={100}
-                      value={settings.bitrate_mbps}
-                      onChange={(e) =>
-                        saveSettings({
-                          ...settings,
-                          bitrate_mbps: Math.min(100, Math.max(4, Number(e.target.value) || 4)),
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="set-col">
-                    <span className="field-label">Encoder</span>
-                    <select
-                      className="audio-select wide"
-                      value={settings.encoder_pref}
-                      onChange={(e) => saveSettings({ ...settings, encoder_pref: e.target.value })}
-                    >
-                      <option value="auto">Auto (best)</option>
-                      <option value="av1">AV1</option>
-                      <option value="hevc">HEVC</option>
-                      <option value="h264">H264</option>
-                    </select>
-                  </label>
-                </div>
-                <span className="field-label">
-                  FPS / resolution / encoder apply within seconds. Bitrate applies on the next OBS
-                  restart.
-                </span>
-              </section>
-
-              <section className="set-group">
-                <div className="set-head">
-                  <div className="set-head-icon"><Lightning size={16} weight="fill" /></div>
-                  <div className="set-head-text">
-                    <span className="set-head-title">Automation</span>
-                    <span className="set-head-desc">Hands-free recording and clipping</span>
-                  </div>
-                </div>
-                <div className="toggle-card">
-                  <div className="toggle-text">
-                    <span className="toggle-title">Auto buffer</span>
-                    <span className="toggle-desc">Arm when a game runs, disarm when it exits</span>
-                  </div>
-                  <button
-                    className={`switch ${settings.auto_manage_buffer ? "on" : ""}`}
-                    onClick={() => saveSettings({ ...settings, auto_manage_buffer: !settings.auto_manage_buffer })}
-                  >
-                    <span className="knob" />
-                  </button>
-                </div>
-                <div className="toggle-card">
-                  <div className="toggle-text">
-                    <span className="toggle-title">Auto-launch OBS</span>
-                    <span className="toggle-desc">Start OBS hidden when it is not running</span>
-                  </div>
-                  <button
-                    className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
-                    onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
-                  >
-                    <span className="knob" />
-                  </button>
-                </div>
-                <div className="toggle-card">
-                  <div className="toggle-text">
-                    <span className="toggle-title">Auto-clip kills</span>
-                    <span className="toggle-desc">
-                      CS2 / Dota 2 / League only (official event APIs). Saves a clip a few seconds
-                      after your kill — multikills land in one clip. Other games: hotkey.
-                    </span>
-                  </div>
-                  <button
-                    className={`switch ${settings.auto_clip ? "on" : ""}`}
-                    onClick={() => saveSettings({ ...settings, auto_clip: !settings.auto_clip })}
-                  >
-                    <span className="knob" />
-                  </button>
-                </div>
-              </section>
-
-              <section className="set-group">
-                <div className="set-head">
-                  <div className="set-head-icon"><Keyboard size={16} weight="fill" /></div>
-                  <div className="set-head-text">
-                    <span className="set-head-title">Hotkeys</span>
-                    <span className="set-head-desc">Global — they work while a game has focus</span>
-                  </div>
-                </div>
-                <div className="set-row">
-                  <label className="set-col">
-                    <span className="field-label">Save clip — click, then press keys</span>
-                    <input
-                      className="mono hotkey-capture"
-                      value={hkSave}
-                      placeholder="press a combo…"
-                      readOnly
-                      onKeyDown={(e) => {
-                        const combo = captureHotkey(e);
-                        if (combo) {
-                          setHkSave(combo);
-                          applyHotkeys(combo, hkShort);
-                        }
-                      }}
-                    />
-                  </label>
-                  <label className="set-col">
-                    <span className="field-label">Short clip — click, then press keys</span>
-                    <input
-                      className="mono hotkey-capture"
-                      value={hkShort}
-                      placeholder="press a combo…"
-                      readOnly
-                      onKeyDown={(e) => {
-                        const combo = captureHotkey(e);
-                        if (combo) {
-                          setHkShort(combo);
-                          applyHotkeys(hkSave, combo);
-                        }
-                      }}
-                    />
-                  </label>
-                  <label className="set-col short-len">
-                    <span className="field-label">Short length</span>
-                    <input
-                      className="mono"
-                      type="number"
-                      min={5}
-                      value={settings.short_clip_seconds}
-                      onChange={(e) => saveSettings({ ...settings, short_clip_seconds: Number(e.target.value) })}
-                    />
-                  </label>
-                </div>
-              </section>
-
-              <section className="set-group">
-                <div className="set-head">
-                  <div className="set-head-icon"><Waveform size={16} weight="fill" /></div>
-                  <div className="set-head-text">
-                    <span className="set-head-title">Split audio</span>
-                    <span className="set-head-desc">Five tracks per clip — game, voice, desktop, mic, mix</span>
-                  </div>
-                </div>
-                <span className="field-label">
-                  Clips record 5 audio tracks — full mix, game, voice chat, desktop, mic — so
-                  exports can isolate any of them. Voice-chat and game audio are captured per-app;
-                  set your voice app's .exe below (game audio follows the running game).
-                </span>
-                <label className="set-col">
-                  <span className="field-label">Voice-chat app (.exe)</span>
-                  <div className="set-row">
-                    <input
-                      className="mono"
-                      value={settings.vc_exe}
-                      onChange={(e) => setSettings({ ...settings, vc_exe: e.target.value })}
-                      onBlur={() => saveSettings(settings)}
-                      placeholder="discord.exe"
-                    />
-                    <button
-                      className="btn-ghost"
-                      onClick={async () => {
-                        try {
-                          const apps = await invoke<{ exe: string; title: string }[]>(
-                            "list_running_apps"
-                          );
-                          setRunningApps(apps);
-                          setVcPicker(true);
-                        } catch (e) {
-                          setError(String(e));
-                        }
-                      }}
-                    >
-                      Pick app
-                    </button>
-                  </div>
-                </label>
-              </section>
-
-              <section className="set-group">
-                <div className="set-head">
-                  <div className="set-head-icon"><GameController size={16} weight="fill" /></div>
-                  <div className="set-head-text">
-                    <span className="set-head-title">Games watched</span>
-                    <span className="set-head-desc">What arms the buffer, and how each game is captured</span>
-                  </div>
-                </div>
-                <textarea
-                  className="mono"
-                  rows={5}
-                  value={settings.game_exes.join("\n")}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      game_exes: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean),
-                    })
-                  }
-                  onBlur={() => invoke("save_settings", { settings })}
-                />
-                <div className="set-row">
-                  <button className="btn-ghost apply-btn" onClick={openAppPicker}>
-                    <GameController size={15} />
-                    Add from running apps
-                  </button>
-                  <button className="btn-ghost" onClick={addGameFromFolder}>
-                    Find .exe in folder…
-                  </button>
-                </div>
-                <span className="field-label">
-                  A universal capture hook catches most fullscreen games automatically, but it
-                  misses plenty (anti-cheat, borderless, some exclusive-fullscreen titles). If a
-                  game's clips come out black, add a dedicated source (matched by its .exe, so it
-                  works whether or not the game is open). Test confirms the source is live in OBS;
-                  if it's active but clips are still black, switch the capture type and re-add.
-                </span>
-                {settings.game_exes.map((exe) => {
-                  const source = gameSources.find((g) => g.exe === exe);
-                  const isRunning = sup?.game?.toLowerCase() === exe.toLowerCase();
-                  const test = sourceTest[exe];
-                  const kind = kindChoice[exe] ?? source?.kind ?? "window_capture";
-                  return (
-                    <div key={exe} className="onboard-check">
-                      {source ? (
-                        <CheckCircle size={16} weight="fill" color="#40dd80" />
-                      ) : (
-                        <Circle size={16} color="#767a85" />
-                      )}
-                      <span>
-                        {exe} —{" "}
-                        {source
-                          ? `dedicated ${source.kind === "window_capture" ? "window capture" : "game capture"}`
-                          : "universal capture only"}
-                        {test === "error" && " — test failed"}
-                        {test && test !== "error" && (test.capturing ? " — active in OBS ✓" : " — not active ✗")}
-                      </span>
-                      <select
-                        className="audio-select"
-                        value={kind}
-                        disabled={sourceBusy !== null}
-                        onChange={(e) => setKindChoice((k) => ({ ...k, [exe]: e.target.value }))}
-                      >
-                        <option value="window_capture">Window Capture</option>
-                        <option value="game_capture">Game Capture</option>
-                      </select>
-                      <button
-                        className="setup-btn"
-                        disabled={sourceBusy !== null}
-                        onClick={() => addGameSource(exe, kind)}
-                      >
-                        {sourceBusy === exe ? "working…" : source ? "Redo" : "Add source"}
-                      </button>
-                      {source && (
-                        <button
-                          className="setup-btn"
-                          disabled={sourceBusy !== null}
-                          title={isRunning ? "" : "Launch the game first for a meaningful result"}
-                          onClick={() => testGameSource(exe)}
-                        >
-                          Test
-                        </button>
-                      )}
-                      <button
-                        className="row-remove"
-                        disabled={sourceBusy !== null}
-                        title="Remove & never auto-add again"
-                        onClick={() => removeGame(exe)}
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  );
-                })}
-                {settings.game_blacklist.length > 0 && (
-                  <>
-                    <span className="field-label">Blacklisted (won't auto-add):</span>
-                    <div className="blacklist-chips">
-                      {settings.game_blacklist.map((g) => (
-                        <button
-                          key={g}
-                          className="chip"
-                          title="Remove from blacklist"
-                          onClick={() =>
-                            saveSettings({
-                              ...settings,
-                              game_blacklist: settings.game_blacklist.filter((x) => x !== g),
-                            })
-                          }
-                        >
-                          {g} <X size={11} />
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </section>
-
-              <section className="set-group">
-                <div className="set-head">
-                  <div className="set-head-icon"><HardDrives size={16} weight="fill" /></div>
-                  <div className="set-head-text">
-                    <span className="set-head-title">Storage</span>
-                    <span className="set-head-desc">Where clips live and how much space they may take</span>
-                  </div>
-                </div>
-                <div className="set-row">
-                  <input
-                    className="mono"
-                    value={settings.clips_dir}
-                    onChange={(e) => setSettings({ ...settings, clips_dir: e.target.value })}
-                    onBlur={() => applyClipsDir(settings.clips_dir)}
-                  />
-                  <button
-                    className="btn-ghost"
-                    onClick={async () => {
-                      const picked = await openDialog({
-                        directory: true,
-                        defaultPath: settings.clips_dir,
-                      });
-                      if (typeof picked === "string") {
-                        setSettings({ ...settings, clips_dir: picked });
-                        await applyClipsDir(picked);
-                      }
-                    }}
-                  >
-                    Browse
-                  </button>
-                </div>
-                <label className="set-col">
-                  <span className="field-label">
-                    Max storage (GB) — oldest non-favorites auto-recycled, 0 = off
-                  </span>
-                  <input
-                    className="mono"
-                    type="number"
-                    min={0}
-                    value={settings.max_storage_gb}
-                    onChange={(e) => saveSettings({ ...settings, max_storage_gb: Number(e.target.value) })}
-                  />
-                </label>
-              </section>
-
-              <details className="set-group advanced">
-                <summary>
-                  <div className="set-head">
-                    <div className="set-head-icon"><Plugs size={16} weight="fill" /></div>
-                    <div className="set-head-text">
-                      <span className="set-head-title">Advanced connection</span>
-                      <span className="set-head-desc">
-                        Auto-configured — only for remote or portable OBS setups
-                      </span>
-                    </div>
-                  </div>
-                </summary>
-                <div className="set-row">
-                  <input
-                    className="mono"
-                    value={settings.host}
-                    onChange={(e) => setSettings({ ...settings, host: e.target.value })}
-                    placeholder="host"
-                  />
-                  <input
-                    className="mono port"
-                    type="number"
-                    value={settings.port}
-                    onChange={(e) => setSettings({ ...settings, port: Number(e.target.value) })}
-                  />
-                </div>
-                <input
-                  type="password"
-                  value={settings.password ?? ""}
-                  onChange={(e) => setSettings({ ...settings, password: e.target.value })}
-                  placeholder="obs-websocket password (auto-detected normally)"
-                />
-                <div className="set-row">
-                  <input
-                    className="mono"
-                    value={settings.obs_path}
-                    onChange={(e) => setSettings({ ...settings, obs_path: e.target.value })}
-                    onBlur={() => invoke("save_settings", { settings })}
-                    placeholder="obs64.exe path (auto-detected normally)"
-                  />
-                  <button
-                    className="btn-ghost"
-                    onClick={async () => {
-                      const picked = await openDialog({
-                        defaultPath: settings.obs_path,
-                        filters: [{ name: "OBS executable", extensions: ["exe"] }],
-                      });
-                      if (typeof picked === "string") {
-                        const next = { ...settings, obs_path: picked };
-                        setSettings(next);
-                        await invoke("save_settings", { settings: next });
-                      }
-                    }}
-                  >
-                    Browse
-                  </button>
-                </div>
-                <button className="btn-ghost apply-btn" onClick={() => connect(settings)} disabled={connecting}>
-                  {connecting ? "connecting…" : "Apply & connect"}
-                </button>
-              </details>
-            </div>
-        </div>
+        <SettingsPage
+          settings={settings}
+          setSettings={setSettings}
+          saveSettings={saveSettings}
+          applyClipsDir={applyClipsDir}
+          resetSettings={resetSettings}
+          resetting={resetting}
+          hkSave={hkSave}
+          hkShort={hkShort}
+          setHkSave={setHkSave}
+          setHkShort={setHkShort}
+          applyHotkeys={applyHotkeys}
+          gameSources={gameSources}
+          sourceBusy={sourceBusy}
+          sourceTest={sourceTest}
+          kindChoice={kindChoice}
+          setKindChoice={setKindChoice}
+          addGameSource={addGameSource}
+          testGameSource={testGameSource}
+          removeGame={removeGame}
+          openAppPicker={openAppPicker}
+          addGameFromFolder={addGameFromFolder}
+          sup={sup}
+          connect={connect}
+          connecting={connecting}
+          onTutorial={() => {
+            setOnboardStep(0);
+            setShowOnboarding(true);
+          }}
+          onPickVc={async () => {
+            try {
+              setRunningApps(await invoke<RunningApp[]>("list_running_apps"));
+              setVcPicker(true);
+            } catch (e) {
+              setError(String(e));
+            }
+          }}
+        />
       )}
       </main>
 
       {showOnboarding && (
-        <div className="modal-backdrop" onClick={() => setShowOnboarding(false)}>
-          <div className="modal onboarding-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <BookOpen size={19} color="#7f9bff" weight="fill" />
-              <span className="modal-title">
-                {onboardStep === 0 && "Welcome to ClipForge"}
-                {onboardStep === 1 && "One-time setup"}
-                {onboardStep === 2 && "Capture settings"}
-                {onboardStep === 3 && "Using ClipForge"}
-                {onboardStep === 4 && "You're all set"}
-              </span>
-              <div className="lib-spacer" />
-              <span className="field-label">{onboardStep + 1} / 5</span>
-              <button className="modal-close" onClick={() => setShowOnboarding(false)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="modal-body onboard-body">
-              {onboardStep === 0 && (
-                <section className="set-group">
-                  <div className="onboard-hero">
-                    <div className="brand-mark onboard-hero-mark">
-                      <FilmSlate size={24} weight="fill" color="#fff" />
-                    </div>
-                    <span className="onboard-hero-title">Clip first, record never</span>
-                    <span className="onboard-hero-sub">
-                      Your gameplay is always buffered — you only keep the good parts
-                    </span>
-                  </div>
-                  <p className="onboard-copy">
-                    ClipForge keeps a rolling buffer of your gameplay through OBS. Hit a hotkey (or
-                    let auto-clip catch a kill) and the last stretch of footage saves as a clip —
-                    no manual recording, no huge files piling up.
-                  </p>
-                  <p className="onboard-copy">
-                    Every clip records five audio tracks (full mix, game, voice chat, desktop,
-                    mic) so you can mute your friends — or yourself — at export time.
-                  </p>
-                  <p className="onboard-copy">
-                    This walkthrough covers setup, capture settings, and how to edit + share a
-                    clip. Takes under a minute.
-                  </p>
-                </section>
-              )}
-
-              {onboardStep === 1 && (
-                <section className="set-group">
-                  <span className="set-label">REQUIRED SOFTWARE</span>
-                  <div className="onboard-check">
-                    {setup?.obs_installed ? (
-                      <CheckCircle size={16} weight="fill" color="#40dd80" />
-                    ) : (
-                      <Circle size={16} color="#767a85" />
-                    )}
-                    <span>OBS Studio {setup?.obs_installed ? "— installed" : "— required to record"}</span>
-                    {!setup?.obs_installed && (
-                      <button
-                        className="setup-btn"
-                        disabled={installing !== null}
-                        onClick={async () => {
-                          setInstalling("OBS Studio");
-                          try {
-                            await invoke("winget_install", { id: "OBSProject.OBSStudio" });
-                            setSetup(await invoke("setup_status"));
-                          } catch (e) {
-                            setError(String(e));
-                          } finally {
-                            setInstalling(null);
-                          }
-                        }}
-                      >
-                        {installing === "OBS Studio" ? "installing…" : "Install"}
-                      </button>
-                    )}
-                  </div>
-                  <div className="onboard-check">
-                    {setup?.ffmpeg_installed ? (
-                      <CheckCircle size={16} weight="fill" color="#40dd80" />
-                    ) : (
-                      <Circle size={16} color="#767a85" />
-                    )}
-                    <span>
-                      ffmpeg {setup?.ffmpeg_installed ? "— installed" : "— needed for trims & exports"}
-                    </span>
-                    {!setup?.ffmpeg_installed && (
-                      <button
-                        className="setup-btn"
-                        disabled={installing !== null}
-                        onClick={async () => {
-                          setInstalling("ffmpeg");
-                          try {
-                            await invoke("winget_install", { id: "Gyan.FFmpeg" });
-                            setSetup(await invoke("setup_status"));
-                            await refreshClips();
-                          } catch (e) {
-                            setError(String(e));
-                          } finally {
-                            setInstalling(null);
-                          }
-                        }}
-                      >
-                        {installing === "ffmpeg" ? "installing…" : "Install"}
-                      </button>
-                    )}
-                  </div>
-                  <div className="onboard-check">
-                    {status.connected ? (
-                      <CheckCircle size={16} weight="fill" color="#40dd80" />
-                    ) : (
-                      <Circle size={16} color="#767a85" />
-                    )}
-                    <span>
-                      OBS connection{" "}
-                      {status.connected
-                        ? `— ${status.obs_version ?? "connected"}`
-                        : "— connects automatically once OBS is running"}
-                    </span>
-                    {!status.connected && setup?.obs_installed && (
-                      <button className="setup-btn" disabled={connecting} onClick={() => connect(settings)}>
-                        {connecting ? "connecting…" : "Connect"}
-                      </button>
-                    )}
-                  </div>
-                </section>
-              )}
-
-              {onboardStep === 2 && (
-                <section className="set-group">
-                  <p className="onboard-copy">
-                    Clip length controls how far back a save reaches — OBS keeps this much
-                    footage buffered in RAM at all times.
-                  </p>
-                  <label className="set-col">
-                    <span className="field-label">
-                      Clip length (seconds) — ~
-                      {Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB RAM at current
-                      setting
-                    </span>
-                    <input
-                      className="mono"
-                      type="number"
-                      min={15}
-                      max={900}
-                      value={settings.replay_seconds}
-                      onChange={(e) =>
-                        setSettings({ ...settings, replay_seconds: Number(e.target.value) })
-                      }
-                      onBlur={() =>
-                        saveSettings({
-                          ...settings,
-                          replay_seconds: Math.min(900, Math.max(15, settings.replay_seconds || 15)),
-                        })
-                      }
-                    />
-                  </label>
-                  <div className="toggle-card">
-                    <div className="toggle-text">
-                      <span className="toggle-title">Auto-launch OBS</span>
-                      <span className="toggle-desc">Start OBS hidden when it isn't running</span>
-                    </div>
-                    <button
-                      className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
-                      onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
-                    >
-                      <span className="knob" />
-                    </button>
-                  </div>
-                  <div className="toggle-card">
-                    <div className="toggle-text">
-                      <span className="toggle-title">Auto buffer</span>
-                      <span className="toggle-desc">Arm when a game runs, disarm when it exits</span>
-                    </div>
-                    <button
-                      className={`switch ${settings.auto_manage_buffer ? "on" : ""}`}
-                      onClick={() =>
-                        saveSettings({ ...settings, auto_manage_buffer: !settings.auto_manage_buffer })
-                      }
-                    >
-                      <span className="knob" />
-                    </button>
-                  </div>
-                  <span className="field-label">
-                    More capture options (fps, bitrate, encoder, hotkeys) live in Settings.
-                  </span>
-                </section>
-              )}
-
-              {onboardStep === 3 && (
-                <section className="set-group">
-                  <p className="onboard-copy">
-                    Once a clip saves, it shows up in your Library — hover a card to preview it,
-                    click to open the editor.
-                  </p>
-                  <ul className="onboard-list">
-                    <li>
-                      The editor shows the video plus every audio track with its own waveform —
-                      checkboxes pick which tracks export, sliders set their volume.
-                    </li>
-                    <li>
-                      Drag anywhere on the timeline to scrub. <kbd>space</kbd> plays/pauses,{" "}
-                      <kbd>←</kbd>
-                      <kbd>→</kbd> steps a frame, <kbd>shift</kbd>+arrows steps 1s.
-                    </li>
-                    <li>
-                      Drag the handles (or <kbd>[</kbd> / <kbd>]</kbd>) to set the trim range —
-                      it's remembered per clip.
-                    </li>
-                    <li>
-                      Auto-clipped kills show as markers on the timeline — click one to jump
-                      straight to the action.
-                    </li>
-                    <li>
-                      <strong>Export for Discord</strong> renders a size-budgeted MP4 straight to
-                      your clipboard; GIF and frame-grab buttons sit next to it.
-                    </li>
-                    <li>
-                      Select multiple clips in the Library and hit <strong>Montage</strong> to
-                      stitch them — each clip contributes its saved trim.
-                    </li>
-                    <li>
-                      Star a clip to keep it exempt from auto-cleanup; use{" "}
-                      <strong>Scan for black</strong> to catch dead recordings. Capture quality,
-                      hotkeys and storage live in <strong>Settings</strong>.
-                    </li>
-                  </ul>
-                </section>
-              )}
-
-              {onboardStep === 4 && (
-                <section className="set-group">
-                  <p className="onboard-copy">
-                    That's everything. Play a game, save a clip, and it lands in your Library
-                    ready to trim and share. Revisit this walkthrough anytime from the{" "}
-                    <strong>Tutorial</strong> button in the sidebar.
-                  </p>
-                </section>
-              )}
-            </div>
-            <div className="onboard-footer">
-              <div className="onboard-dots">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <span key={i} className={`onboard-dot ${i === onboardStep ? "active" : ""}`} />
-                ))}
-              </div>
-              <div className="onboard-actions">
-                {onboardStep > 0 && (
-                  <button className="btn-ghost" onClick={() => setOnboardStep((s) => s - 1)}>
-                    <ArrowLeft size={15} />
-                    Back
-                  </button>
-                )}
-                {onboardStep < 4 ? (
-                  <button className="btn-ghost apply-btn" onClick={() => setOnboardStep((s) => s + 1)}>
-                    Next
-                    <ArrowRight size={15} />
-                  </button>
-                ) : (
-                  <button className="btn-ghost apply-btn" onClick={finishOnboarding}>
-                    Done
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <OnboardingModal
+          step={onboardStep}
+          setStep={setOnboardStep}
+          setup={setup}
+          status={status}
+          settings={settings}
+          setSettings={setSettings}
+          saveSettings={saveSettings}
+          connecting={connecting}
+          connect={connect}
+          installing={installing}
+          installTool={installTool}
+          onClose={() => setShowOnboarding(false)}
+          onFinish={finishOnboarding}
+        />
       )}
       </div>
     </div>

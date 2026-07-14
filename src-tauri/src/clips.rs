@@ -687,44 +687,64 @@ pub async fn gen_thumbnails(
     let thumbs_dir = PathBuf::from(&dir).join(".thumbs");
     std::fs::create_dir_all(&thumbs_dir).map_err(|e| e.to_string())?;
 
+    // Per-clip work (duration probe + thumbnail render) runs in parallel
+    // batches — a cold library of N clips costs ~N/8 probe round-trips
+    // instead of N. Existing thumbnails and cached durations short-circuit,
+    // so a warm refresh spawns almost nothing.
+    let clips = list_clips(dir.clone())?;
     let mut map = std::collections::HashMap::new();
-    for clip in list_clips(dir.clone())? {
-        let duration = clip_duration(&ffmpeg, &clip.path).unwrap_or(0.0);
-        let thumb = thumbs_dir.join(format!(
-            "{}.jpg",
-            PathBuf::from(&clip.name)
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-        ));
-        if !thumb.exists() {
-            let result = hidden_cmd(&ffmpeg)
-                .args([
-                    "-hide_banner",
-                    "-y",
-                    "-ss",
-                    &format!("{:.2}", duration / 2.0),
-                    "-i",
-                    &clip.path,
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    "scale=320:-1",
-                ])
-                .arg(&thumb)
-                .output()
-                .map_err(|e| e.to_string())?;
-            if !result.status.success() {
-                continue;
+    for batch in clips.chunks(8) {
+        let handles: Vec<_> = batch
+            .iter()
+            .map(|clip| {
+                let ffmpeg = ffmpeg.clone();
+                let path = clip.path.clone();
+                let thumb = thumbs_dir.join(format!(
+                    "{}.jpg",
+                    PathBuf::from(&clip.name)
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                ));
+                std::thread::spawn(move || {
+                    let duration = clip_duration(&ffmpeg, &path).unwrap_or(0.0);
+                    if !thumb.exists() {
+                        let ok = hidden_cmd(&ffmpeg)
+                            .args([
+                                "-hide_banner",
+                                "-y",
+                                "-ss",
+                                &format!("{:.2}", duration / 2.0),
+                                "-i",
+                                &path,
+                                "-frames:v",
+                                "1",
+                                "-vf",
+                                "scale=320:-1",
+                            ])
+                            .arg(&thumb)
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if !ok {
+                            return None;
+                        }
+                    }
+                    Some((
+                        path,
+                        ThumbInfo {
+                            thumb: thumb.to_string_lossy().replace('\\', "/"),
+                            duration,
+                        },
+                    ))
+                })
+            })
+            .collect();
+        for handle in handles {
+            if let Ok(Some((path, info))) = handle.join() {
+                map.insert(path, info);
             }
         }
-        map.insert(
-            clip.path,
-            ThumbInfo {
-                thumb: thumb.to_string_lossy().replace('\\', "/"),
-                duration,
-            },
-        );
     }
     Ok(map)
 }
@@ -1047,6 +1067,16 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<S
     }
     filter.push_str(&format!("concat=n={}:v=1:a=1[outv][outa]", inputs.len()));
 
+    // Same hardware encoder the Discord export uses — 3-5x faster than
+    // CPU x264 on a long montage. Quality-targeted (not fixed bitrate) so
+    // output size tracks the content; each encoder spells that differently.
+    let encoder = best_h264_encoder(&ffmpeg);
+    let quality_args: &[&str] = match encoder.as_str() {
+        "h264_nvenc" => &["-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"],
+        "h264_qsv" => &["-preset", "veryfast", "-global_quality", "21"],
+        "h264_amf" => &["-quality", "balanced", "-rc", "cqp", "-qp_i", "21", "-qp_p", "23"],
+        _ => &["-preset", "veryfast", "-crf", "21"],
+    };
     cmd.args([
         "-filter_complex",
         &filter,
@@ -1054,16 +1084,11 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<S
         "[outv]",
         "-map",
         "[outa]",
-        // Quality-based (CRF) x264 instead of a fixed 16 Mbps: the old
-        // constant bitrate ballooned montages well past the combined size
-        // of their source clips. CRF 21 tracks the content and keeps the
-        // output near (usually under) the inputs' total size.
         "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "21",
+        &encoder,
+    ]);
+    cmd.args(quality_args);
+    cmd.args([
         "-pix_fmt",
         "yuv420p",
         "-c:a",
