@@ -3,6 +3,7 @@ import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, ope
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowLeft,
+  ArrowRight,
   ArrowsClockwise,
   Camera,
   CheckCircle,
@@ -31,6 +32,7 @@ import {
   Trash,
   Warning,
   Waveform,
+  X,
 } from "@phosphor-icons/react";
 import { AppPickerModal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
 import type {
@@ -227,6 +229,11 @@ function App() {
   });
   // Card focused by keyboard navigation; -1 = none.
   const [focusIdx, setFocusIdx] = useState(-1);
+  // Back-to-back preview of the selection: queue of paths + position.
+  const [previewQueue, setPreviewQueue] = useState<string[] | null>(null);
+  const [previewQIdx, setPreviewQIdx] = useState(0);
+  // Index being dragged in the selection-reorder strip.
+  const dragFrom = useRef(-1);
   const [hoverPath, setHoverPath] = useState<string | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [diskFree, setDiskFree] = useState<number | null>(null);
@@ -348,10 +355,9 @@ function App() {
 
   useEffect(() => {
     const unlisteners = [
-      listen<{ path: string }>("clip-saved", () => {
-        showToast("Clip saved");
-        setTimeout(() => refreshClips(), 500);
-      }),
+      // Refresh comes from the dir-watcher's clips-changed event — a second
+      // timer here just raced it into double refreshes.
+      listen<{ path: string }>("clip-saved", () => showToast("Clip saved")),
       listen<boolean>("replay-buffer-state", (e) => {
         setStatus((s) => ({ ...s, replay_buffer_active: e.payload }));
       }),
@@ -764,6 +770,26 @@ function App() {
     selAnchor.current = clip.path;
   }
 
+  // Move one entry of the (insertion-ordered) selection Set — the montage
+  // cut order — from one position to another.
+  function reorderSel(from: number, to: number) {
+    if (from < 0 || to < 0 || from === to) return;
+    setMontageSel((prev) => {
+      const arr = [...prev];
+      const [moved] = arr.splice(from, 1);
+      arr.splice(to, 0, moved);
+      return new Set(arr);
+    });
+  }
+
+  function queueNext() {
+    setPreviewQIdx((i) => {
+      if (previewQueue && i + 1 < previewQueue.length) return i + 1;
+      setPreviewQueue(null);
+      return 0;
+    });
+  }
+
   async function exportMontage() {
     setMontaging(true);
     setError(null);
@@ -1022,6 +1048,15 @@ function App() {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      // Queue player owns the keys while it's open.
+      if (previewQueue) {
+        if (e.key === "Escape") setPreviewQueue(null);
+        else if (e.key === "ArrowRight") queueNext();
+        else if (e.key === "ArrowLeft") setPreviewQIdx((i) => Math.max(0, i - 1));
+        else return;
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Escape") {
         if (showSettings) setShowSettings(false);
         else if (focusIdx !== -1) setFocusIdx(-1);
@@ -1243,7 +1278,9 @@ function App() {
       (c) =>
         (gameFilter === "all" ||
           (gameFilter === "favorites" ? favorites.includes(c.path) : gameOf(c) === gameFilter)) &&
-        (search === "" || c.name.toLowerCase().includes(search.toLowerCase()))
+        (search === "" ||
+          c.name.toLowerCase().includes(search.toLowerCase()) ||
+          gameOf(c).toLowerCase().includes(search.toLowerCase()))
     )
     .sort((a, b) => {
       switch (sortBy) {
@@ -1669,35 +1706,78 @@ function App() {
 
             {montageSel.size >= 1 && (
               <div className="sel-bar">
-                <span className="sel-count">
-                  {montageSel.size} selected
-                  {[...montageSel].some((p) => trimRanges[p]) && (
-                    <span className="sel-trim-note">
-                      <Scissors size={11} weight="bold" />
-                      trims apply
-                    </span>
-                  )}
-                </span>
                 {montageSel.size >= 2 && (
-                  <button
-                    className="btn-discord"
-                    onClick={exportMontage}
-                    disabled={montaging}
-                    title="Stitch the selected clips into one video — clips with a saved trim (scissors badge) contribute only that cut"
-                  >
-                    <FilmStrip size={15} weight="fill" />
-                    {montaging
-                      ? `rendering… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
-                      : `Montage ${montageSel.size}`}
-                  </button>
+                  <div className="sel-strip" title="Montage cut order — drag to reorder">
+                    {[...montageSel].map((p, i) => {
+                      const c = clips.find((x) => x.path === p);
+                      if (!c) return null;
+                      return (
+                        <div
+                          key={p}
+                          className="sel-strip-item"
+                          title={c.name}
+                          draggable
+                          onDragStart={() => (dragFrom.current = i)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => {
+                            reorderSel(dragFrom.current, i);
+                            dragFrom.current = -1;
+                          }}
+                        >
+                          <img
+                            src={convertFileSrc(thumbs[p]?.thumb ?? guessThumb(p))}
+                            alt=""
+                            draggable={false}
+                            onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+                          />
+                          <span className="sel-strip-num">{i + 1}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
-                <button className="btn-danger" onClick={deleteSelected} disabled={montaging}>
-                  <Trash size={15} />
-                  Delete {montageSel.size}
-                </button>
-                <button className="btn-ghost" onClick={() => setMontageSel(new Set())} title="Esc also clears">
-                  Clear
-                </button>
+                <div className="sel-bar-row">
+                  <span className="sel-count">
+                    {montageSel.size} selected
+                    {[...montageSel].some((p) => trimRanges[p]) && (
+                      <span className="sel-trim-note">
+                        <Scissors size={11} weight="bold" />
+                        trims apply
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    className="btn-ghost"
+                    title="Play the selection back-to-back (with trims) before rendering"
+                    onClick={() => {
+                      setPreviewQIdx(0);
+                      setPreviewQueue([...montageSel]);
+                    }}
+                  >
+                    <Play size={15} weight="fill" />
+                    Preview
+                  </button>
+                  {montageSel.size >= 2 && (
+                    <button
+                      className="btn-discord"
+                      onClick={exportMontage}
+                      disabled={montaging}
+                      title="Stitch the selected clips into one video, in badge order — clips with a saved trim contribute only that cut"
+                    >
+                      <FilmStrip size={15} weight="fill" />
+                      {montaging
+                        ? `rendering… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                        : `Montage ${montageSel.size}`}
+                    </button>
+                  )}
+                  <button className="btn-danger" onClick={deleteSelected} disabled={montaging}>
+                    <Trash size={15} />
+                    Delete {montageSel.size}
+                  </button>
+                  <button className="btn-ghost" onClick={() => setMontageSel(new Set())} title="Esc also clears">
+                    Clear
+                  </button>
+                </div>
               </div>
             )}
           </>
@@ -1984,6 +2064,52 @@ function App() {
             {toast}
           </div>
         )}
+
+      {previewQueue && previewQueue[previewQIdx] && (
+        <div className="modal-backdrop" onClick={() => setPreviewQueue(null)}>
+          <div className="queue-player" onClick={(e) => e.stopPropagation()}>
+            <video
+              key={previewQueue[previewQIdx]}
+              src={convertFileSrc(previewQueue[previewQIdx])}
+              autoPlay
+              controls
+              onLoadedMetadata={(e) => {
+                // Honor the clip's saved trim — start at its in-point…
+                const r = trimRanges[previewQueue[previewQIdx]];
+                if (r) e.currentTarget.currentTime = r[0];
+              }}
+              onTimeUpdate={(e) => {
+                // …and advance at its out-point, like the montage will.
+                const r = trimRanges[previewQueue[previewQIdx]];
+                if (r && e.currentTarget.currentTime >= r[1]) queueNext();
+              }}
+              onEnded={queueNext}
+            />
+            <div className="queue-bar">
+              <span className="queue-count">
+                {previewQIdx + 1} / {previewQueue.length}
+              </span>
+              <span className="queue-name">{previewQueue[previewQIdx].split("/").pop()}</span>
+              <div className="lib-spacer" />
+              <button
+                className="btn-ghost"
+                disabled={previewQIdx === 0}
+                onClick={() => setPreviewQIdx((i) => Math.max(0, i - 1))}
+              >
+                <ArrowLeft size={15} />
+                Prev
+              </button>
+              <button className="btn-ghost" onClick={queueNext}>
+                {previewQIdx + 1 < previewQueue.length ? "Next" : "Done"}
+                <ArrowRight size={15} />
+              </button>
+              <button className="btn-ghost" onClick={() => setPreviewQueue(null)} title="Esc">
+                <X size={15} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAppPicker && (
         <AppPickerModal

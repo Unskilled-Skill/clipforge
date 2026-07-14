@@ -1297,28 +1297,35 @@ pub async fn trim_clip(input: String, start: f64, end: f64) -> Result<String, St
         .file_stem()
         .ok_or("bad input path")?
         .to_string_lossy();
+    // Keep the source container: remuxing an mkv's streams (e.g. AV1) into
+    // mp4 via stream copy can produce a file players choke on.
+    let ext = input_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mp4")
+        .to_lowercase();
     let output = input_path
-        .with_file_name(format!("{stem}_trim_{}-{}.mp4", start as u64, end as u64));
+        .with_file_name(format!("{stem}_trim_{}-{}.{ext}", start as u64, end as u64));
 
-    let result = hidden_cmd(ffmpeg)
-        .args([
-            "-y",
-            "-ss",
-            &start.to_string(),
-            "-to",
-            &end.to_string(),
-            "-i",
-            &input,
-            "-map",
-            "0",
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-        ])
-        .arg(&output)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = hidden_cmd(ffmpeg);
+    cmd.args([
+        "-y",
+        "-ss",
+        &start.to_string(),
+        "-to",
+        &end.to_string(),
+        "-i",
+        &input,
+        "-map",
+        "0",
+        "-c",
+        "copy",
+    ]);
+    if ext == "mp4" {
+        // mp4-muxer-only option; mkv rejects it.
+        cmd.args(["-movflags", "+faststart"]);
+    }
+    let result = cmd.arg(&output).output().map_err(|e| e.to_string())?;
 
     if !result.status.success() {
         return Err(String::from_utf8_lossy(&result.stderr).to_string());

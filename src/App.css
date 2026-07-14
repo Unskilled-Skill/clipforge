@@ -1664,3 +1664,92 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   content-visibility: auto;
   contain-intrinsic-size: auto 236px;
 }
+
+/* ---- selection bar: reorder strip + action row ---- */
+.sel-bar { flex-direction: column; align-items: stretch; gap: 10px; }
+.sel-bar-row { display: flex; align-items: center; gap: 12px; }
+.sel-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  max-width: 560px;
+  padding-bottom: 2px;
+}
+.sel-strip-item {
+  position: relative;
+  width: 64px;
+  height: 36px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0d0e13;
+  border: 1px solid #2a2d38;
+  flex-shrink: 0;
+  cursor: grab;
+}
+.sel-strip-item:active { cursor: grabbing; }
+.sel-strip-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.sel-strip-num {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(107, 139, 255, 0.92);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---- back-to-back selection preview ---- */
+.queue-player {
+  width: min(1080px, 86vw);
+  background: #121319;
+  border: 1px solid #24262f;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+}
+.queue-player video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 68vh;
+  background: #060709;
+  display: block;
+}
+.queue-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid #1e2028;
+}
+.queue-count {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: #9db2ff;
+  background: rgba(76, 110, 245, 0.12);
+  border-radius: 20px;
+  padding: 3px 10px;
+}
+.queue-name {
+  font-size: 12.5px;
+  color: #c3c6cf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
