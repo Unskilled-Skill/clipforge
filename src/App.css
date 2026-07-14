@@ -480,7 +480,11 @@ select:focus,
   border-radius: 12px 12px 0 0;
   overflow: hidden;
 }
+/* Layered: placeholder underneath, still on top, hover-video above that.
+   The still stays visible until the video is actually producing frames. */
 .card-thumb img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -1485,12 +1489,16 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 
 /* ---- hover video preview on library cards ---- */
 .card-thumb video.thumb-preview {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
-  background: #0d0e13;
+  opacity: 0;
+  transition: opacity 0.18s ease;
 }
+.card-thumb video.thumb-preview.ready { opacity: 1; }
 
 /* ---- low disk space banner ---- */
 .setup-bar.disk-bar {

@@ -54,6 +54,15 @@ function rulerTicks(duration: number): number[] {
   return out;
 }
 
+// Thumbnails live at a deterministic path next to the clip, so a card can
+// show one before the backend confirms it exists (broken loads fall back
+// to the placeholder underneath).
+function guessThumb(clipPath: string) {
+  const slash = clipPath.lastIndexOf("/");
+  const name = clipPath.slice(slash + 1).replace(/\.[^.]+$/, "");
+  return `${clipPath.slice(0, slash)}/.thumbs/${name}.jpg`;
+}
+
 // Video bitrate a size-budgeted export gets for a given duration.
 function discordKbps(seconds: number, budgetMb = 10) {
   return Math.max(200, (budgetMb * 8192 * 0.94) / seconds - 96);
@@ -168,7 +177,15 @@ function App() {
   const [scanning, setScanning] = useState(false);
   const [sup, setSup] = useState<SupervisorState | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [thumbs, setThumbs] = useState<Record<string, ThumbInfo>>({});
+  // Thumbnail map hydrates from the last session's cache so cards paint
+  // instantly on boot; the backend refresh replaces it when it lands.
+  const [thumbs, setThumbs] = useState<Record<string, ThumbInfo>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("clipforge_thumbs") || "{}");
+    } catch {
+      return {};
+    }
+  });
   const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
@@ -581,6 +598,12 @@ function App() {
   useEffect(() => {
     localStorage.setItem("clipforge_audio", JSON.stringify(audioMemory));
   }, [audioMemory]);
+
+  useEffect(() => {
+    if (Object.keys(thumbs).length > 0) {
+      localStorage.setItem("clipforge_thumbs", JSON.stringify(thumbs));
+    }
+  }, [thumbs]);
 
   // Watch free space on the clips drive — OBS silently fails to save when
   // the disk fills, so warn well before that.
@@ -1519,7 +1542,20 @@ function App() {
                         setHoverPath((p) => (p === c.path ? null : p));
                       }}
                     >
-                      {hoverPath === c.path ? (
+                      <div className="thumb-placeholder" />
+                      <img
+                        // Remount when the backend confirms the thumb, so a
+                        // guess that 404'd (fresh clip) retries once the
+                        // file actually exists.
+                        key={`${c.path}#${thumbs[c.path] ? "t" : "g"}`}
+                        src={convertFileSrc(thumbs[c.path]?.thumb ?? guessThumb(c.path))}
+                        alt=""
+                        loading="lazy"
+                        onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+                      />
+                      {hoverPath === c.path && (
+                        // Layered over the still and faded in only once
+                        // frames actually flow — no blank flash.
                         <video
                           className="thumb-preview"
                           src={convertFileSrc(c.path)}
@@ -1527,12 +1563,8 @@ function App() {
                           autoPlay
                           loop
                           playsInline
-                          preload="metadata"
+                          onPlaying={(e) => e.currentTarget.classList.add("ready")}
                         />
-                      ) : thumbs[c.path] ? (
-                        <img src={convertFileSrc(thumbs[c.path].thumb)} alt="" loading="lazy" />
-                      ) : (
-                        <div className="thumb-placeholder" />
                       )}
                       <div className="thumb-vignette" />
                       <div className="game-tag">
