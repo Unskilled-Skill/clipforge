@@ -1299,9 +1299,13 @@ function App() {
   const goodQuality = kbps >= 2000;
 
   return (
-    <div className="app-frame">
+    <div className={`app-frame ${status.replay_buffer_active ? "live" : ""}`}>
       <div className="titlebar" data-tauri-drag-region>
         <span className="titlebar-title" data-tauri-drag-region>ClipForge</span>
+        <span className="titlebar-live" title="Replay buffer is armed — gameplay is being recorded">
+          <span className="titlebar-live-dot" />
+          READY
+        </span>
         <div className="titlebar-controls">
           <button
             className="tb-btn"
@@ -1538,6 +1542,12 @@ function App() {
                 <button
                   key={g}
                   className={`chip ${gameFilter === g ? "active" : ""}`}
+                  // Active game chip wears its game's color, not the app accent.
+                  style={
+                    gameFilter === g
+                      ? { borderColor: gameColor(g), background: `${gameColor(g)}1f` }
+                      : undefined
+                  }
                   onClick={() => setGameFilter(g)}
                 >
                   <span className="chip-dot" style={{ background: gameColor(g) }} />
@@ -1560,6 +1570,7 @@ function App() {
                   <div
                     key={c.path}
                     className={`card ${i === focusIdx ? "kb-focus" : ""}`}
+                    style={{ "--game": gameColor(gameOf(c)) } as React.CSSProperties}
                     // Shift-click anywhere on the card range-selects instead of
                     // opening; mousedown guard stops the browser text-select.
                     onMouseDown={(e) => e.shiftKey && e.preventDefault()}
@@ -1782,7 +1793,10 @@ function App() {
             )}
           </>
         ) : (
-          <div className="editor">
+          <div
+            className="editor"
+            style={{ "--game": gameColor(gameOf(selected)) } as React.CSSProperties}
+          >
             <div className="editor-top">
               <button className="btn-ghost" onClick={() => setSelected(null)}>
                 <ArrowLeft size={15} />
