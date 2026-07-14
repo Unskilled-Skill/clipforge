@@ -41,8 +41,22 @@ const BLOCKLIST: &[&str] = &[
     "battle.net.exe",
     "riotclientux.exe",
     "playnite.fullscreenapp.exe",
+    "playnite.desktopapp.exe",
     "gamingservicesui.exe",
     "xboxpcapp.exe",
+    // Screenshot/overlay tools whose capture overlay is a fullscreen window —
+    // adopting one as a "game" arms the buffer 24/7 (they sit in the tray
+    // from boot) and burns GPU encoding an idle desktop.
+    "sharex.exe",
+    "greenshot.exe",
+    "lightshot.exe",
+    "flameshot.exe",
+    "snippingtool.exe",
+    "screenclippinghost.exe",
+    "screensketch.exe",
+    // Wallpaper engines render a permanent fullscreen window.
+    "wallpaper64.exe",
+    "wallpaper32.exe",
 ];
 
 /// Returns the exe name of the foreground app if it looks like a game.
