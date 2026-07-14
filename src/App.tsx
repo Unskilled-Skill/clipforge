@@ -111,9 +111,17 @@ const GAME_COLORS: Record<string, string> = {
   hunt: "#c92a2a",
   lol: "#3bc9db",
   deeprock: "#fab005",
+  edits: "#8a8f9a",
 };
 
+// Output of a ClipForge edit (trim/export/gif/frame/montage) rather than a
+// recording — grouped under "Edits" so game groups stay clean.
+function isEdit(name: string) {
+  return /_discord\.|_trim_|_gif\.gif$|_frame_|^Montage_/.test(name);
+}
+
 function gameOf(clip: ClipInfo) {
+  if (isEdit(clip.name)) return "Edits";
   // "<Game> <timestamp>.mp4" — anything without that shape (UUIDs,
   // one-word names) groups under "Other".
   const first = clip.name.split(" ")[0];
@@ -234,11 +242,16 @@ function App() {
   const [previewQIdx, setPreviewQIdx] = useState(0);
   // Index being dragged in the selection-reorder strip.
   const dragFrom = useRef(-1);
+  // Timestamp of the previous session's last visit — clips newer than this
+  // get a NEW badge. Advanced immediately so it stays fixed for this session.
+  const lastSeenRef = useRef<number>(Number(localStorage.getItem("clipforge_seen") || 0));
   const [hoverPath, setHoverPath] = useState<string | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [diskFree, setDiskFree] = useState<number | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
-  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "largest" | "name">("newest");
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "largest" | "longest" | "name">(
+    "newest"
+  );
   const [targetMb, setTargetMb] = useState(10);
   const [renaming, setRenaming] = useState(false);
   const [libRenamePath, setLibRenamePath] = useState<string | null>(null);
@@ -335,6 +348,7 @@ function App() {
       } catch {
         /* dir may not exist yet */
       }
+      localStorage.setItem("clipforge_seen", String(Date.now()));
       invoke<string[]>("load_favorites").then(setFavorites).catch(() => {});
       invoke<SetupStatus>("setup_status")
         .then(setSetup)
@@ -804,10 +818,14 @@ function App() {
           const r = trimRanges[c.path];
           return { path: c.path, start: r?.[0] ?? 0, end: r?.[1] ?? 0 };
         });
-      await invoke<string>("export_montage", { inputs });
-      showToast(`Montage of ${inputs.length} clips saved`);
+      const newPath = await invoke<string>("export_montage", { inputs });
+      showToast(`Montage of ${inputs.length} clips saved — opening it`);
       setMontageSel(new Set());
       await refreshClips();
+      // Same flow as trim: land in the result, not back in the grid
+      // wondering where it went.
+      const name = newPath.split("/").pop() ?? "";
+      selectClip({ path: newPath, name, modified_ms: Date.now(), size_bytes: 0 });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1171,6 +1189,7 @@ function App() {
       await invoke("delete_clip", { path: clip.path });
       if (selected?.path === clip.path) setSelected(null);
       setClips((prev) => prev.filter((c) => c.path !== clip.path));
+      showToast("Moved to Recycle Bin");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1288,6 +1307,8 @@ function App() {
           return a.modified_ms - b.modified_ms;
         case "largest":
           return b.size_bytes - a.size_bytes;
+        case "longest":
+          return (thumbs[b.path]?.duration ?? 0) - (thumbs[a.path]?.duration ?? 0);
         case "name":
           return a.name.localeCompare(b.name);
         default:
@@ -1428,6 +1449,9 @@ function App() {
                 {launchingObs ? "launching…" : "Launch OBS"}
               </button>
             )}
+            <button className="error-dismiss" title="Dismiss" onClick={() => setError(null)}>
+              <X size={14} />
+            </button>
           </div>
         )}
         {diskFree != null && diskFree < 5 * 1024 ** 3 && (
@@ -1496,6 +1520,7 @@ function App() {
                 <option value="newest">Newest</option>
                 <option value="oldest">Oldest</option>
                 <option value="largest">Largest</option>
+                <option value="longest">Longest</option>
                 <option value="name">Name</option>
               </select>
               <button
@@ -1557,13 +1582,33 @@ function App() {
             </div>
 
             {visibleClips.length === 0 ? (
-              <div className="empty-state">
-                <FilmStrip size={44} color="#33363f" />
-                <span className="empty-title">No clips here yet</span>
-                <span className="empty-hint">
-                  Press <span className="empty-key">{settings.hotkey_save}</span> in-game to save one
-                </span>
-              </div>
+              clips.length > 0 ? (
+                // Clips exist — this is a filter/search miss, not an empty library.
+                <div className="empty-state">
+                  <MagnifyingGlass size={44} color="#33363f" />
+                  <span className="empty-title">No clips match</span>
+                  <span className="empty-hint">
+                    {search ? `Nothing named or tagged “${search}”` : "Nothing in this filter"}
+                  </span>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => {
+                      setSearch("");
+                      setGameFilter("all");
+                    }}
+                  >
+                    Clear search & filters
+                  </button>
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <FilmStrip size={44} color="#33363f" />
+                  <span className="empty-title">No clips here yet</span>
+                  <span className="empty-hint">
+                    Press <span className="empty-key">{settings.hotkey_save}</span> in-game to save one
+                  </span>
+                </div>
+              )
             ) : (
               <div className="grid">
                 {visibleClips.map((c, i) => (
@@ -1620,6 +1665,9 @@ function App() {
                         {gameOf(c)}
                       </div>
                       <div className="card-topright">
+                        {lastSeenRef.current > 0 &&
+                          c.modified_ms > lastSeenRef.current &&
+                          !isEdit(c.name) && <div className="new-badge">NEW</div>}
                         {trimRanges[c.path] && (
                           <div
                             className="trim-badge"
