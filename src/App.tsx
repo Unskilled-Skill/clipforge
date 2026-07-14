@@ -8,6 +8,7 @@ import {
   Camera,
   CheckCircle,
   Circle,
+  Copy,
   Crosshair,
   DiscordLogo,
   Gif,
@@ -246,6 +247,8 @@ function App() {
   // get a NEW badge. Advanced immediately so it stays fixed for this session.
   const lastSeenRef = useRef<number>(Number(localStorage.getItem("clipforge_seen") || 0));
   const [hoverPath, setHoverPath] = useState<string | null>(null);
+  // Right-click context menu over a library card.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; clip: ClipInfo } | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [diskFree, setDiskFree] = useState<number | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
@@ -758,6 +761,16 @@ function App() {
     }
   }
 
+  // Put the clip file on the clipboard — paste straight into Discord.
+  async function copyClip(clip: ClipInfo) {
+    try {
+      await invoke("copy_clip", { path: clip.path });
+      showToast("Clip copied — Ctrl+V it into Discord");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   function toggleMontage(clip: ClipInfo) {
     setMontageSel((prev) => {
       const next = new Set(prev);
@@ -1109,6 +1122,21 @@ function App() {
   useEffect(() => {
     setFocusIdx(-1);
   }, [gameFilter, search, sortBy]);
+
+  // Any click or Esc anywhere closes the context menu.
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
 
   async function applyHotkeys(save: string, short: string) {
     setError(null);
@@ -1508,8 +1536,14 @@ function App() {
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setSearch("")}
                   placeholder="Search clips…"
                 />
+                {search && (
+                  <button className="search-clear" title="Clear (Esc)" onClick={() => setSearch("")}>
+                    <X size={13} />
+                  </button>
+                )}
               </div>
               <select
                 className="audio-select"
@@ -1577,6 +1611,7 @@ function App() {
                 >
                   <span className="chip-dot" style={{ background: gameColor(g) }} />
                   {g}
+                  <span className="chip-count">{clips.filter((c) => gameOf(c) === g).length}</span>
                 </button>
               ))}
             </div>
@@ -1620,6 +1655,16 @@ function App() {
                     // opening; mousedown guard stops the browser text-select.
                     onMouseDown={(e) => e.shiftKey && e.preventDefault()}
                     onClick={(e) => (e.shiftKey ? handleSelect(c, true) : selectClip(c))}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // Clamp so the menu never renders off-screen.
+                      setCtxMenu({
+                        x: Math.min(e.clientX, window.innerWidth - 200),
+                        y: Math.min(e.clientY, window.innerHeight - 300),
+                        clip: c,
+                      });
+                    }}
                   >
                     <div
                       className="card-thumb"
@@ -1952,10 +1997,21 @@ function App() {
                   loop
                 </button>
                 {killMarkers.length > 0 && (
-                  <span className="kill-count" title="Auto-detected kills — click a marker on the timeline to jump">
+                  <button
+                    className="kill-count"
+                    title="Jump to the first kill — timeline markers jump to each"
+                    onClick={() => {
+                      const v = videoRef.current;
+                      const first = Math.min(...killMarkers);
+                      if (!v || !isFinite(first)) return;
+                      v.pause();
+                      setPreviewing(false);
+                      v.currentTime = Math.max(0, first);
+                    }}
+                  >
                     <Crosshair size={12} weight="bold" />
                     {killMarkers.length} kill{killMarkers.length > 1 ? "s" : ""}
-                  </span>
+                  </button>
                 )}
                 <span className="trim-readout">
                   {trimStart.toFixed(1)}s → {trimEnd.toFixed(1)}s · {(trimEnd - trimStart).toFixed(1)}s selected
@@ -1993,7 +2049,8 @@ function App() {
                             step={0.05}
                             value={trackGain[t.i] ?? 1}
                             disabled={!on}
-                            title={`Export volume: ${Math.round((trackGain[t.i] ?? 1) * 100)}%`}
+                            title={`Export volume: ${Math.round((trackGain[t.i] ?? 1) * 100)}% — double-click resets`}
+                            onDoubleClick={() => setTrackGain((g) => ({ ...g, [t.i]: 1 }))}
                             onChange={(e) =>
                               setTrackGain((g) => ({ ...g, [t.i]: Number(e.target.value) }))
                             }
@@ -2079,6 +2136,13 @@ function App() {
                 ~{Math.round(kbps)} kbps · {goodQuality ? "good" : "trim shorter"}
               </div>
               <div className="lib-spacer" />
+              <button
+                className="btn-trim icon-only"
+                title="Copy the clip file — paste in Discord without exporting"
+                onClick={() => selected && copyClip(selected)}
+              >
+                <Copy size={16} />
+              </button>
               <button className="btn-trim icon-only" title="Save current frame as PNG" onClick={exportFrame}>
                 <Camera size={16} />
               </button>
@@ -2126,6 +2190,41 @@ function App() {
             {toast}
           </div>
         )}
+
+      {ctxMenu && (
+        <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+          <button onClick={() => selectClip(ctxMenu.clip)}>
+            <Play size={14} weight="fill" />
+            Open in editor
+          </button>
+          <button onClick={() => copyClip(ctxMenu.clip)}>
+            <Copy size={14} />
+            Copy file — paste in Discord
+          </button>
+          <div className="ctx-sep" />
+          <button onClick={() => toggleFavorite(ctxMenu.clip)}>
+            <Star size={14} weight={favorites.includes(ctxMenu.clip.path) ? "fill" : "regular"} />
+            {favorites.includes(ctxMenu.clip.path) ? "Unfavorite" : "Favorite"}
+          </button>
+          <button onClick={() => startLibRename(ctxMenu.clip)}>
+            <PencilSimple size={14} />
+            Rename
+          </button>
+          <button onClick={() => handleSelect(ctxMenu.clip, false)}>
+            {montageSel.has(ctxMenu.clip.path) ? <CheckCircle size={14} weight="fill" /> : <Circle size={14} />}
+            {montageSel.has(ctxMenu.clip.path) ? "Deselect" : "Select"}
+          </button>
+          <button onClick={() => invoke("show_in_folder", { path: ctxMenu.clip.path }).catch(() => {})}>
+            <FolderOpen size={14} />
+            Show in Explorer
+          </button>
+          <div className="ctx-sep" />
+          <button className="danger" onClick={() => deleteClip(ctxMenu.clip)}>
+            <Trash size={14} />
+            Delete
+          </button>
+        </div>
+      )}
 
       {previewQueue && previewQueue[previewQIdx] && (
         <div className="modal-backdrop" onClick={() => setPreviewQueue(null)}>

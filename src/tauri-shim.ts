@@ -79,6 +79,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
         Number((_args as { input: string }).input.match(/mock-(\d+)/)![1]) % 3 === 0
         ? [4.2, 11.9, 23.5]
         : [];
+    case "copy_clip":
+      return null;
     case "disk_free":
       return 3_400_000_000; // low on purpose — shows the warning banner in dev
     case "gen_waveform":

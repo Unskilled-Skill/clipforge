@@ -892,7 +892,7 @@ export function OnboardingModal(props: {
               <p className="onboard-copy">
                 That's everything. Play a game, save a clip, and it lands in your Library
                 ready to trim and share. Revisit this walkthrough anytime from the{" "}
-                <strong>Tutorial</strong> button in the sidebar.
+                <strong>Tutorial</strong> button at the top of Settings.
               </p>
             </section>
           )}

@@ -292,6 +292,13 @@ pub fn disk_free(dir: String) -> Result<u64, String> {
     Ok(free)
 }
 
+/// Put the clip file itself on the clipboard (CF_HDROP) — paste straight
+/// into Discord/Explorer without exporting.
+#[tauri::command]
+pub fn copy_clip(path: String) -> Result<(), String> {
+    copy_file_to_clipboard(&path)
+}
+
 /// Recycle oldest non-favorite clips until the folder fits the cap.
 /// Returns how many clips were removed.
 pub fn enforce_storage_cap(app: &AppHandle) -> Result<u32, String> {

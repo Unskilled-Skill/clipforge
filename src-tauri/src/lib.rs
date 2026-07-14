@@ -375,6 +375,7 @@ pub fn run() {
             clips::show_in_folder,
             clips::load_markers,
             clips::disk_free,
+            clips::copy_clip,
             setup::setup_status,
             setup::winget_install,
             setup::launch_obs,

@@ -1840,3 +1840,68 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   flex-shrink: 0;
 }
 .error-dismiss:hover { background: rgba(240, 96, 95, 0.15); }
+
+/* ---- right-click context menu on cards ---- */
+.ctx-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 190px;
+  padding: 6px;
+  background: rgba(19, 20, 27, 0.97);
+  border: 1px solid #2a2d38;
+  border-radius: 12px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: cf-rise 0.12s ease;
+}
+.ctx-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  color: #c3c6cf;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+}
+.ctx-menu button:hover { background: #22242e; color: #eceef3; }
+.ctx-menu button.danger:hover { background: rgba(240, 96, 95, 0.14); color: #f0605f; }
+.ctx-menu button svg { flex-shrink: 0; color: #8a8f9a; }
+.ctx-menu button:hover svg { color: currentColor; }
+.ctx-sep { height: 1px; background: #23252f; margin: 4px 6px; }
+
+/* ---- search clear button ---- */
+.search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a8f9a;
+  flex-shrink: 0;
+}
+.search-clear:hover { background: #22242e; color: #eceef3; }
+
+/* ---- clip counts on filter chips ---- */
+.chip-count {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  color: #767a85;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  padding: 1px 6px;
+}
+.chip.active .chip-count { color: inherit; }
+
+/* kill-count is a button now — keep the pill look */
+button.kill-count { border: none; cursor: pointer; margin-left: 10px; }
+button.kill-count:hover { background: rgba(240, 96, 95, 0.24); }
