@@ -19,12 +19,16 @@ import {
   GameController,
   Gauge,
   GearSix,
+  HardDrives,
   Headset,
+  Keyboard,
+  Lightning,
   MagnifyingGlass,
   Microphone,
   Monitor,
   PencilSimple,
   Play,
+  Plugs,
   Repeat,
   Scissors,
   SpeakerHigh,
@@ -2047,62 +2051,14 @@ function App() {
               </button>
             </header>
             <div className="settings-body">
-              <details className="set-group advanced">
-                <summary className="set-label">
-                  ADVANCED CONNECTION — auto-configured, only for remote or portable OBS
-                </summary>
-                <div className="set-row">
-                  <input
-                    className="mono"
-                    value={settings.host}
-                    onChange={(e) => setSettings({ ...settings, host: e.target.value })}
-                    placeholder="host"
-                  />
-                  <input
-                    className="mono port"
-                    type="number"
-                    value={settings.port}
-                    onChange={(e) => setSettings({ ...settings, port: Number(e.target.value) })}
-                  />
-                </div>
-                <input
-                  type="password"
-                  value={settings.password ?? ""}
-                  onChange={(e) => setSettings({ ...settings, password: e.target.value })}
-                  placeholder="obs-websocket password (auto-detected normally)"
-                />
-                <div className="set-row">
-                  <input
-                    className="mono"
-                    value={settings.obs_path}
-                    onChange={(e) => setSettings({ ...settings, obs_path: e.target.value })}
-                    onBlur={() => invoke("save_settings", { settings })}
-                    placeholder="obs64.exe path (auto-detected normally)"
-                  />
-                  <button
-                    className="btn-ghost"
-                    onClick={async () => {
-                      const picked = await openDialog({
-                        defaultPath: settings.obs_path,
-                        filters: [{ name: "OBS executable", extensions: ["exe"] }],
-                      });
-                      if (typeof picked === "string") {
-                        const next = { ...settings, obs_path: picked };
-                        setSettings(next);
-                        await invoke("save_settings", { settings: next });
-                      }
-                    }}
-                  >
-                    Browse
-                  </button>
-                </div>
-                <button className="btn-ghost apply-btn" onClick={() => connect(settings)} disabled={connecting}>
-                  {connecting ? "connecting…" : "Apply & connect"}
-                </button>
-              </details>
-
               <section className="set-group">
-                <span className="set-label">CAPTURE</span>
+                <div className="set-head">
+                  <div className="set-head-icon"><FilmSlate size={16} weight="fill" /></div>
+                  <div className="set-head-text">
+                    <span className="set-head-title">Capture</span>
+                    <span className="set-head-desc">Buffer length and recording quality</span>
+                  </div>
+                </div>
                 <label className="set-col">
                   <span className="field-label">
                     Clip length (seconds) — how far back a save reaches. Longer = more RAM while
@@ -2189,7 +2145,13 @@ function App() {
               </section>
 
               <section className="set-group">
-                <span className="set-label">AUTOMATION</span>
+                <div className="set-head">
+                  <div className="set-head-icon"><Lightning size={16} weight="fill" /></div>
+                  <div className="set-head-text">
+                    <span className="set-head-title">Automation</span>
+                    <span className="set-head-desc">Hands-free recording and clipping</span>
+                  </div>
+                </div>
                 <div className="toggle-card">
                   <div className="toggle-text">
                     <span className="toggle-title">Auto buffer</span>
@@ -2232,7 +2194,13 @@ function App() {
               </section>
 
               <section className="set-group">
-                <span className="set-label">HOTKEYS</span>
+                <div className="set-head">
+                  <div className="set-head-icon"><Keyboard size={16} weight="fill" /></div>
+                  <div className="set-head-text">
+                    <span className="set-head-title">Hotkeys</span>
+                    <span className="set-head-desc">Global — they work while a game has focus</span>
+                  </div>
+                </div>
                 <div className="set-row">
                   <label className="set-col">
                     <span className="field-label">Save clip — click, then press keys</span>
@@ -2280,7 +2248,13 @@ function App() {
               </section>
 
               <section className="set-group">
-                <span className="set-label">SPLIT AUDIO</span>
+                <div className="set-head">
+                  <div className="set-head-icon"><Waveform size={16} weight="fill" /></div>
+                  <div className="set-head-text">
+                    <span className="set-head-title">Split audio</span>
+                    <span className="set-head-desc">Five tracks per clip — game, voice, desktop, mic, mix</span>
+                  </div>
+                </div>
                 <span className="field-label">
                   Clips record 5 audio tracks — full mix, game, voice chat, desktop, mic — so
                   exports can isolate any of them. Voice-chat and game audio are captured per-app;
@@ -2317,7 +2291,13 @@ function App() {
               </section>
 
               <section className="set-group">
-                <span className="set-label">GAMES WATCHED</span>
+                <div className="set-head">
+                  <div className="set-head-icon"><GameController size={16} weight="fill" /></div>
+                  <div className="set-head-text">
+                    <span className="set-head-title">Games watched</span>
+                    <span className="set-head-desc">What arms the buffer, and how each game is captured</span>
+                  </div>
+                </div>
                 <textarea
                   className="mono"
                   rows={5}
@@ -2428,7 +2408,13 @@ function App() {
               </section>
 
               <section className="set-group">
-                <span className="set-label">STORAGE</span>
+                <div className="set-head">
+                  <div className="set-head-icon"><HardDrives size={16} weight="fill" /></div>
+                  <div className="set-head-text">
+                    <span className="set-head-title">Storage</span>
+                    <span className="set-head-desc">Where clips live and how much space they may take</span>
+                  </div>
+                </div>
                 <div className="set-row">
                   <input
                     className="mono"
@@ -2465,6 +2451,68 @@ function App() {
                   />
                 </label>
               </section>
+
+              <details className="set-group advanced">
+                <summary>
+                  <div className="set-head">
+                    <div className="set-head-icon"><Plugs size={16} weight="fill" /></div>
+                    <div className="set-head-text">
+                      <span className="set-head-title">Advanced connection</span>
+                      <span className="set-head-desc">
+                        Auto-configured — only for remote or portable OBS setups
+                      </span>
+                    </div>
+                  </div>
+                </summary>
+                <div className="set-row">
+                  <input
+                    className="mono"
+                    value={settings.host}
+                    onChange={(e) => setSettings({ ...settings, host: e.target.value })}
+                    placeholder="host"
+                  />
+                  <input
+                    className="mono port"
+                    type="number"
+                    value={settings.port}
+                    onChange={(e) => setSettings({ ...settings, port: Number(e.target.value) })}
+                  />
+                </div>
+                <input
+                  type="password"
+                  value={settings.password ?? ""}
+                  onChange={(e) => setSettings({ ...settings, password: e.target.value })}
+                  placeholder="obs-websocket password (auto-detected normally)"
+                />
+                <div className="set-row">
+                  <input
+                    className="mono"
+                    value={settings.obs_path}
+                    onChange={(e) => setSettings({ ...settings, obs_path: e.target.value })}
+                    onBlur={() => invoke("save_settings", { settings })}
+                    placeholder="obs64.exe path (auto-detected normally)"
+                  />
+                  <button
+                    className="btn-ghost"
+                    onClick={async () => {
+                      const picked = await openDialog({
+                        defaultPath: settings.obs_path,
+                        filters: [{ name: "OBS executable", extensions: ["exe"] }],
+                      });
+                      if (typeof picked === "string") {
+                        const next = { ...settings, obs_path: picked };
+                        setSettings(next);
+                        await invoke("save_settings", { settings: next });
+                      }
+                    }}
+                  >
+                    Browse
+                  </button>
+                </div>
+                <button className="btn-ghost apply-btn" onClick={() => connect(settings)} disabled={connecting}>
+                  {connecting ? "connecting…" : "Apply & connect"}
+                </button>
+              </details>
             </div>
         </div>
       )}
