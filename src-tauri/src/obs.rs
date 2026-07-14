@@ -101,6 +101,10 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf) {
         )
         .show();
 
+    // Annotate the clip with recent kill positions (timeline markers).
+    // The buffer ends at save time, so this works for hotkey saves too.
+    crate::autoclip::write_kill_markers(&final_path.to_string_lossy().replace('\\', "/"));
+
     let _ = app.emit(
         "clip-saved",
         ClipSaved {
@@ -258,12 +262,7 @@ pub async fn apply_obs_config(
     crate::setup::ensure_audio_devices(client).await;
     crate::setup::ensure_audio_tracks(client).await;
     let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
-    crate::setup::ensure_split_audio(
-        client,
-        active_game.as_deref().or_else(|| settings.game_exes.first().map(String::as_str)),
-        &settings.vc_exe,
-    )
-    .await;
+    crate::setup::ensure_split_audio(client, active_game.as_deref(), &settings.vc_exe).await;
     crate::setup::ensure_video_settings(client, &settings).await;
     Ok(())
 }
@@ -419,6 +418,10 @@ pub async fn add_game_capture_source(
             "window": window,
             "priority": WINDOW_PRIORITY_EXE,
             "cursor": true,
+            // Capture method 2 = WGC ("Windows 10 1903 and up"). Auto often
+            // picks BitBlt, which black-screens on many modern games; WGC
+            // captures reliably on anything this app targets (Win10 20H1+).
+            "method": 2,
         })
     };
 

@@ -30,6 +30,7 @@ Outplayed-style game clipping, powered by your own OBS. Press a hotkey, keep the
 npm install
 npm run tauri dev     # full app (quit the installed tray instance first — hotkey clash)
 npm run dev           # UI only in a browser, with mock data (src/tauri-shim.ts)
+.\scripts\dev.ps1     # same as tauri dev, but kills the installed tray instance first
 npm run tauri build -- --bundles nsis
 .\scripts\install.ps1   # rebuild + silent local install + relaunch, no signing/GitHub
 ```

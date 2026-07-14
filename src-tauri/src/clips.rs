@@ -15,7 +15,42 @@ pub fn hidden_cmd(program: impl AsRef<OsStr>) -> Command {
 }
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
+
+/// Run an ffmpeg command (output path already added) streaming its
+/// `-progress pipe:1` reports as `export-progress` events, so long renders
+/// show a real percentage instead of an indeterminate spinner. Call from a
+/// blocking context (`spawn_blocking`) — reads the pipe synchronously.
+fn run_ffmpeg_with_progress(
+    app: &AppHandle,
+    mut cmd: Command,
+    total_secs: f64,
+    label: &str,
+) -> Result<(), String> {
+    use std::io::BufRead;
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    if let Some(stdout) = child.stdout.take() {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            // ffmpeg quirk: out_time_ms is microseconds too (same as out_time_us).
+            let us = line
+                .strip_prefix("out_time_us=")
+                .or_else(|| line.strip_prefix("out_time_ms="));
+            if let Some(us) = us {
+                if let Ok(us) = us.trim().parse::<f64>() {
+                    let pct = ((us / 1_000_000.0) / total_secs.max(0.1) * 100.0).clamp(0.0, 100.0);
+                    let _ = app.emit("export-progress", serde_json::json!({ "label": label, "pct": pct }));
+                }
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    Ok(())
+}
 
 pub const DEFAULT_CLIPS_DIR: &str = "D:/RECORDINGS/Clips";
 
@@ -198,6 +233,65 @@ pub fn toggle_favorite(app: AppHandle, path: String) -> Result<Vec<String>, Stri
     Ok(favs)
 }
 
+/// Open Explorer with the clip highlighted. A plain backend spawn instead of
+/// the opener plugin's reveal, which needs a static path scope — the clips
+/// folder is user-configurable so no scope could cover it.
+#[tauri::command]
+pub fn show_in_folder(path: String) -> Result<(), String> {
+    hidden_cmd("explorer.exe")
+        .arg(format!("/select,{}", path.replace('/', "\\")))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Sidecar with kill timestamps (seconds into the clip), written when an
+/// auto-clip trigger knows where the kills landed. Lives in `.thumbs` next
+/// to the other derived files so it's swept with them.
+pub fn markers_path(clip: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(clip);
+    let stem = p.file_stem()?.to_string_lossy().to_string();
+    Some(p.parent()?.join(".thumbs").join(format!("{stem}.markers.json")))
+}
+
+pub fn read_markers(clip: &str) -> Vec<f64> {
+    markers_path(clip)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn write_markers(clip: &str, markers: &[f64]) {
+    let Some(path) = markers_path(clip) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(raw) = serde_json::to_string(markers) {
+        let _ = std::fs::write(path, raw);
+    }
+}
+
+/// Kill timestamps for a clip, seconds from its start. Empty when the clip
+/// wasn't auto-clipped (or predates markers).
+#[tauri::command]
+pub fn load_markers(input: String) -> Vec<f64> {
+    read_markers(&input)
+}
+
+/// Free bytes on the volume holding `dir` — the clips drive filling up makes
+/// OBS silently fail to save, so the frontend warns before that happens.
+#[tauri::command]
+pub fn disk_free(dir: String) -> Result<u64, String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut free = 0u64;
+    unsafe {
+        GetDiskFreeSpaceExW(&HSTRING::from(dir.as_str()), Some(&mut free), None, None)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(free)
+}
+
 /// Recycle oldest non-favorite clips until the folder fits the cap.
 /// Returns how many clips were removed.
 pub fn enforce_storage_cap(app: &AppHandle) -> Result<u32, String> {
@@ -320,7 +414,11 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
         .allow_directory(&settings.clips_dir, true);
     let path = settings_path(&app)?;
     let raw = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    std::fs::write(path, raw).map_err(|e| e.to_string())
+    // Write-then-rename so a crash mid-write can't leave settings.json
+    // half-written (which would silently reset every setting on next boot).
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, raw).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Clone)]
@@ -441,7 +539,20 @@ fn walk_for_ffmpeg(root: &PathBuf) -> Vec<PathBuf> {
 /// Move a clip to the Windows Recycle Bin (recoverable).
 #[tauri::command]
 pub fn delete_clip(path: String) -> Result<(), String> {
-    trash::delete(&path).map_err(|e| e.to_string())
+    trash::delete(&path).map_err(|e| e.to_string())?;
+    // Sweep the cached thumbnail/waveforms too, or they pile up forever.
+    let p = PathBuf::from(&path);
+    if let (Some(dir), Some(stem)) = (p.parent(), p.file_stem()) {
+        let thumbs = dir.join(".thumbs");
+        let stem = stem.to_string_lossy();
+        let _ = std::fs::remove_file(thumbs.join(format!("{stem}.jpg")));
+        let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave.png")));
+        let _ = std::fs::remove_file(thumbs.join(format!("{stem}.markers.json")));
+        for i in 0..6 {
+            let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave{i}.png")));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Clone)]
@@ -480,6 +591,12 @@ fn clip_duration(ffmpeg: &PathBuf, path: &str) -> Result<f64, String> {
         .get_or_insert_with(Default::default)
         .insert(path.to_string(), (mtime, duration));
     Ok(duration)
+}
+
+/// Duration of a clip for callers outside this module (marker math).
+pub fn probe_clip_duration(path: &str) -> Result<f64, String> {
+    let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
+    clip_duration(&ffmpeg, path)
 }
 
 fn probe_duration(ffmpeg: &PathBuf, path: &str) -> Result<f64, String> {
@@ -647,11 +764,13 @@ pub fn list_audio_tracks(input: String) -> Result<u32, String> {
 
 #[tauri::command]
 pub async fn export_discord(
+    app: AppHandle,
     input: String,
     target_mb: f64,
     start: f64,
     end: f64,
-    audio_tracks: Option<Vec<u32>>,
+    // (track index, gain) pairs — gain 1.0 = unchanged, 0.5 = half, 2.0 = double.
+    audio_tracks: Option<Vec<(u32, f32)>>,
 ) -> Result<String, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let full = clip_duration(&ffmpeg, &input)?;
@@ -684,70 +803,80 @@ pub async fn export_discord(
         "scale=-2:1080"
     };
 
-    // Tracks the user wants kept (OBS layout: 0=mix, 1=game, 2=vc, 3=desktop,
-    // 4=mic). Clamp to what the file actually has — old clips are single-track
-    // — dedupe, and fall back to the full mix if nothing valid is selected.
+    // Tracks the user wants kept, each with its export gain (OBS layout:
+    // 0=mix, 1=game, 2=vc, 3=desktop, 4=mic). Clamp to what the file actually
+    // has — old clips are single-track — dedupe, fall back to the full mix.
     let count = audio_stream_count(&ffmpeg, &input);
-    let mut keep: Vec<u32> = audio_tracks
+    let mut keep: Vec<(u32, f32)> = audio_tracks
         .unwrap_or_default()
         .into_iter()
-        .filter(|t| *t < count)
+        .filter(|(t, _)| *t < count)
+        .map(|(t, g)| (t, g.clamp(0.0, 4.0)))
         .collect();
-    keep.sort_unstable();
-    keep.dedup();
+    keep.sort_by_key(|(t, _)| *t);
+    keep.dedup_by_key(|(t, _)| *t);
     if keep.is_empty() {
-        keep.push(0);
+        keep.push((0, 1.0));
     }
 
-    // One filter graph does both the video scale and the audio: a single kept
-    // track passes through, multiple get summed with amix (normalize=0 keeps
-    // their levels since they're already separate sources, not a remix).
+    // One filter graph does both the video scale and the audio: each kept
+    // track gets its gain applied, then multiple get summed with amix
+    // (normalize=0 keeps the chosen levels instead of re-normalizing).
     let audio_filter = if keep.len() == 1 {
-        format!("[0:a:{}]anull[aout]", keep[0])
+        let (t, g) = keep[0];
+        format!("[0:a:{t}]volume={g:.2}[aout]")
     } else {
-        let labels: String = keep.iter().map(|t| format!("[0:a:{t}]")).collect();
-        format!("{labels}amix=inputs={}:normalize=0[aout]", keep.len())
+        let mut chains = String::new();
+        for (idx, (t, g)) in keep.iter().enumerate() {
+            chains.push_str(&format!("[0:a:{t}]volume={g:.2}[ga{idx}];"));
+        }
+        let labels: String = (0..keep.len()).map(|i| format!("[ga{i}]")).collect();
+        format!("{chains}{labels}amix=inputs={}:normalize=0[aout]", keep.len())
     };
     let filter_complex = format!("[0:v:0]{scale}[vout];{audio_filter}");
 
-    let result = hidden_cmd(&ffmpeg)
-        .args([
-            "-hide_banner",
-            "-y",
-            "-ss",
-            &format!("{start:.2}"),
-            "-to",
-            &format!("{end:.2}"),
-            "-i",
-            &input,
-            "-filter_complex",
-            &filter_complex,
-            "-map",
-            "[vout]",
-            "-map",
-            "[aout]",
-            "-c:v",
-            &best_h264_encoder(&ffmpeg),
-            "-b:v",
-            &format!("{video_kbps:.0}k"),
-            "-maxrate",
-            &format!("{:.0}k", video_kbps * 1.2),
-            "-c:a",
-            "aac",
-            "-b:a",
-            &format!("{AUDIO_KBPS:.0}k"),
-            "-ac",
-            "2",
-            "-movflags",
-            "+faststart",
-        ])
-        .arg(&output)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = hidden_cmd(&ffmpeg);
+    cmd.args([
+        "-hide_banner",
+        "-y",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        "-ss",
+        &format!("{start:.2}"),
+        "-to",
+        &format!("{end:.2}"),
+        "-i",
+        &input,
+        "-filter_complex",
+        &filter_complex,
+        "-map",
+        "[vout]",
+        "-map",
+        "[aout]",
+        "-c:v",
+        &best_h264_encoder(&ffmpeg),
+        "-b:v",
+        &format!("{video_kbps:.0}k"),
+        "-maxrate",
+        &format!("{:.0}k", video_kbps * 1.2),
+        "-c:a",
+        "aac",
+        "-b:a",
+        &format!("{AUDIO_KBPS:.0}k"),
+        "-ac",
+        "2",
+        "-movflags",
+        "+faststart",
+    ])
+    .arg(&output);
 
-    if !result.status.success() {
-        return Err(String::from_utf8_lossy(&result.stderr).to_string());
-    }
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        run_ffmpeg_with_progress(&app2, cmd, duration, "export")
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let out = output.to_string_lossy().replace('\\', "/");
     // Straight to Ctrl+V in Discord.
     let _ = copy_file_to_clipboard(&out);
@@ -804,28 +933,44 @@ pub async fn gen_waveforms(input: String) -> Result<Vec<TrackWave>, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy().to_string();
 
+    // All missing tracks render concurrently — each is its own ffmpeg
+    // process, so this cuts editor-open latency to the slowest single track
+    // instead of the sum of all five.
+    let jobs: Vec<(u32, PathBuf)> = (0..count)
+        .map(|i| (i, dir.join(format!("{stem}.wave{i}.png"))))
+        .collect();
+    let handles: Vec<_> = jobs
+        .iter()
+        .filter(|(_, wpath)| !wpath.exists())
+        .map(|(i, wpath)| {
+            let (i, wpath, ffmpeg, input) = (*i, wpath.clone(), ffmpeg.clone(), input.clone());
+            std::thread::spawn(move || {
+                // Per-track failure is non-fatal — a silent track just yields
+                // a flat image, and we still want the rest of the tracks.
+                let _ = hidden_cmd(&ffmpeg)
+                    .args([
+                        "-hide_banner",
+                        "-y",
+                        "-i",
+                        &input,
+                        "-filter_complex",
+                        &format!(
+                            "[0:a:{i}]aformat=channel_layouts=mono,compand,showwavespic=s=1200x40:colors=#6b8bff"
+                        ),
+                        "-frames:v",
+                        "1",
+                    ])
+                    .arg(&wpath)
+                    .output();
+            })
+        })
+        .collect();
+    for handle in handles {
+        let _ = handle.join();
+    }
+
     let mut out = Vec::new();
-    for i in 0..count {
-        let wpath = dir.join(format!("{stem}.wave{i}.png"));
-        if !wpath.exists() {
-            // Per-track failure is non-fatal — a silent track just yields a
-            // flat image, and we still want the rest of the tracks.
-            let _ = hidden_cmd(&ffmpeg)
-                .args([
-                    "-hide_banner",
-                    "-y",
-                    "-i",
-                    &input,
-                    "-filter_complex",
-                    &format!(
-                        "[0:a:{i}]aformat=channel_layouts=mono,compand,showwavespic=s=1200x40:colors=#6b8bff"
-                    ),
-                    "-frames:v",
-                    "1",
-                ])
-                .arg(&wpath)
-                .output();
-        }
+    for (i, wpath) in jobs {
         if wpath.exists() {
             out.push(TrackWave {
                 track: i,
@@ -836,10 +981,21 @@ pub async fn gen_waveforms(input: String) -> Result<Vec<TrackWave>, String> {
     Ok(out)
 }
 
-/// Concatenate clips into one montage video (normalized 1080p60, AV1 archive
-/// quality is overkill here — H264 for shareability).
+/// One montage entry: a clip plus the cut to take from it. `end <= start`
+/// means "use the whole clip" (clips without a saved trim range).
+#[derive(Deserialize)]
+pub struct MontageSeg {
+    pub path: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Concatenate clip segments into one montage video (normalized 1080p60, AV1
+/// archive quality is overkill here — H264 for shareability). Each clip's
+/// trim range is applied input-side (`-ss/-to` before `-i`), so only the
+/// selected cut is decoded at all.
 #[tauri::command]
-pub async fn export_montage(app: AppHandle, inputs: Vec<String>) -> Result<String, String> {
+pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<String, String> {
     if inputs.len() < 2 {
         return Err("select at least 2 clips".into());
     }
@@ -852,10 +1008,31 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<String>) -> Result<Strin
         .unwrap_or(0);
     let output = PathBuf::from(&settings.clips_dir).join(format!("Montage_{stamp}.mp4"));
 
+    // Total output length for the progress percentage.
+    let total_secs: f64 = inputs
+        .iter()
+        .map(|seg| {
+            let full = clip_duration(&ffmpeg, &seg.path).unwrap_or(0.0);
+            if seg.end > seg.start {
+                (seg.end.min(full) - seg.start.max(0.0)).max(0.0)
+            } else {
+                full
+            }
+        })
+        .sum();
+
     let mut cmd = hidden_cmd(&ffmpeg);
-    cmd.args(["-hide_banner", "-y"]);
-    for input in &inputs {
-        cmd.args(["-i", input]);
+    cmd.args(["-hide_banner", "-y", "-nostats", "-progress", "pipe:1"]);
+    for seg in &inputs {
+        if seg.end > seg.start {
+            cmd.args([
+                "-ss",
+                &format!("{:.2}", seg.start.max(0.0)),
+                "-to",
+                &format!("{:.2}", seg.end),
+            ]);
+        }
+        cmd.args(["-i", &seg.path]);
     }
     let mut filter = String::new();
     for i in 0..inputs.len() {
@@ -870,39 +1047,40 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<String>) -> Result<Strin
     }
     filter.push_str(&format!("concat=n={}:v=1:a=1[outv][outa]", inputs.len()));
 
-    let result = cmd
-        .args([
-            "-filter_complex",
-            &filter,
-            "-map",
-            "[outv]",
-            "-map",
-            "[outa]",
-            // Quality-based (CRF) x264 instead of a fixed 16 Mbps: the old
-            // constant bitrate ballooned montages well past the combined size
-            // of their source clips. CRF 21 tracks the content and keeps the
-            // output near (usually under) the inputs' total size.
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "21",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-movflags",
-            "+faststart",
-        ])
-        .arg(&output)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !result.status.success() {
-        return Err(String::from_utf8_lossy(&result.stderr).to_string());
-    }
+    cmd.args([
+        "-filter_complex",
+        &filter,
+        "-map",
+        "[outv]",
+        "-map",
+        "[outa]",
+        // Quality-based (CRF) x264 instead of a fixed 16 Mbps: the old
+        // constant bitrate ballooned montages well past the combined size
+        // of their source clips. CRF 21 tracks the content and keeps the
+        // output near (usually under) the inputs' total size.
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "21",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "+faststart",
+    ])
+    .arg(&output);
+
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        run_ffmpeg_with_progress(&app2, cmd, total_secs, "montage")
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     Ok(output.to_string_lossy().replace('\\', "/"))
 }
 
@@ -997,6 +1175,13 @@ pub fn rename_clip(path: String, new_name: String) -> Result<String, String> {
         return Err("a clip with that name already exists".into());
     }
     std::fs::rename(&old, &target).map_err(|e| e.to_string())?;
+    // Kill markers can't be regenerated (unlike thumbnails) — carry them over.
+    if let (Some(from), Some(to)) = (
+        markers_path(&path),
+        markers_path(&target.to_string_lossy()),
+    ) {
+        let _ = std::fs::rename(from, to);
+    }
     Ok(target.to_string_lossy().replace('\\', "/"))
 }
 
@@ -1113,5 +1298,15 @@ pub async fn trim_clip(input: String, start: f64, end: f64) -> Result<String, St
     if !result.status.success() {
         return Err(String::from_utf8_lossy(&result.stderr).to_string());
     }
-    Ok(output.to_string_lossy().replace('\\', "/"))
+    let out = output.to_string_lossy().replace('\\', "/");
+    // Shift kill markers into the trimmed clip's own time base.
+    let shifted: Vec<f64> = read_markers(&input)
+        .into_iter()
+        .map(|t| t - start)
+        .filter(|t| *t >= 0.0 && *t <= end - start)
+        .collect();
+    if !shifted.is_empty() {
+        write_markers(&out, &shifted);
+    }
+    Ok(out)
 }

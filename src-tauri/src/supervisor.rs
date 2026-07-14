@@ -135,12 +135,11 @@ async fn tick(
                         .await;
                     crate::setup::ensure_audio_devices(client).await;
                     crate::setup::ensure_audio_tracks(client).await;
-                    crate::setup::ensure_split_audio(
-                        client,
-                        settings.game_exes.first().map(String::as_str),
-                        &settings.vc_exe,
-                    )
-                    .await;
+                    // VC track binds now; the game-audio track binds when a
+                    // game is actually detected (see the retarget below) —
+                    // binding it to an arbitrary list entry here would sit on
+                    // the wrong exe until then.
+                    crate::setup::ensure_split_audio(client, None, &settings.vc_exe).await;
                     crate::setup::ensure_video_settings(client, &settings).await;
                 }
             }

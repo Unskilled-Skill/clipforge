@@ -147,7 +147,45 @@ static CS2_KILLS: AtomicI64 = AtomicI64::new(-1);
 static LOL_LAST_EVENT: AtomicI64 = AtomicI64::new(-1);
 static GSI_CONFIG_DONE: AtomicBool = AtomicBool::new(false);
 
+/// Instants of recent detected kills, kept so a saved clip can be annotated
+/// with where in its timeline each kill sits (timeline kill markers).
+/// Pruned to the longest window a replay buffer can reach back.
+static KILL_TIMES: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+const KILL_RETENTION: Duration = Duration::from_secs(960); // > max replay_seconds
+
+fn record_kill() {
+    let mut kills = KILL_TIMES.lock().unwrap();
+    let now = Instant::now();
+    kills.retain(|t| now.duration_since(*t) < KILL_RETENTION);
+    kills.push(now);
+}
+
+/// Write the kill-marker sidecar for a clip that just hit disk: every
+/// recorded kill inside the clip's window, as seconds from clip start.
+/// The replay buffer always ends "now", so a kill K seconds ago sits at
+/// `duration - K`. Works for hotkey saves too — any kill-tracked game
+/// gets markers, not just auto-clipped saves.
+pub fn write_kill_markers(clip_path: &str) {
+    let kills: Vec<Instant> = KILL_TIMES.lock().unwrap().clone();
+    if kills.is_empty() {
+        return;
+    }
+    let Ok(duration) = crate::clips::probe_clip_duration(clip_path) else {
+        return;
+    };
+    let now = Instant::now();
+    let markers: Vec<f64> = kills
+        .iter()
+        .map(|t| duration - now.duration_since(*t).as_secs_f64())
+        .filter(|s| *s >= 0.0 && *s <= duration)
+        .collect();
+    if !markers.is_empty() {
+        crate::clips::write_markers(clip_path, &markers);
+    }
+}
+
 fn schedule_clip(app: &AppHandle, delay_s: f64) {
+    record_kill();
     let mut pending = PENDING.lock().unwrap();
     let already = pending.is_some();
     *pending = Some(Instant::now() + Duration::from_secs_f64(delay_s.max(2.0)));

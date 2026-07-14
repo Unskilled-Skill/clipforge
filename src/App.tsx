@@ -10,23 +10,30 @@ import {
   Camera,
   CheckCircle,
   Circle,
+  Crosshair,
   DiscordLogo,
   Gif,
   FilmSlate,
   FilmStrip,
+  FolderOpen,
   GameController,
   Gauge,
   GearSix,
+  Headset,
   MagnifyingGlass,
+  Microphone,
+  Monitor,
   PencilSimple,
   Play,
   Repeat,
   Scissors,
+  SpeakerHigh,
   Star,
   Sparkle,
   Stack,
   Trash,
   Warning,
+  Waveform,
   X,
 } from "@phosphor-icons/react";
 import "./App.css";
@@ -149,31 +156,32 @@ function gameColor(game: string) {
 // many tracks the clip has: new clips record the full 5-track split, while
 // older clips used a 3-track (mix/desktop/mic) or 2-track layout. Guessing
 // from the count keeps the labels matching the real audio per track.
-function trackLabels(count: number): { i: number; label: string }[] {
+type TrackMeta = { i: number; label: string; Icon: typeof SpeakerHigh };
+function trackLabels(count: number): TrackMeta[] {
   if (count >= 5) {
     return [
-      { i: 0, label: "🔊 mix" },
-      { i: 1, label: "🎮 game" },
-      { i: 2, label: "💬 voice" },
-      { i: 3, label: "🖥️ desktop" },
-      { i: 4, label: "🎤 mic" },
+      { i: 0, label: "mix", Icon: SpeakerHigh },
+      { i: 1, label: "game", Icon: GameController },
+      { i: 2, label: "voice", Icon: Headset },
+      { i: 3, label: "desktop", Icon: Monitor },
+      { i: 4, label: "mic", Icon: Microphone },
     ];
   }
   if (count === 3) {
     return [
-      { i: 0, label: "🔊 mix" },
-      { i: 1, label: "🖥️ desktop" },
-      { i: 2, label: "🎤 mic" },
+      { i: 0, label: "mix", Icon: SpeakerHigh },
+      { i: 1, label: "desktop", Icon: Monitor },
+      { i: 2, label: "mic", Icon: Microphone },
     ];
   }
   if (count === 2) {
     return [
-      { i: 0, label: "🔊 mix" },
-      { i: 1, label: "🎤 mic" },
+      { i: 0, label: "mix", Icon: SpeakerHigh },
+      { i: 1, label: "mic", Icon: Microphone },
     ];
   }
-  if (count <= 1) return [{ i: 0, label: "🔊 audio" }];
-  return Array.from({ length: count }, (_, i) => ({ i, label: `track ${i + 1}` }));
+  if (count <= 1) return [{ i: 0, label: "audio", Icon: SpeakerHigh }];
+  return Array.from({ length: count }, (_, i) => ({ i, label: `track ${i + 1}`, Icon: Waveform }));
 }
 
 function App() {
@@ -208,9 +216,26 @@ function App() {
   const [favorites, setFavorites] = useState<string[]>([]);
   const [audioTracks, setAudioTracks] = useState(1);
   const [audioKeep, setAudioKeep] = useState<Set<number>>(new Set([0]));
+  // Per-track export gain, 1 = unchanged. Applied in the ffmpeg mix.
+  const [trackGain, setTrackGain] = useState<Record<number, number>>({});
   const [trackWaves, setTrackWaves] = useState<{ track: number; waveform: string }[]>([]);
   const [montageSel, setMontageSel] = useState<Set<string>>(new Set());
   const [montaging, setMontaging] = useState(false);
+  // Kill timestamps (seconds) for the open clip, from the auto-clip sidecar.
+  const [killMarkers, setKillMarkers] = useState<number[]>([]);
+  // Last trim range per clip, persisted — montage cuts each clip to this.
+  const [trimRanges, setTrimRanges] = useState<Record<string, [number, number]>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("clipforge_trims") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const [hoverPath, setHoverPath] = useState<string | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [diskFree, setDiskFree] = useState<number | null>(null);
+  const [exportPct, setExportPct] = useState<number | null>(null);
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "largest" | "name">("newest");
   const [targetMb, setTargetMb] = useState(10);
   const [renaming, setRenaming] = useState(false);
   const [libRenamePath, setLibRenamePath] = useState<string | null>(null);
@@ -234,9 +259,17 @@ function App() {
   const [launchingObs, setLaunchingObs] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const dragging = useRef<"start" | "end" | "scrub" | null>(null);
+  // Seek requested while a previous seek was still decoding — applied on
+  // 'seeked' so scrubbing renders every frame it can without flooding seeks.
+  const scrubTarget = useRef<number | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
+  // Per-track mixer: one hidden <audio> per track, each solo'd to its own
+  // track, volume driven by that track's slider. The master <video> is muted
+  // while this engine is active (multi-track clip + track API available).
+  const trackAudioRefs = useRef<Record<number, HTMLAudioElement | null>>({});
+  const perTrackOk = useRef(false);
   const settingsRef = useRef<Settings | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   settingsRef.current = settings;
@@ -328,6 +361,9 @@ function App() {
       }),
       listen<string>("clip-error", (e) => setError(e.payload)),
       listen("clips-changed", () => refreshClips()),
+      listen<{ label: string; pct: number }>("export-progress", (e) =>
+        setExportPct(e.payload.pct)
+      ),
       listen("auto-clip-armed", () => showToast("Kill detected — clipping in a few seconds…")),
       listen("auto-clipped", () => showToast("Auto-clipped!")),
       listen<string>("update-installing", (e) =>
@@ -365,6 +401,46 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioKeep, selected]);
 
+  // Solo one hidden <audio> element to a single track. Once any element
+  // manages this, the per-track mixer owns playback audio: the master video
+  // is muted and each track's slider drives its own element's volume.
+  function configTrackAudio(el: HTMLAudioElement, track: number) {
+    const list = (el as unknown as {
+      audioTracks?: { length: number; [i: number]: { enabled: boolean } };
+    }).audioTracks;
+    if (!list || list.length <= track) return;
+    for (let k = 0; k < list.length; k++) list[k].enabled = k === track;
+    perTrackOk.current = true;
+    if (videoRef.current) videoRef.current.muted = true;
+    applyTrackVolumes();
+  }
+
+  function applyTrackVolumes() {
+    if (!perTrackOk.current) return;
+    for (const key of Object.keys(trackAudioRefs.current)) {
+      const i = Number(key);
+      const el = trackAudioRefs.current[i];
+      if (!el) continue;
+      el.volume = audioKeep.has(i) ? Math.max(0, Math.min(1, trackGain[i] ?? 1)) : 0;
+    }
+  }
+
+  // Track gain → live playback volume. With the per-track mixer active every
+  // slider mixes live; otherwise (single-track clip or no track API) fall
+  // back to the master volume following the first checked track. >100%
+  // boosts land in the export only — element volume caps at 1.
+  useEffect(() => {
+    if (perTrackOk.current) {
+      applyTrackVolumes();
+      return;
+    }
+    const v = videoRef.current;
+    if (!v) return;
+    const first = [...audioKeep].sort((a, b) => a - b)[0];
+    v.volume = Math.max(0, Math.min(1, first != null ? trackGain[first] ?? 1 : 1));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioKeep, trackGain, selected]);
+
   // Drive the playhead straight from the video clock, moving the DOM node
   // directly (translateX — no layout, no React re-render). The rAF loop only
   // runs while the video is actually playing; when paused, 'seeked' events
@@ -386,8 +462,25 @@ function App() {
         last = px;
       }
     };
+    // Keep the per-track <audio> mixer locked to the video clock: pause
+    // together, resume together, and nudge any element that drifts >0.2s.
+    const syncAudios = () => {
+      if (!perTrackOk.current) return;
+      for (const el of Object.values(trackAudioRefs.current)) {
+        if (!el) continue;
+        if (v.paused) {
+          if (!el.paused) el.pause();
+        } else if (el.paused) {
+          el.currentTime = v.currentTime;
+          el.play().catch(() => {});
+        } else if (Math.abs(el.currentTime - v.currentTime) > 0.2) {
+          el.currentTime = v.currentTime;
+        }
+      }
+    };
     const tick = () => {
       setPos();
+      syncAudios();
       if (previewing) {
         if (v.currentTime >= trimEnd) {
           if (loopPreview) v.currentTime = trimStart;
@@ -403,15 +496,36 @@ function App() {
     };
     const start = () => {
       if (!raf) raf = requestAnimationFrame(tick);
+      syncAudios();
+    };
+    const onPause = () => syncAudios();
+    const onSeeked = () => {
+      // While scrubbing the pointer owns the playhead; don't snap it back to
+      // the decoded frame. Drain the queued scrub target so the video keeps
+      // chasing the cursor one completed seek at a time.
+      if (dragging.current !== "scrub") setPos();
+      // Align paused audio elements so a resume starts in sync.
+      if (perTrackOk.current && v.paused) {
+        for (const el of Object.values(trackAudioRefs.current)) {
+          if (el?.paused) el.currentTime = v.currentTime;
+        }
+      }
+      if (scrubTarget.current != null) {
+        const t = scrubTarget.current;
+        scrubTarget.current = null;
+        v.currentTime = t;
+      }
     };
     v.addEventListener("play", start);
-    v.addEventListener("seeked", setPos);
+    v.addEventListener("pause", onPause);
+    v.addEventListener("seeked", onSeeked);
     v.addEventListener("loadedmetadata", setPos);
     start(); // autoPlay may already be running when the effect attaches
     return () => {
       cancelAnimationFrame(raf);
       v.removeEventListener("play", start);
-      v.removeEventListener("seeked", setPos);
+      v.removeEventListener("pause", onPause);
+      v.removeEventListener("seeked", onSeeked);
       v.removeEventListener("loadedmetadata", setPos);
     };
   }, [selected, previewing, trimStart, trimEnd, loopPreview]);
@@ -424,7 +538,54 @@ function App() {
       const next = new Set([...prev].filter((p) => live.has(p)));
       return next.size === prev.size ? prev : next;
     });
+    // Same for saved trim ranges, or localStorage fills with dead paths.
+    if (clips.length > 0) {
+      setTrimRanges((prev) => {
+        const live = new Set(clips.map((c) => c.path));
+        const stale = Object.keys(prev).filter((p) => !live.has(p));
+        if (stale.length === 0) return prev;
+        const next = { ...prev };
+        stale.forEach((p) => delete next[p]);
+        return next;
+      });
+    }
   }, [clips]);
+
+  // Remember the trim range per clip (dropped again when it's the full clip),
+  // so montage can cut each clip to its last trim without re-opening it.
+  useEffect(() => {
+    if (!selected || duration <= 0 || trimEnd <= 0) return;
+    const path = selected.path;
+    const isFull = trimStart <= 0 && trimEnd >= Math.floor(duration);
+    setTrimRanges((prev) => {
+      if (isFull) {
+        if (!(path in prev)) return prev;
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      }
+      const cur = prev[path];
+      if (cur && cur[0] === trimStart && cur[1] === trimEnd) return prev;
+      return { ...prev, [path]: [trimStart, trimEnd] };
+    });
+  }, [trimStart, trimEnd, duration, selected]);
+
+  useEffect(() => {
+    localStorage.setItem("clipforge_trims", JSON.stringify(trimRanges));
+  }, [trimRanges]);
+
+  // Watch free space on the clips drive — OBS silently fails to save when
+  // the disk fills, so warn well before that.
+  useEffect(() => {
+    if (!settings?.clips_dir) return;
+    const check = () =>
+      invoke<number>("disk_free", { dir: settingsRef.current!.clips_dir })
+        .then(setDiskFree)
+        .catch(() => {});
+    check();
+    const timer = setInterval(check, 60_000);
+    return () => clearInterval(timer);
+  }, [settings?.clips_dir]);
 
   async function addGameSource(exe: string, kind: string) {
     setSourceBusy(exe);
@@ -514,9 +675,16 @@ function App() {
     setDuration(0);
     setPreviewing(false);
     setAudioKeep(new Set([0]));
+    setTrackGain({});
     setAudioTracks(1);
     setTrackWaves([]);
+    perTrackOk.current = false;
+    trackAudioRefs.current = {};
     setRenaming(false);
+    setKillMarkers([]);
+    invoke<number[]>("load_markers", { input: clip.path })
+      .then((m) => setKillMarkers(m ?? []))
+      .catch(() => {});
     invoke<number>("list_audio_tracks", { input: clip.path })
       .then(setAudioTracks)
       .catch(() => {});
@@ -546,12 +714,36 @@ function App() {
     });
   }
 
+  // Explorer-style: click selects one (the range start); shift-click makes
+  // the selection exactly the run from that start to the shift-clicked clip,
+  // in the currently visible (filtered) order.
+  const selAnchor = useRef<string | null>(null);
+  function handleSelect(clip: ClipInfo, shift: boolean) {
+    if (shift && selAnchor.current && selAnchor.current !== clip.path) {
+      const a = visibleClips.findIndex((x) => x.path === selAnchor.current);
+      const b = visibleClips.findIndex((x) => x.path === clip.path);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setMontageSel(new Set(visibleClips.slice(lo, hi + 1).map((c) => c.path)));
+        return; // keep the anchor — a further shift-click re-ranges from it
+      }
+    }
+    toggleMontage(clip);
+    selAnchor.current = clip.path;
+  }
+
   async function exportMontage() {
     setMontaging(true);
     setError(null);
     try {
-      // keep library order (newest first) for the cut order
-      const inputs = clips.filter((c) => montageSel.has(c.path)).map((c) => c.path);
+      // keep library order (newest first) for the cut order; each clip is
+      // cut to its saved trim range (start=end=0 → whole clip)
+      const inputs = clips
+        .filter((c) => montageSel.has(c.path))
+        .map((c) => {
+          const r = trimRanges[c.path];
+          return { path: c.path, start: r?.[0] ?? 0, end: r?.[1] ?? 0 };
+        });
       await invoke<string>("export_montage", { inputs });
       showToast(`Montage of ${inputs.length} clips saved`);
       setMontageSel(new Set());
@@ -560,6 +752,7 @@ function App() {
       setError(String(e));
     } finally {
       setMontaging(false);
+      setExportPct(null);
     }
   }
 
@@ -690,10 +883,9 @@ function App() {
     if (Math.min(startDist, endDist) < grabRange) {
       dragging.current = startDist <= endDist ? "start" : "end";
     } else {
-      // Scrub: seek to the pointer and keep following it as it drags.
-      dragging.current = "scrub";
-      setPreviewing(false);
-      if (videoRef.current) videoRef.current.currentTime = t;
+      // Scrub: pause (editor convention), seek to the pointer, follow the drag.
+      beginScrub();
+      scrubTo(t);
     }
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
   }
@@ -705,14 +897,49 @@ function App() {
       setTrimStart(Math.min(Math.round(t * 10) / 10, trimEnd - 0.5));
     } else if (dragging.current === "end") {
       setTrimEnd(Math.max(Math.round(t * 10) / 10, trimStart + 0.5));
-    } else if (videoRef.current) {
-      // scrub — video seeks to follow the cursor; playhead tracks it via rAF
-      videoRef.current.currentTime = t;
+    } else {
+      scrubTo(t);
     }
   }
 
   function onTimelineUp() {
     dragging.current = null;
+  }
+
+  function beginScrub() {
+    dragging.current = "scrub";
+    setPreviewing(false);
+    videoRef.current?.pause();
+  }
+
+  // Grab the playhead itself (head cap or the line) to scrub from its spot.
+  function onPlayheadDown(e: React.PointerEvent) {
+    e.stopPropagation();
+    beginScrub();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+
+  function movePlayheadToTime(t: number) {
+    const lane = timelineRef.current;
+    const ph = playheadRef.current;
+    const d = videoRef.current?.duration || duration;
+    if (!lane || !ph || d <= 0) return;
+    ph.style.transform = `translateX(${(Math.min(Math.max(t, 0), d) / d) * lane.clientWidth}px)`;
+  }
+
+  // Scrub: the playhead sticks to the pointer instantly; the video renders
+  // every frame it can keep up with. Only one seek is in flight at a time —
+  // the next target waits for 'seeked' (drained in the playhead effect) so
+  // Chromium doesn't cancel/restart seeks and skip frames.
+  function scrubTo(t: number) {
+    const v = videoRef.current;
+    if (!v) return;
+    movePlayheadToTime(t);
+    if (v.seeking) {
+      scrubTarget.current = t;
+    } else {
+      v.currentTime = t;
+    }
   }
 
   // Editor keyboard shortcuts: space play/pause, arrows frame-step
@@ -743,11 +970,36 @@ function App() {
         case "]":
           setTrimEnd(Math.max(Math.round(video.currentTime * 10) / 10, trimStart + 0.5));
           break;
+        case "Escape":
+          setSelected(null);
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selected, duration, trimStart, trimEnd]);
+
+  // Library / settings keyboard shortcuts: Esc backs out (settings → library,
+  // selection → clear), Ctrl+A selects everything visible, Delete recycles
+  // the selection. Re-attached per render so closures stay fresh — cheap.
+  useEffect(() => {
+    if (selected) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      if (e.key === "Escape") {
+        if (showSettings) setShowSettings(false);
+        else setMontageSel(new Set());
+      } else if (!showSettings && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setMontageSel(new Set(visibleClips.map((c) => c.path)));
+      } else if (!showSettings && e.key === "Delete" && montageSel.size > 0) {
+        deleteSelected();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   async function applyHotkeys(save: string, short: string) {
     setError(null);
@@ -870,13 +1122,17 @@ function App() {
     setTrimming(true);
     setError(null);
     try {
-      await invoke<string>("trim_clip", {
+      const newPath = await invoke<string>("trim_clip", {
         input: selected.path,
         start: trimStart,
         end: trimEnd,
       });
-      showToast("Trimmed — new file saved next to the original");
+      showToast("Trimmed — opening the new clip");
       await refreshClips();
+      // Jump straight into the result so the trim isn't a mystery file
+      // sitting somewhere back in the library.
+      const name = newPath.split("/").pop() ?? "";
+      selectClip({ path: newPath, name, modified_ms: Date.now(), size_bytes: 0 });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -894,7 +1150,7 @@ function App() {
         targetMb,
         start: trimStart,
         end: trimEnd,
-        audioTracks: [...audioKeep].sort((a, b) => a - b),
+        audioTracks: [...audioKeep].sort((a, b) => a - b).map((t) => [t, trackGain[t] ?? 1]),
       });
       showToast("Exported and copied to clipboard — Ctrl+V in Discord");
       await refreshClips();
@@ -902,6 +1158,7 @@ function App() {
       setError(String(e));
     } finally {
       setExporting(false);
+      setExportPct(null);
     }
   }
 
@@ -925,12 +1182,25 @@ function App() {
   }
 
   const games = [...new Set(clips.map(gameOf))].sort();
-  const visibleClips = clips.filter(
-    (c) =>
-      (gameFilter === "all" ||
-        (gameFilter === "favorites" ? favorites.includes(c.path) : gameOf(c) === gameFilter)) &&
-      (search === "" || c.name.toLowerCase().includes(search.toLowerCase()))
-  );
+  const visibleClips = clips
+    .filter(
+      (c) =>
+        (gameFilter === "all" ||
+          (gameFilter === "favorites" ? favorites.includes(c.path) : gameOf(c) === gameFilter)) &&
+        (search === "" || c.name.toLowerCase().includes(search.toLowerCase()))
+    )
+    .sort((a, b) => {
+      switch (sortBy) {
+        case "oldest":
+          return a.modified_ms - b.modified_ms;
+        case "largest":
+          return b.size_bytes - a.size_bytes;
+        case "name":
+          return a.name.localeCompare(b.name);
+        default:
+          return b.modified_ms - a.modified_ms;
+      }
+    });
   const totalSize = formatSize(clips.reduce((a, c) => a + c.size_bytes, 0));
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
@@ -986,19 +1256,15 @@ function App() {
             <Stack size={17} weight={!showSettings ? "fill" : "regular"} />
             Library
           </button>
-          <button className="nav-item" onClick={() => setShowSettings(true)}>
-            <GearSix size={17} />
-            Settings
-          </button>
           <button
-            className="nav-item"
+            className={`nav-item ${showSettings ? "active" : ""}`}
             onClick={() => {
-              setOnboardStep(0);
-              setShowOnboarding(true);
+              setShowSettings(true);
+              setSelected(null);
             }}
           >
-            <BookOpen size={17} />
-            Tutorial
+            <GearSix size={17} weight={showSettings ? "fill" : "regular"} />
+            Settings
           </button>
         </nav>
 
@@ -1062,6 +1328,15 @@ function App() {
             )}
           </div>
         )}
+        {diskFree != null && diskFree < 5 * 1024 ** 3 && (
+          <div className="setup-bar disk-bar">
+            <Warning size={15} weight="fill" />
+            <span>
+              Low disk space — {formatSize(diskFree)} free on the clips drive. OBS stops saving
+              clips when it runs out; delete some clips or lower the storage cap.
+            </span>
+          </div>
+        )}
         {setup && (!setup.obs_installed || !setup.ffmpeg_installed) && (
           <div className="setup-bar">
             <Warning size={15} weight="fill" />
@@ -1113,7 +1388,7 @@ function App() {
           </div>
         )}
 
-        {!selected ? (
+        {showSettings ? null : !selected ? (
           <>
             <header className="lib-header">
               <div className="lib-title">
@@ -1131,6 +1406,17 @@ function App() {
                   placeholder="Search clips…"
                 />
               </div>
+              <select
+                className="audio-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                title="Sort clips"
+              >
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="largest">Largest</option>
+                <option value="name">Name</option>
+              </select>
               <button
                 className="btn-ghost"
                 onClick={async () => {
@@ -1158,9 +1444,16 @@ function App() {
                 <>
                   <span className="sel-count">{montageSel.size} selected</span>
                   {montageSel.size >= 2 && (
-                    <button className="btn-discord" onClick={exportMontage} disabled={montaging}>
+                    <button
+                      className="btn-discord"
+                      onClick={exportMontage}
+                      disabled={montaging}
+                      title="Stitch the selected clips into one video — clips with a saved trim (scissors badge) contribute only that cut"
+                    >
                       <FilmStrip size={15} weight="fill" />
-                      {montaging ? "rendering…" : `Montage ${montageSel.size}`}
+                      {montaging
+                        ? `rendering… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                        : `Montage ${montageSel.size}`}
                     </button>
                   )}
                   <button className="btn-danger" onClick={deleteSelected} disabled={montaging}>
@@ -1212,9 +1505,39 @@ function App() {
             ) : (
               <div className="grid">
                 {visibleClips.map((c) => (
-                  <div key={c.path} className="card" onClick={() => selectClip(c)}>
-                    <div className="card-thumb">
-                      {thumbs[c.path] ? (
+                  <div
+                    key={c.path}
+                    className="card"
+                    // Shift-click anywhere on the card range-selects instead of
+                    // opening; mousedown guard stops the browser text-select.
+                    onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+                    onClick={(e) => (e.shiftKey ? handleSelect(c, true) : selectClip(c))}
+                  >
+                    <div
+                      className="card-thumb"
+                      // Hover a beat → muted looping preview replaces the
+                      // still. The delay keeps fast mouse passes from
+                      // spinning up video decodes.
+                      onMouseEnter={() => {
+                        if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                        hoverTimer.current = setTimeout(() => setHoverPath(c.path), 250);
+                      }}
+                      onMouseLeave={() => {
+                        if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                        setHoverPath((p) => (p === c.path ? null : p));
+                      }}
+                    >
+                      {hoverPath === c.path ? (
+                        <video
+                          className="thumb-preview"
+                          src={convertFileSrc(c.path)}
+                          muted
+                          autoPlay
+                          loop
+                          playsInline
+                          preload="metadata"
+                        />
+                      ) : thumbs[c.path] ? (
                         <img src={convertFileSrc(thumbs[c.path].thumb)} alt="" loading="lazy" />
                       ) : (
                         <div className="thumb-placeholder" />
@@ -1225,6 +1548,14 @@ function App() {
                         {gameOf(c)}
                       </div>
                       <div className="card-topright">
+                        {trimRanges[c.path] && (
+                          <div
+                            className="trim-badge"
+                            title={`Saved trim ${trimRanges[c.path][0].toFixed(1)}s → ${trimRanges[c.path][1].toFixed(1)}s — montage uses this cut`}
+                          >
+                            <Scissors size={11} weight="bold" />
+                          </div>
+                        )}
                         {blackMap[c.path] === true && (
                           <div className="black-badge">
                             <Warning size={11} weight="fill" />
@@ -1233,10 +1564,10 @@ function App() {
                         )}
                         <button
                           className={`card-select ${montageSel.has(c.path) ? "on" : ""}`}
-                          title="Select (montage or delete)"
+                          title="Select — shift-click selects the range"
                           onClick={(e) => {
                             e.stopPropagation();
-                            toggleMontage(c);
+                            handleSelect(c, e.shiftKey);
                           }}
                         >
                           {montageSel.has(c.path) ? (
@@ -1345,6 +1676,13 @@ function App() {
               )}
               <div className="lib-spacer" />
               <button
+                className="btn-delete"
+                title="Show in Explorer"
+                onClick={() => invoke("show_in_folder", { path: selected.path }).catch(() => {})}
+              >
+                <FolderOpen size={15} />
+              </button>
+              <button
                 className={`btn-delete star ${favorites.includes(selected.path) ? "on" : ""}`}
                 onClick={() => toggleFavorite(selected)}
               >
@@ -1365,11 +1703,32 @@ function App() {
                 controls
                 autoPlay
                 onLoadedMetadata={(e) => {
-                  setDuration(e.currentTarget.duration);
-                  setTrimEnd(Math.floor(e.currentTarget.duration));
+                  const d = e.currentTarget.duration;
+                  setDuration(d);
+                  // Restore the clip's last trim so montage prep survives
+                  // closing and re-opening the editor.
+                  const saved = trimRanges[selected.path];
+                  if (saved && saved[0] < d) {
+                    setTrimStart(Math.max(0, saved[0]));
+                    setTrimEnd(Math.min(saved[1], d));
+                  } else {
+                    setTrimEnd(Math.floor(d));
+                  }
                   syncPlaybackAudio();
                 }}
               />
+              {audioTracks > 1 &&
+                trackLabels(audioTracks).map((t) => (
+                  <audio
+                    key={`${selected.path}#track${t.i}`}
+                    ref={(el) => {
+                      trackAudioRefs.current[t.i] = el;
+                    }}
+                    src={convertFileSrc(selected.path)}
+                    preload="auto"
+                    onLoadedMetadata={(e) => configTrackAudio(e.currentTarget, t.i)}
+                  />
+                ))}
             </div>
 
             <div className="trim-section">
@@ -1391,6 +1750,12 @@ function App() {
                   <Repeat size={12} weight="bold" />
                   loop
                 </button>
+                {killMarkers.length > 0 && (
+                  <span className="kill-count" title="Auto-detected kills — click a marker on the timeline to jump">
+                    <Crosshair size={12} weight="bold" />
+                    {killMarkers.length} kill{killMarkers.length > 1 ? "s" : ""}
+                  </span>
+                )}
                 <span className="trim-readout">
                   {trimStart.toFixed(1)}s → {trimEnd.toFixed(1)}s · {(trimEnd - trimStart).toFixed(1)}s selected
                 </span>
@@ -1398,7 +1763,10 @@ function App() {
               {duration > 0 && (
                 <div className="multitrack">
                   <div className="mt-labels">
-                    <div className="mt-label mt-vid-label">🎬 video</div>
+                    <div className="mt-label mt-vid-label">
+                      <FilmSlate size={14} weight="fill" />
+                      video
+                    </div>
                     {trackLabels(audioTracks).map((t) => {
                       const on = audioKeep.has(t.i);
                       return (
@@ -1414,7 +1782,20 @@ function App() {
                               })
                             }
                           />
+                          <t.Icon size={14} weight="fill" className="mt-label-icon" />
                           {t.label}
+                          <input
+                            type="range"
+                            min={0}
+                            max={2}
+                            step={0.05}
+                            value={trackGain[t.i] ?? 1}
+                            disabled={!on}
+                            title={`Export volume: ${Math.round((trackGain[t.i] ?? 1) * 100)}%`}
+                            onChange={(e) =>
+                              setTrackGain((g) => ({ ...g, [t.i]: Number(e.target.value) }))
+                            }
+                          />
                         </label>
                       );
                     })}
@@ -1448,7 +1829,30 @@ function App() {
                         width: `${((trimEnd - trimStart) / duration) * 100}%`,
                       }}
                     />
-                    <div ref={playheadRef} className="mt-playhead" style={{ left: 0 }} />
+                    {killMarkers
+                      .filter((t) => t >= 0 && t <= duration)
+                      .map((t, i) => (
+                        <div
+                          key={i}
+                          className="kill-marker"
+                          style={{ left: `${(t / duration) * 100}%` }}
+                          title={`Kill at ${formatDuration(t)} — click to jump`}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const v = videoRef.current;
+                            if (!v) return;
+                            v.pause();
+                            setPreviewing(false);
+                            v.currentTime = t;
+                          }}
+                        >
+                          <Crosshair size={11} weight="bold" />
+                        </div>
+                      ))}
+                    <div ref={playheadRef} className="mt-playhead" style={{ left: 0 }}>
+                      <div className="mt-playhead-grab" onPointerDown={onPlayheadDown} />
+                    </div>
                     <div className="mt-handle" style={{ left: `${(trimStart / duration) * 100}%` }}>
                       <span className="grip" />
                     </div>
@@ -1493,12 +1897,14 @@ function App() {
               </select>
               <button className="btn-discord" onClick={exportDiscord} disabled={exporting}>
                 <DiscordLogo size={17} weight="fill" />
-                {exporting ? "exporting…" : "Export for Discord"}
+                {exporting
+                  ? `exporting… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                  : "Export for Discord"}
               </button>
             </div>
             <p className="kbd-hints">
               <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows 1s ·{" "}
-              <kbd>[</kbd> set start · <kbd>]</kbd> set end
+              <kbd>[</kbd> set start · <kbd>]</kbd> set end · <kbd>esc</kbd> back
             </p>
           </div>
         )}
@@ -1509,7 +1915,6 @@ function App() {
             {toast}
           </div>
         )}
-      </main>
 
       {showAppPicker && (
         <div
@@ -1620,21 +2025,28 @@ function App() {
       )}
 
       {showSettings && (
-        <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <GearSix size={19} color="#7f9bff" weight="fill" />
-              <span className="modal-title">Settings</span>
+        <div className="settings-page">
+            <header className="lib-header">
+              <div className="lib-title">
+                <h1>Settings</h1>
+              </div>
               <div className="lib-spacer" />
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  setOnboardStep(0);
+                  setShowOnboarding(true);
+                }}
+              >
+                <BookOpen size={15} />
+                Tutorial
+              </button>
               <button className="btn-ghost reset-btn" disabled={resetting} onClick={resetSettings}>
                 <ArrowCounterClockwise size={14} />
                 {resetting ? "resetting…" : "Reset to defaults"}
               </button>
-              <button className="modal-close" onClick={() => setShowSettings(false)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="modal-body">
+            </header>
+            <div className="settings-body">
               <details className="set-group advanced">
                 <summary className="set-label">
                   ADVANCED CONNECTION — auto-configured, only for remote or portable OBS
@@ -1992,9 +2404,26 @@ function App() {
                   );
                 })}
                 {settings.game_blacklist.length > 0 && (
-                  <span className="field-label">
-                    Blacklisted (won't auto-add): {settings.game_blacklist.join(", ")}
-                  </span>
+                  <>
+                    <span className="field-label">Blacklisted (won't auto-add):</span>
+                    <div className="blacklist-chips">
+                      {settings.game_blacklist.map((g) => (
+                        <button
+                          key={g}
+                          className="chip"
+                          title="Remove from blacklist"
+                          onClick={() =>
+                            saveSettings({
+                              ...settings,
+                              game_blacklist: settings.game_blacklist.filter((x) => x !== g),
+                            })
+                          }
+                        >
+                          {g} <X size={11} />
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 )}
               </section>
 
@@ -2037,9 +2466,9 @@ function App() {
                 </label>
               </section>
             </div>
-          </div>
         </div>
       )}
+      </main>
 
       {showOnboarding && (
         <div className="modal-backdrop" onClick={() => setShowOnboarding(false)}>
@@ -2068,7 +2497,11 @@ function App() {
                     no manual recording, no huge files piling up.
                   </p>
                   <p className="onboard-copy">
-                    This walkthrough covers setup, capture settings, and how to trim + export a
+                    Every clip records five audio tracks (full mix, game, voice chat, desktop,
+                    mic) so you can mute your friends — or yourself — at export time.
+                  </p>
+                  <p className="onboard-copy">
+                    This walkthrough covers setup, capture settings, and how to edit + share a
                     clip. Takes under a minute.
                   </p>
                 </section>
@@ -2218,23 +2651,40 @@ function App() {
 
               {onboardStep === 3 && (
                 <section className="set-group">
-                  <p className="onboard-copy">Once a clip saves, it shows up in your Library.</p>
+                  <p className="onboard-copy">
+                    Once a clip saves, it shows up in your Library — hover a card to preview it,
+                    click to open the editor.
+                  </p>
                   <ul className="onboard-list">
-                    <li>Click a clip to open the trimmer.</li>
                     <li>
-                      <kbd>[</kbd> sets the trim start, <kbd>]</kbd> sets the trim end.
+                      The editor shows the video plus every audio track with its own waveform —
+                      checkboxes pick which tracks export, sliders set their volume.
                     </li>
                     <li>
-                      <kbd>space</kbd> plays/pauses, <kbd>←</kbd>
+                      Drag anywhere on the timeline to scrub. <kbd>space</kbd> plays/pauses,{" "}
+                      <kbd>←</kbd>
                       <kbd>→</kbd> steps a frame, <kbd>shift</kbd>+arrows steps 1s.
                     </li>
                     <li>
-                      Hit <strong>Export for Discord</strong> to render a size-budgeted MP4 ready
-                      to share.
+                      Drag the handles (or <kbd>[</kbd> / <kbd>]</kbd>) to set the trim range —
+                      it's remembered per clip.
+                    </li>
+                    <li>
+                      Auto-clipped kills show as markers on the timeline — click one to jump
+                      straight to the action.
+                    </li>
+                    <li>
+                      <strong>Export for Discord</strong> renders a size-budgeted MP4 straight to
+                      your clipboard; GIF and frame-grab buttons sit next to it.
+                    </li>
+                    <li>
+                      Select multiple clips in the Library and hit <strong>Montage</strong> to
+                      stitch them — each clip contributes its saved trim.
                     </li>
                     <li>
                       Star a clip to keep it exempt from auto-cleanup; use{" "}
-                      <strong>Scan for black</strong> to catch dead recordings.
+                      <strong>Scan for black</strong> to catch dead recordings. Capture quality,
+                      hotkeys and storage live in <strong>Settings</strong>.
                     </li>
                   </ul>
                 </section>

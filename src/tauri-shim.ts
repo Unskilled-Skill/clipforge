@@ -73,6 +73,14 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
     }
     case "list_audio_tracks":
       return 3;
+    case "load_markers":
+      // Every third mock clip has kill markers, for editor design work.
+      return (_args as { input: string }).input.match(/mock-(\d+)/)?.[1] &&
+        Number((_args as { input: string }).input.match(/mock-(\d+)/)![1]) % 3 === 0
+        ? [4.2, 11.9, 23.5]
+        : [];
+    case "disk_free":
+      return 3_400_000_000; // low on purpose — shows the warning banner in dev
     case "gen_waveform":
       return "mock://waveform";
     case "gen_waveforms":
