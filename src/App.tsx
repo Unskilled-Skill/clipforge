@@ -1274,7 +1274,7 @@ function App() {
 
         <div className="sidebar-spacer" />
 
-        <div className="status-card">
+        <div className={`status-card ${status.replay_buffer_active ? "armed" : ""}`}>
           <div className="obs-row">
             <span className={`obs-dot ${status.connected ? "on" : ""}`} />
             <span className="obs-name">OBS Studio</span>
@@ -1443,31 +1443,6 @@ function App() {
                   <Trash size={15} />
                   Delete {blackCount} black
                 </button>
-              )}
-              {montageSel.size >= 1 && (
-                <>
-                  <span className="sel-count">{montageSel.size} selected</span>
-                  {montageSel.size >= 2 && (
-                    <button
-                      className="btn-discord"
-                      onClick={exportMontage}
-                      disabled={montaging}
-                      title="Stitch the selected clips into one video — clips with a saved trim (scissors badge) contribute only that cut"
-                    >
-                      <FilmStrip size={15} weight="fill" />
-                      {montaging
-                        ? `rendering… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
-                        : `Montage ${montageSel.size}`}
-                    </button>
-                  )}
-                  <button className="btn-danger" onClick={deleteSelected} disabled={montaging}>
-                    <Trash size={15} />
-                    Delete {montageSel.size}
-                  </button>
-                  <button className="btn-ghost" onClick={() => setMontageSel(new Set())}>
-                    Clear
-                  </button>
-                </>
               )}
             </header>
 
@@ -1643,6 +1618,40 @@ function App() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {montageSel.size >= 1 && (
+              <div className="sel-bar">
+                <span className="sel-count">
+                  {montageSel.size} selected
+                  {[...montageSel].some((p) => trimRanges[p]) && (
+                    <span className="sel-trim-note">
+                      <Scissors size={11} weight="bold" />
+                      trims apply
+                    </span>
+                  )}
+                </span>
+                {montageSel.size >= 2 && (
+                  <button
+                    className="btn-discord"
+                    onClick={exportMontage}
+                    disabled={montaging}
+                    title="Stitch the selected clips into one video — clips with a saved trim (scissors badge) contribute only that cut"
+                  >
+                    <FilmStrip size={15} weight="fill" />
+                    {montaging
+                      ? `rendering… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                      : `Montage ${montageSel.size}`}
+                  </button>
+                )}
+                <button className="btn-danger" onClick={deleteSelected} disabled={montaging}>
+                  <Trash size={15} />
+                  Delete {montageSel.size}
+                </button>
+                <button className="btn-ghost" onClick={() => setMontageSel(new Set())} title="Esc also clears">
+                  Clear
+                </button>
               </div>
             )}
           </>
@@ -1889,22 +1898,24 @@ function App() {
                 <Scissors size={16} />
                 {trimming ? "trimming…" : "Trim · lossless"}
               </button>
-              <select
-                className="audio-select"
-                value={targetMb}
-                onChange={(e) => setTargetMb(Number(e.target.value))}
-                title="Export size budget"
-              >
-                <option value={10}>10 MB</option>
-                <option value={50}>50 MB · Nitro Basic</option>
-                <option value={500}>500 MB · Nitro</option>
-              </select>
-              <button className="btn-discord" onClick={exportDiscord} disabled={exporting}>
-                <DiscordLogo size={17} weight="fill" />
-                {exporting
-                  ? `exporting… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
-                  : "Export for Discord"}
-              </button>
+              <div className="export-group">
+                <select
+                  className="audio-select"
+                  value={targetMb}
+                  onChange={(e) => setTargetMb(Number(e.target.value))}
+                  title="Export size budget"
+                >
+                  <option value={10}>10 MB</option>
+                  <option value={50}>50 MB · Nitro Basic</option>
+                  <option value={500}>500 MB · Nitro</option>
+                </select>
+                <button className="btn-discord" onClick={exportDiscord} disabled={exporting}>
+                  <DiscordLogo size={17} weight="fill" />
+                  {exporting
+                    ? `exporting… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                    : "Export for Discord"}
+                </button>
+              </div>
             </div>
             <p className="kbd-hints">
               <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows 1s ·{" "}
@@ -2539,6 +2550,15 @@ function App() {
             <div className="modal-body onboard-body">
               {onboardStep === 0 && (
                 <section className="set-group">
+                  <div className="onboard-hero">
+                    <div className="brand-mark onboard-hero-mark">
+                      <FilmSlate size={24} weight="fill" color="#fff" />
+                    </div>
+                    <span className="onboard-hero-title">Clip first, record never</span>
+                    <span className="onboard-hero-sub">
+                      Your gameplay is always buffered — you only keep the good parts
+                    </span>
+                  </div>
                   <p className="onboard-copy">
                     ClipForge keeps a rolling buffer of your gameplay through OBS. Hit a hotkey (or
                     let auto-clip catch a kill) and the last stretch of footage saves as a clip —

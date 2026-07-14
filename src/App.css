@@ -309,6 +309,11 @@ kbd {
   gap: 18px;
   flex-shrink: 0;
 }
+.lib-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .lib-title h1 {
   font-family: "Space Grotesk", sans-serif;
   font-weight: 700;
@@ -316,7 +321,15 @@ kbd {
   letter-spacing: -0.02em;
   margin: 0;
 }
-.lib-count { font-size: 12.5px; color: #767a85; }
+.lib-count {
+  font-size: 11.5px;
+  color: #767a85;
+  background: #14151b;
+  border: 1px solid #23252f;
+  padding: 4px 11px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
 .lib-spacer { flex: 1; }
 
 .search-box {
@@ -1485,3 +1498,90 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   border-bottom: 1px solid rgba(240, 96, 95, 0.25);
   color: #ff8a89;
 }
+
+/* ---- floating selection action bar (library) ---- */
+.sel-bar {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(17, 18, 24, 0.92);
+  border: 1px solid #2a2d38;
+  border-radius: 14px;
+  padding: 10px 12px 10px 18px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+  z-index: 40;
+  animation: cf-toast 0.22s ease-out;
+}
+.sel-bar .sel-count { color: #e4e6ec; display: flex; align-items: center; }
+.sel-trim-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: rgba(107, 139, 255, 0.14);
+  color: #9db2ff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ---- editor: contained trim panel + joined export control ---- */
+.trim-section {
+  padding: 14px 16px 16px;
+  background: linear-gradient(180deg, #12131a, #0f1017);
+  border: 1px solid #1e2028;
+  border-radius: 14px;
+}
+.export-group { display: flex; align-items: stretch; }
+.export-group .audio-select {
+  height: 42px;
+  border-radius: 9px 0 0 9px;
+  border-right: none;
+}
+.export-group .btn-discord { border-radius: 0 9px 9px 0; }
+
+/* ---- sidebar status card: armed accent ---- */
+.status-card { transition: border-color 0.3s ease, background 0.3s ease; }
+.status-card.armed {
+  border-color: rgba(64, 221, 128, 0.26);
+  background: linear-gradient(180deg, rgba(64, 221, 128, 0.05), transparent 45%), #14151b;
+}
+
+/* ---- modal head icon chip (matches settings section headers) ---- */
+.modal-head > svg:first-child {
+  width: 34px;
+  height: 34px;
+  padding: 8px;
+  box-sizing: border-box;
+  background: rgba(76, 110, 245, 0.12);
+  border: 1px solid rgba(76, 110, 245, 0.18);
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+/* ---- onboarding: hero + progress dots ---- */
+.onboard-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0 20px;
+  text-align: center;
+}
+.onboard-hero-mark { width: 52px; height: 52px; border-radius: 14px; }
+.onboard-hero-title {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 6px;
+}
+.onboard-hero-sub { font-size: 12.5px; color: #9599a3; }
+.onboard-dot { transition: width 0.2s ease, background 0.2s ease; }
+.onboard-dot.active { width: 18px; border-radius: 4px; }
