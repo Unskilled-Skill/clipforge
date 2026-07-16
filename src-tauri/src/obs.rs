@@ -287,9 +287,15 @@ pub async fn start_replay_buffer(state: tauri::State<'_, ObsState>) -> Result<()
     Ok(())
 }
 
+/// When the last replay save was requested. The supervisor refuses to stop
+/// the buffer right after a save: OBS's stop can deadlock ("Stopping Replay
+/// Buffer…" forever) if it lands while the flush is still writing.
+pub static LAST_SAVE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
 /// Flush the replay buffer to disk. The resulting file path arrives
 /// asynchronously via the `clip-saved` event.
 pub async fn save_replay(state: &ObsState) -> Result<(), String> {
+    *LAST_SAVE.lock().unwrap() = Some(std::time::Instant::now());
     let guard = state.client.lock().await;
     let client = guard.as_ref().ok_or("not connected")?;
     // If the buffer isn't armed there's nothing to flush — OBS returns a

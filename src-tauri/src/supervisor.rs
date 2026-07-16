@@ -32,6 +32,9 @@ pub async fn run(app: AppHandle) {
     let mut session_games: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Exe the GameAudio split-track is currently bound to; retarget on change.
     let mut audio_game: Option<String> = None;
+    // Consecutive ticks without a detected game — the buffer only disarms
+    // after a grace period, not the instant a game exits.
+    let mut no_game_ticks: u32 = 0;
 
     loop {
         let state = tick(
@@ -40,6 +43,7 @@ pub async fn run(app: AppHandle) {
             &mut launch_cooldown,
             &mut session_games,
             &mut audio_game,
+            &mut no_game_ticks,
         )
         .await;
         if let Ok(mut current) = app.state::<crate::obs::CurrentGame>().0.lock() {
@@ -59,6 +63,7 @@ async fn tick(
     launch_cooldown: &mut u8,
     session_games: &mut std::collections::HashSet<String>,
     audio_game: &mut Option<String>,
+    no_game_ticks: &mut u32,
 ) -> SupervisorState {
     let mut settings = load_settings_inner(app);
     let mut state = SupervisorState::default();
@@ -190,6 +195,12 @@ async fn tick(
                 *audio_game = Some(game.clone());
             }
         }
+        if state.game.is_some() {
+            *no_game_ticks = 0;
+        } else {
+            *no_game_ticks = no_game_ticks.saturating_add(1);
+        }
+
         state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
         if settings.auto_manage_buffer {
             if state.game.is_some() && !state.buffer_active {
@@ -197,8 +208,21 @@ async fn tick(
                     state.buffer_active = true;
                 }
             } else if state.game.is_none() && state.buffer_active {
-                if client.replay_buffer().stop().await.is_ok() {
-                    state.buffer_active = false;
+                // Disarm carefully — OBS's stop request can wedge it on
+                // "Stopping Replay Buffer…" if it lands during encoder
+                // teardown or while a save is still flushing to disk:
+                //  - grace period: the game must be gone for ~30s (brief
+                //    exits, crashes-and-relaunches, launcher hops don't
+                //    cycle the buffer at all)
+                //  - never stop within 15s of a replay save
+                let save_recent = crate::obs::LAST_SAVE
+                    .lock()
+                    .map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_secs(15)))
+                    .unwrap_or(false);
+                if *no_game_ticks >= 10 && !save_recent {
+                    if client.replay_buffer().stop().await.is_ok() {
+                        state.buffer_active = false;
+                    }
                 }
             }
         }
