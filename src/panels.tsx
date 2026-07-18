@@ -3,6 +3,7 @@
 // over props, so App.tsx keeps the data flow while this file keeps the bulk.
 import type { Dispatch, SetStateAction } from "react";
 import { invoke, openDialog } from "./tauri-shim";
+import appIcon from "./assets/app-icon.png";
 import type { GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import {
   ArrowCounterClockwise,
@@ -702,7 +703,7 @@ export function OnboardingModal(props: {
             <section className="set-group">
               <div className="onboard-hero">
                 <div className="brand-mark onboard-hero-mark">
-                  <FilmSlate size={24} weight="fill" color="#fff" />
+                  <img src={appIcon} alt="" draggable={false} />
                 </div>
                 <span className="onboard-hero-title">Clip first, record never</span>
                 <span className="onboard-hero-sub">

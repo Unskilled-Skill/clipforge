@@ -45,6 +45,7 @@ import type {
   SupervisorState,
   ThumbInfo,
 } from "./types";
+import appIcon from "./assets/app-icon.png";
 import "./App.css";
 
 // Ruler tick positions (seconds) for a clip: coarsest step that still
@@ -1321,7 +1322,7 @@ function App() {
         </div>
         <div className="splash">
           <div className="brand-mark splash-mark">
-            <FilmSlate size={26} weight="fill" color="#fff" />
+            <img src={appIcon} alt="" draggable={false} />
           </div>
           <span className="splash-name">ClipForge</span>
           <span className="splash-hint">loading library…</span>
@@ -1394,7 +1395,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            <FilmSlate size={19} weight="fill" color="#fff" />
+            <img src={appIcon} alt="" draggable={false} />
           </div>
           <div className="brand-text">
             <span className="brand-name">ClipForge</span>
