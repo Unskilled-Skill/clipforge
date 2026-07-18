@@ -4,6 +4,7 @@ use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager};
 
+
 use crate::clips::load_settings_inner;
 use crate::obs::{connect_internal, ensure_autogame_source, ObsState};
 
@@ -159,9 +160,18 @@ async fn tick(
     // 3. Game detection → buffer arm/disarm.
     // Exe whitelist first (works for alt-tabbed games), fullscreen
     // heuristic second (catches games missing from the list).
+    //
+    // A process only counts as running if it owns a visible window: a game
+    // hung at exit (dota2.exe wedged in kernel I/O, unkillable until
+    // reboot) still enumerates as a process but has no windows — trusting
+    // enumeration alone kept the buffer armed at an idle desktop and
+    // blocked updates for as long as the corpse existed. Real games always
+    // have a window, even alt-tabbed.
+    let windowed = crate::fullscreen::pids_with_visible_windows();
     let running: std::collections::HashSet<String> = system
         .processes()
         .values()
+        .filter(|p| windowed.contains(&p.pid().as_u32()))
         .map(|p| p.name().to_string_lossy().to_lowercase())
         .collect();
     // Forget heuristic games whose process exited.

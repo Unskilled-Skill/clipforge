@@ -59,6 +59,30 @@ const BLOCKLIST: &[&str] = &[
     "wallpaper32.exe",
 ];
 
+/// PIDs that own at least one visible top-level window. Used to tell real
+/// running apps from processes hung at exit, which enumerate but are
+/// windowless.
+pub fn pids_with_visible_windows() -> std::collections::HashSet<u32> {
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            if IsWindowVisible(hwnd).as_bool() {
+                let set = &mut *(lparam.0 as *mut std::collections::HashSet<u32>);
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                if pid != 0 {
+                    set.insert(pid);
+                }
+            }
+            BOOL(1)
+        }
+    }
+    let mut set = std::collections::HashSet::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut set as *mut _ as isize));
+    }
+    set
+}
+
 /// Returns the exe name of the foreground app if it looks like a game.
 pub fn fullscreen_game() -> Option<String> {
     unsafe {
