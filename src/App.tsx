@@ -213,6 +213,8 @@ function App() {
   // Per-track export gain, 1 = unchanged. Applied in the ffmpeg mix.
   const [trackGain, setTrackGain] = useState<Record<number, number>>({});
   const [trackWaves, setTrackWaves] = useState<{ track: number; waveform: string }[]>([]);
+  // Filmstrip image for the editor's video lane (10 tiled frames).
+  const [filmstrip, setFilmstrip] = useState<string | null>(null);
   const [montageSel, setMontageSel] = useState<Set<string>>(new Set());
   const [montaging, setMontaging] = useState(false);
   // Kill timestamps (seconds) for the open clip, from the auto-clip sidecar.
@@ -745,6 +747,10 @@ function App() {
       .catch(() => {});
     invoke<{ track: number; waveform: string }[]>("gen_waveforms", { input: clip.path })
       .then(setTrackWaves)
+      .catch(() => {});
+    setFilmstrip(null);
+    invoke<string>("gen_filmstrip", { input: clip.path })
+      .then(setFilmstrip)
       .catch(() => {});
   }
 
@@ -2074,8 +2080,13 @@ function App() {
                       ))}
                     </div>
                     <div className="mt-lane mt-vid">
-                      {thumbs[selected.path] && (
-                        <img src={convertFileSrc(thumbs[selected.path].thumb)} alt="" draggable={false} />
+                      {(filmstrip || thumbs[selected.path]) && (
+                        <img
+                          className={filmstrip ? "strip" : ""}
+                          src={convertFileSrc(filmstrip ?? thumbs[selected.path].thumb)}
+                          alt=""
+                          draggable={false}
+                        />
                       )}
                     </div>
                     {trackLabels(audioTracks).map((t) => {

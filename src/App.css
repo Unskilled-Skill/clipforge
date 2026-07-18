@@ -772,6 +772,8 @@ select:focus,
 .mt-lane.off { opacity: 0.35; }
 .mt-vid { height: 46px; }
 .mt-vid img { object-fit: cover; }
+/* Filmstrip is pre-tiled to the lane's shape — stretch it edge to edge. */
+.mt-vid img.strip { object-fit: fill; }
 
 .mt-range {
   position: absolute;
@@ -914,6 +916,10 @@ select:focus,
   width: 100%;
   aspect-ratio: 16 / 9;
   max-height: 52vh;
+  /* The height cap wins: cap the width to match, so a wide window doesn't
+     stretch the frame and fill the slack with black slabs. */
+  max-width: calc(52vh * 16 / 9);
+  margin: 0 auto;
   border-radius: 14px;
   background: #060709;
   border: 1px solid #1c1e26;

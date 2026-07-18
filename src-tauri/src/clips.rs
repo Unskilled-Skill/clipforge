@@ -555,6 +555,7 @@ pub fn delete_clip(path: String) -> Result<(), String> {
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.jpg")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave.png")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.markers.json")));
+        let _ = std::fs::remove_file(thumbs.join(format!("{stem}.strip.jpg")));
         for i in 0..6 {
             let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave{i}.png")));
         }
@@ -932,6 +933,46 @@ pub async fn gen_waveform(input: String) -> Result<String, String> {
                 "aformat=channel_layouts=mono,compand,showwavespic=s=1200x64:colors=#6b8bff",
                 "-frames:v",
                 "1",
+            ])
+            .arg(&out)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+    }
+    Ok(out.to_string_lossy().replace('\\', "/"))
+}
+
+/// 10-frame filmstrip for the editor's video lane, cached in `.thumbs`.
+/// One tiled JPEG per clip — the lane reads as actual footage over time
+/// instead of one stretched thumbnail.
+#[tauri::command]
+pub async fn gen_filmstrip(input: String) -> Result<String, String> {
+    let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
+    let input_path = PathBuf::from(&input);
+    let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join(format!(
+        "{}.strip.jpg",
+        input_path.file_stem().ok_or("bad path")?.to_string_lossy()
+    ));
+    if !out.exists() {
+        let duration = clip_duration(&ffmpeg, &input)?;
+        // One frame per 10% of the clip, tiled into a single row.
+        let fps = 10.0 / duration.max(0.5);
+        let result = hidden_cmd(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-y",
+                "-i",
+                &input,
+                "-vf",
+                &format!("fps={fps:.6},scale=-2:92,tile=10x1"),
+                "-frames:v",
+                "1",
+                "-q:v",
+                "4",
             ])
             .arg(&out)
             .output()

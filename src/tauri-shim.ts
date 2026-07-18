@@ -81,6 +81,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
         : [];
     case "copy_clip":
       return null;
+    case "gen_filmstrip":
+      return "mock://filmstrip";
     case "disk_free":
       return 3_400_000_000; // low on purpose — shows the warning banner in dev
     case "gen_waveform":
