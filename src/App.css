@@ -913,6 +913,10 @@ select:focus,
 }
 
 .player-wrap {
+  /* .editor is a scrolling flex column — without this, overflow shrinks the
+     player's height (aspect-ratio height is shrinkable) while width stays,
+     pillarboxing the video into a short wide slab. */
+  flex-shrink: 0;
   width: 100%;
   aspect-ratio: 16 / 9;
   max-height: 52vh;
