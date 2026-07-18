@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 
 .tauri-signing/
+tauri-override.json
