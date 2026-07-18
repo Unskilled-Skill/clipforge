@@ -251,6 +251,8 @@ function App() {
   const [hoverPath, setHoverPath] = useState<string | null>(null);
   // Right-click context menu over a library card.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; clip: ClipInfo } | null>(null);
+  // Release notes of the update that just installed (first boot only).
+  const [whatsNew, setWhatsNew] = useState<{ version: string; notes: string } | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [diskFree, setDiskFree] = useState<number | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
@@ -355,6 +357,9 @@ function App() {
       }
       localStorage.setItem("clipforge_seen", String(Date.now()));
       invoke<string[]>("load_favorites").then(setFavorites).catch(() => {});
+      invoke<{ version: string; notes: string } | null>("take_update_notes")
+        .then((n) => n && setWhatsNew(n))
+        .catch(() => {});
       invoke<SetupStatus>("setup_status")
         .then(setSetup)
         .catch(() => {});
@@ -2201,6 +2206,41 @@ function App() {
             {toast}
           </div>
         )}
+
+      {whatsNew && (
+        <div className="modal-backdrop" onClick={() => setWhatsNew(null)}>
+          <div className="modal whatsnew-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <Sparkle size={19} color="#7f9bff" weight="fill" />
+              <span className="modal-title">Updated to v{whatsNew.version}</span>
+              <div className="lib-spacer" />
+              <button className="modal-close" onClick={() => setWhatsNew(null)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <span className="set-label">WHAT'S NEW</span>
+              {whatsNew.notes
+                .split(/\n+/)
+                .filter((l) => l.trim())
+                .map((line, i) => (
+                  <p key={i} className="onboard-copy">
+                    {line.trim()}
+                  </p>
+                ))}
+              {!whatsNew.notes.trim() && (
+                <p className="onboard-copy">Bug fixes and improvements.</p>
+              )}
+            </div>
+            <div className="onboard-footer">
+              <div />
+              <button className="btn-ghost apply-btn" onClick={() => setWhatsNew(null)}>
+                Nice
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {ctxMenu && (
         <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>

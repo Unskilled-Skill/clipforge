@@ -103,6 +103,38 @@ fn register_hotkeys(app: &AppHandle, save: Shortcut, short: Shortcut) -> Result<
     Ok(())
 }
 
+fn pending_update_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("pending_update.json"))
+}
+
+/// Written right before an update installs; consumed by the first boot of
+/// the new version to show its release notes.
+fn save_pending_update(app: &AppHandle, version: &str, notes: Option<&str>) {
+    if let Some(path) = pending_update_path(app) {
+        let raw = serde_json::json!({
+            "version": version,
+            "notes": notes.unwrap_or(""),
+        });
+        let _ = std::fs::write(path, raw.to_string());
+    }
+}
+
+/// Release notes of the update that just installed — Some only on the first
+/// launch of the version they belong to, then consumed.
+#[tauri::command]
+fn take_update_notes(app: AppHandle) -> Option<serde_json::Value> {
+    let path = pending_update_path(&app)?;
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let val: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    // A mismatched version means the install never actually landed.
+    (val["version"].as_str() == Some(app.package_info().version.to_string().as_str()))
+        .then_some(val)
+}
+
 /// Rebind hotkeys live and persist them to settings.
 #[tauri::command]
 fn set_hotkeys(app: AppHandle, save: String, short: String) -> Result<(), String> {
@@ -236,23 +268,26 @@ pub fn run() {
             tauri::async_runtime::spawn(supervisor::run(handle));
             tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));
 
-            // Silent self-update from GitHub Releases, once per launch.
+            // Silent self-update from GitHub Releases. Checks shortly after
+            // launch and then every 30 minutes — a failed check (offline at
+            // boot when autostart races the network, GitHub hiccup) retries
+            // instead of silently giving up until the next launch.
             let update_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 use tauri_plugin_updater::UpdaterExt;
-                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                let Ok(updater) = update_handle.updater() else {
-                    return;
-                };
-                let Ok(Some(update)) = updater.check().await else {
-                    return;
-                };
-                let _ = update_handle.emit("update-installing", update.version.clone());
-                if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
-                    // Never yank the app out from under a live session: if a
-                    // game is running (buffer armed, maybe mid-match), hold
-                    // the restart until it exits. The installed update simply
-                    // takes effect on the next launch either way.
+                let mut delay = std::time::Duration::from_secs(15);
+                loop {
+                    tokio::time::sleep(delay).await;
+                    delay = std::time::Duration::from_secs(30 * 60);
+                    let Ok(updater) = update_handle.updater() else {
+                        continue;
+                    };
+                    let Ok(Some(update)) = updater.check().await else {
+                        continue;
+                    };
+                    // On Windows the installer terminates the app to replace
+                    // it — never begin while a game is running (buffer armed,
+                    // maybe mid-match). Wait here, BEFORE the install.
                     loop {
                         let game_running = update_handle
                             .state::<obs::CurrentGame>()
@@ -266,7 +301,13 @@ pub fn run() {
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     }
-                    update_handle.restart();
+                    let _ = update_handle.emit("update-installing", update.version.clone());
+                    // Stash the release notes so the first boot of the new
+                    // version can show a "what's new" popup.
+                    save_pending_update(&update_handle, &update.version, update.body.as_deref());
+                    if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
+                        update_handle.restart();
+                    }
                 }
             });
 
@@ -382,6 +423,7 @@ pub fn run() {
             setup::launch_obs,
             setup::list_running_apps,
             set_hotkeys,
+            take_update_notes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

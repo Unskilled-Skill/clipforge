@@ -83,6 +83,16 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return null;
     case "gen_filmstrip":
       return "mock://filmstrip";
+    case "take_update_notes":
+      // Show the what's-new modal once per browser tab, like a real update.
+      if (!sessionStorage.getItem("mock_whatsnew")) {
+        sessionStorage.setItem("mock_whatsnew", "1");
+        return {
+          version: "0.1.99",
+          notes: "Mock release notes: kill markers on the timeline, trim-aware montage, hover previews.",
+        };
+      }
+      return null;
     case "disk_free":
       return 3_400_000_000; // low on purpose — shows the warning banner in dev
     case "gen_waveform":

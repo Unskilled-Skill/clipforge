@@ -1915,3 +1915,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 /* kill-count is a button now — keep the pill look */
 button.kill-count { border: none; cursor: pointer; margin-left: 10px; }
 button.kill-count:hover { background: rgba(240, 96, 95, 0.24); }
+
+/* ---- what's-new popup after an update ---- */
+.whatsnew-modal { width: 480px; }
+.whatsnew-modal .onboard-footer { border-top: 1px solid #1e2028; }
