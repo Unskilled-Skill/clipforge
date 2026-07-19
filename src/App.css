@@ -89,8 +89,8 @@ body { margin: 0; overflow: hidden; }
   color: #5f636e;
 }
 @keyframes cf-splash {
-  0%, 100% { transform: scale(1); box-shadow: 0 4px 14px rgba(240, 130, 50, 0.3); }
-  50% { transform: scale(1.07); box-shadow: 0 6px 26px rgba(240, 130, 50, 0.5); }
+  0%, 100% { transform: scale(1); box-shadow: 0 4px 14px rgba(255, 255, 255, 0.1); }
+  50% { transform: scale(1.07); box-shadow: 0 6px 26px rgba(255, 255, 255, 0.22); }
 }
 
 /* ---------- Sidebar ---------- */
@@ -117,8 +117,8 @@ body { margin: 0; overflow: hidden; }
   height: 34px;
   border-radius: 9px;
   /* The app icon artwork carries its own dark rounded square — the mark
-     just sizes it and adds a warm glow matching its forge sparks. */
-  box-shadow: 0 4px 14px rgba(240, 130, 50, 0.3);
+     just sizes it and adds a soft lift. */
+  box-shadow: 0 4px 14px rgba(255, 255, 255, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
