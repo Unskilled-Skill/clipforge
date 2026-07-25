@@ -135,6 +135,14 @@ fn take_update_notes(app: AppHandle) -> Option<serde_json::Value> {
         .then_some(val)
 }
 
+/// Pause/resume the replay buffer manually. Paused wins over auto-manage:
+/// the supervisor stops the buffer (usually within a tick) and won't re-arm
+/// until unpaused. Session-only — a restart clears it.
+#[tauri::command]
+fn set_buffer_paused(paused: bool) {
+    supervisor::BUFFER_PAUSED.store(paused, Ordering::Relaxed);
+}
+
 /// Rebind hotkeys live and persist them to settings.
 #[tauri::command]
 fn set_hotkeys(app: AppHandle, save: String, short: String) -> Result<(), String> {
@@ -423,6 +431,7 @@ pub fn run() {
             setup::launch_obs,
             setup::list_running_apps,
             set_hotkeys,
+            set_buffer_paused,
             take_update_notes,
         ])
         .run(tauri::generate_context!())

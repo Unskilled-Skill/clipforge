@@ -204,6 +204,15 @@ body { margin: 0; overflow: hidden; }
   color: #767a85;
 }
 .buffer-pill.armed { color: #40dd80; }
+/* The pill is a button now: click pauses/resumes recording. */
+.buffer-pill { width: 100%; font-family: "JetBrains Mono", monospace; }
+.buffer-pill:hover { border-color: rgba(64, 221, 128, 0.4); }
+.buffer-pill.paused {
+  color: #ffa94d;
+  background: rgba(255, 169, 77, 0.08);
+  border-color: rgba(255, 169, 77, 0.25);
+}
+.buffer-pill.paused:hover { border-color: rgba(255, 169, 77, 0.45); }
 .buffer-dot {
   width: 7px;
   height: 7px;

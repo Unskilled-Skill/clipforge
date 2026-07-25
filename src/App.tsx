@@ -254,6 +254,8 @@ function App() {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; clip: ClipInfo } | null>(null);
   // Release notes of the update that just installed (first boot only).
   const [whatsNew, setWhatsNew] = useState<{ version: string; notes: string } | null>(null);
+  // Manual buffer pause — mirrors the supervisor flag, optimistic on click.
+  const [bufferPaused, setBufferPaused] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [diskFree, setDiskFree] = useState<number | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
@@ -401,6 +403,7 @@ function App() {
       }),
       listen<SupervisorState>("supervisor-state", (e) => {
         setSup(e.payload);
+        setBufferPaused(e.payload.paused);
         setStatus((s) => ({
           ...s,
           connected: e.payload.connected,
@@ -1434,10 +1437,23 @@ function App() {
             <span className="obs-name">OBS Studio</span>
             <span className="obs-ver">{status.obs_version ?? ""}</span>
           </div>
-          <div className={`buffer-pill ${status.replay_buffer_active ? "armed" : ""}`}>
+          <button
+            className={`buffer-pill ${bufferPaused ? "paused" : status.replay_buffer_active ? "armed" : ""}`}
+            title={
+              bufferPaused
+                ? "Recording is paused — click to resume"
+                : "Click to pause recording — stays off, even in-game, until you resume"
+            }
+            onClick={() => {
+              const next = !bufferPaused;
+              setBufferPaused(next);
+              invoke("set_buffer_paused", { paused: next }).catch(() => {});
+              showToast(next ? "Recording paused until you resume it" : "Recording resumed");
+            }}
+          >
             <span className="buffer-dot" />
-            {status.replay_buffer_active ? "BUFFER ARMED" : "IDLE"}
-          </div>
+            {bufferPaused ? "PAUSED" : status.replay_buffer_active ? "BUFFER ARMED" : "IDLE"}
+          </button>
           {sup?.game && (
             <div className="game-row">
               <GameController size={15} color="#ff8c42" weight="fill" />

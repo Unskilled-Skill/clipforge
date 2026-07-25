@@ -37,6 +37,7 @@ export interface SupervisorState {
   connected: boolean;
   game: string | null;
   buffer_active: boolean;
+  paused: boolean;
 }
 
 export interface ClipInfo {

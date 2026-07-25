@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -8,12 +9,18 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::clips::load_settings_inner;
 use crate::obs::{connect_internal, ensure_autogame_source, ObsState};
 
+/// User-requested pause: the buffer stays down regardless of running games
+/// until unpaused. Deliberately session-only — a forgotten pause shouldn't
+/// silently eat clips forever after a restart.
+pub static BUFFER_PAUSED: AtomicBool = AtomicBool::new(false);
+
 #[derive(Serialize, Clone, PartialEq, Default)]
 pub struct SupervisorState {
     pub obs_running: bool,
     pub connected: bool,
     pub game: Option<String>,
     pub buffer_active: bool,
+    pub paused: bool,
 }
 
 /// Background state machine, one tick every 3s:
@@ -212,23 +219,31 @@ async fn tick(
         }
 
         state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
-        if settings.auto_manage_buffer {
+        state.paused = BUFFER_PAUSED.load(Ordering::Relaxed);
+        // Never issue a stop within 15s of a replay save — OBS's stop can
+        // wedge ("Stopping Replay Buffer…" forever) if it lands while the
+        // flush is still writing.
+        let save_recent = crate::obs::LAST_SAVE
+            .lock()
+            .map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_secs(15)))
+            .unwrap_or(false);
+        if state.paused {
+            // Explicit user pause overrides everything: down now (no grace),
+            // and stays down until unpaused.
+            if state.buffer_active && !save_recent {
+                if client.replay_buffer().stop().await.is_ok() {
+                    state.buffer_active = false;
+                }
+            }
+        } else if settings.auto_manage_buffer {
             if state.game.is_some() && !state.buffer_active {
                 if client.replay_buffer().start().await.is_ok() {
                     state.buffer_active = true;
                 }
             } else if state.game.is_none() && state.buffer_active {
-                // Disarm carefully — OBS's stop request can wedge it on
-                // "Stopping Replay Buffer…" if it lands during encoder
-                // teardown or while a save is still flushing to disk:
-                //  - grace period: the game must be gone for ~30s (brief
-                //    exits, crashes-and-relaunches, launcher hops don't
-                //    cycle the buffer at all)
-                //  - never stop within 15s of a replay save
-                let save_recent = crate::obs::LAST_SAVE
-                    .lock()
-                    .map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_secs(15)))
-                    .unwrap_or(false);
+                // Disarm with a grace period: the game must be gone for ~30s
+                // so brief exits, crash-and-relaunch and launcher hops don't
+                // cycle the buffer (and OBS's fragile stop) at all.
                 if *no_game_ticks >= 10 && !save_recent {
                     if client.replay_buffer().stop().await.is_ok() {
                         state.buffer_active = false;
