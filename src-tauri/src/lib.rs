@@ -1,6 +1,7 @@
 mod autoclip;
 mod clips;
 mod fullscreen;
+mod health;
 mod obs;
 mod setup;
 mod supervisor;
@@ -438,6 +439,7 @@ pub fn run() {
             setup::winget_install,
             setup::launch_obs,
             setup::list_running_apps,
+            setup::obs_diagnostics,
             set_hotkeys,
             set_buffer_paused,
             take_update_notes,

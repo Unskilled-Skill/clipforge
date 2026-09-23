@@ -41,6 +41,28 @@ export interface SupervisorState {
   paused: boolean;
   obs_needs_restart: boolean;
   obs_outdated: string | null;
+  render_lag: boolean;
+  encoder_lag: boolean;
+}
+
+export interface Diagnostics {
+  obs_connected: boolean;
+  obs_version: string | null;
+  obs_outdated: boolean;
+  output_mode: string | null;
+  encoder: string | null;
+  best_encoder: string | null;
+  rate_control: string | null;
+  bitrate_kbps: number | null;
+  keyint_sec: number | null;
+  buffer_seconds: number | null;
+  buffer_ram_mb: number | null;
+  fps: number | null;
+  resolution: string | null;
+  settings_pending: boolean;
+  health: { render_lag_pct: number; encoder_lag_pct: number; active_fps: number; obs_cpu_pct: number };
+  disk_free_bytes: number | null;
+  ffmpeg_found: boolean;
 }
 
 export interface ClipInfo {

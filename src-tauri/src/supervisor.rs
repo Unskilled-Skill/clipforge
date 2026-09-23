@@ -27,6 +27,11 @@ pub struct SupervisorState {
     pub obs_needs_restart: bool,
     /// Connected OBS is too old for the recording format (version string).
     pub obs_outdated: Option<String>,
+    /// The GPU is too busy with the game for OBS to render every frame
+    /// (sustained over ~30s): clips will stutter.
+    pub render_lag: bool,
+    /// The encoder is dropping frames while the buffer records.
+    pub encoder_lag: bool,
 }
 
 /// Background state machine, one tick every 3s:
@@ -173,6 +178,7 @@ async fn tick(
         state.connected = true;
     }
     if !state.connected {
+        crate::health::reset();
         return state;
     }
     state.obs_outdated = crate::obs::outdated_obs_version(obs_state.inner());
@@ -240,6 +246,14 @@ async fn tick(
         }
 
         state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
+        crate::clips::GAME_RUNNING.store(state.game.is_some(), Ordering::Relaxed);
+        // Only meaningful while a game is running and the buffer records;
+        // a desktop with nothing to capture isn't "lagging".
+        if let Ok(stats) = client.general().stats().await {
+            let health = crate::health::record(&stats);
+            state.render_lag = state.game.is_some() && crate::health::is_lagging(health.render_lag_pct);
+            state.encoder_lag = state.buffer_active && crate::health::is_lagging(health.encoder_lag_pct);
+        }
         state.paused = BUFFER_PAUSED.load(Ordering::Relaxed);
         // Never issue a stop within 15s of a replay save — OBS's stop can
         // wedge ("Stopping Replay Buffer…" forever) if it lands while the

@@ -109,6 +109,26 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return `D:/RECORDINGS/Clips/${(_args as { newName: string }).newName}.mp4`;
     case "setup_status":
       return { obs_installed: true, ffmpeg_installed: true };
+    case "obs_diagnostics":
+      return {
+        obs_connected: true,
+        obs_version: "32.2.2",
+        obs_outdated: false,
+        output_mode: "Advanced",
+        encoder: "av1_texture_amf",
+        best_encoder: "av1_texture_amf",
+        rate_control: "CBR",
+        bitrate_kbps: 20000,
+        keyint_sec: 1,
+        buffer_seconds: 180,
+        buffer_ram_mb: 585,
+        fps: 60,
+        resolution: "1920x1080",
+        settings_pending: false,
+        health: { render_lag_pct: 0.2, encoder_lag_pct: 0, active_fps: 60, obs_cpu_pct: 1.4 },
+        disk_free_bytes: 3.2 * 1024 ** 3,
+        ffmpeg_found: true,
+      };
     case "winget_install":
       return null;
     case "launch_obs":

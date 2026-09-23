@@ -14,6 +14,32 @@ pub fn hidden_cmd(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
+/// Set by the supervisor while a watched game is running.
+pub static GAME_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ffmpeg (thumbnails, waveforms, scans, trims, exports) must never cost the
+/// game frames: below-normal priority always, idle priority while a game
+/// runs, so it only ever gets CPU the game leaves unused. A clip saved
+/// mid-match triggers a probe + thumbnail right away; at normal priority that
+/// work landed on the game's cores at the worst moment.
+pub fn ffmpeg_cmd(program: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        let priority = if GAME_RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
+            IDLE_PRIORITY_CLASS
+        } else {
+            BELOW_NORMAL_PRIORITY_CLASS
+        };
+        cmd.creation_flags(CREATE_NO_WINDOW | priority);
+    }
+    cmd
+}
+
 use serde::{Deserialize, Serialize};
 
 /// Run blocking work (ffmpeg, winget, disk scans) on tokio's blocking pool.
@@ -496,7 +522,7 @@ fn best_h264_encoder(ffmpeg: &PathBuf) -> String {
     H264_ENCODER
         .get_or_init(|| {
             for enc in ["h264_nvenc", "h264_amf", "h264_qsv", "libx264"] {
-                let ok = hidden_cmd(ffmpeg)
+                let ok = ffmpeg_cmd(ffmpeg)
                     .args([
                         "-hide_banner",
                         "-f",
@@ -524,6 +550,21 @@ fn best_h264_encoder(ffmpeg: &PathBuf) -> String {
 }
 
 fn find_ffmpeg() -> Option<PathBuf> {
+    // Every thumbnail/waveform/trim asks for ffmpeg; spawning `ffmpeg
+    // -version` each time added a process launch per call. Cache hits only,
+    // so an ffmpeg installed while the app runs is still picked up.
+    static FOUND: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+    if let Some(p) = FOUND.lock().ok().and_then(|f| f.clone()) {
+        return Some(p);
+    }
+    let found = locate_ffmpeg();
+    if let (Some(p), Ok(mut cache)) = (&found, FOUND.lock()) {
+        *cache = Some(p.clone());
+    }
+    found
+}
+
+fn locate_ffmpeg() -> Option<PathBuf> {
     // PATH first, then winget's install location (PATH update needs re-login).
     if hidden_cmd("ffmpeg").arg("-version").output().is_ok() {
         return Some(PathBuf::from("ffmpeg"));
@@ -676,7 +717,7 @@ fn analyze_black_blocking(path: String) -> Result<BlackAnalysis, String> {
     let mut lumas: Vec<f64> = Vec::with_capacity(10);
     for i in 0..10 {
         let t = duration * (i as f64 + 0.5) / 10.0;
-        let result = hidden_cmd(&ffmpeg)
+        let result = ffmpeg_cmd(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-ss",
@@ -757,7 +798,7 @@ fn gen_thumbnails_blocking(dir: String) -> Result<std::collections::HashMap<Stri
                 std::thread::spawn(move || {
                     let duration = clip_duration(&ffmpeg, &path).unwrap_or(0.0);
                     if !thumb.exists() {
-                        let ok = hidden_cmd(&ffmpeg)
+                        let ok = ffmpeg_cmd(&ffmpeg)
                             .args([
                                 "-hide_banner",
                                 "-y",
@@ -903,7 +944,7 @@ pub async fn export_discord(
     };
     let filter_complex = format!("[0:v:0]{scale}[vout];{audio_filter}");
 
-    let mut cmd = hidden_cmd(&ffmpeg);
+    let mut cmd = ffmpeg_cmd(&ffmpeg);
     cmd.args([
         "-hide_banner",
         "-y",
@@ -967,7 +1008,7 @@ fn gen_waveform_blocking(input: String) -> Result<String, String> {
         input_path.file_stem().ok_or("bad path")?.to_string_lossy()
     ));
     if !out.exists() {
-        let result = hidden_cmd(&ffmpeg)
+        let result = ffmpeg_cmd(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-y",
@@ -1009,7 +1050,7 @@ fn gen_filmstrip_blocking(input: String) -> Result<String, String> {
         let duration = clip_duration(&ffmpeg, &input)?;
         // One frame per 10% of the clip, tiled into a single row.
         let fps = 10.0 / duration.max(0.5);
-        let result = hidden_cmd(&ffmpeg)
+        let result = ffmpeg_cmd(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-y",
@@ -1067,7 +1108,7 @@ fn gen_waveforms_blocking(input: String) -> Result<Vec<TrackWave>, String> {
             std::thread::spawn(move || {
                 // Per-track failure is non-fatal — a silent track just yields
                 // a flat image, and we still want the rest of the tracks.
-                let _ = hidden_cmd(&ffmpeg)
+                let _ = ffmpeg_cmd(&ffmpeg)
                     .args([
                         "-hide_banner",
                         "-y",
@@ -1141,7 +1182,7 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<S
         })
         .sum();
 
-    let mut cmd = hidden_cmd(&ffmpeg);
+    let mut cmd = ffmpeg_cmd(&ffmpeg);
     cmd.args(["-hide_banner", "-y", "-nostats", "-progress", "pipe:1"]);
     for seg in &inputs {
         if seg.end > seg.start {
@@ -1229,7 +1270,7 @@ fn export_gif_blocking(input: String, start: f64, end: f64) -> Result<String, St
     let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy();
     let output = input_path.with_file_name(format!("{stem}_gif.gif"));
 
-    let result = hidden_cmd(&ffmpeg)
+    let result = ffmpeg_cmd(&ffmpeg)
         .args([
             "-hide_banner",
             "-y",
@@ -1265,7 +1306,7 @@ fn export_frame_blocking(input: String, time: f64) -> Result<String, String> {
     let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy();
     let output = input_path.with_file_name(format!("{stem}_frame_{}.png", time as u64));
 
-    let result = hidden_cmd(&ffmpeg)
+    let result = ffmpeg_cmd(&ffmpeg)
         .args([
             "-hide_banner",
             "-y",
@@ -1372,7 +1413,7 @@ fn shorten_clip_blocking(path: &str, keep_last: f64) -> Result<(), String> {
     let start = duration - keep_last;
     let tmp = PathBuf::from(path).with_extension("short.mp4");
 
-    let result = hidden_cmd(&ffmpeg)
+    let result = ffmpeg_cmd(&ffmpeg)
         .args([
             "-hide_banner",
             "-y",
@@ -1424,7 +1465,7 @@ fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, Str
     let output = input_path
         .with_file_name(format!("{stem}_trim_{}-{}.{ext}", start as u64, end as u64));
 
-    let mut cmd = hidden_cmd(ffmpeg);
+    let mut cmd = ffmpeg_cmd(ffmpeg);
     cmd.args([
         "-y",
         "-ss",

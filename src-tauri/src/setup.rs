@@ -856,6 +856,89 @@ pub async fn apply_all(client: &obws::Client, settings: &crate::clips::Settings,
     }
 }
 
+/// Everything the Settings "Health" panel shows, gathered in one call: what
+/// OBS is actually using (not what we asked for), plus live frame health.
+#[derive(Serialize)]
+pub struct Diagnostics {
+    pub obs_connected: bool,
+    pub obs_version: Option<String>,
+    pub obs_outdated: bool,
+    pub output_mode: Option<String>,
+    pub encoder: Option<String>,
+    /// The encoder ClipForge would pick for this machine.
+    pub best_encoder: Option<String>,
+    pub rate_control: Option<String>,
+    pub bitrate_kbps: Option<u64>,
+    pub keyint_sec: Option<f64>,
+    pub buffer_seconds: Option<u64>,
+    pub buffer_ram_mb: Option<u64>,
+    pub fps: Option<u32>,
+    pub resolution: Option<String>,
+    /// Settings written but not yet loaded by OBS (applies after the game).
+    pub settings_pending: bool,
+    pub health: crate::health::Health,
+    pub disk_free_bytes: Option<u64>,
+    pub ffmpeg_found: bool,
+}
+
+#[tauri::command]
+pub async fn obs_diagnostics(
+    app: AppHandle,
+    state: tauri::State<'_, crate::obs::ObsState>,
+) -> Result<Diagnostics, String> {
+    let settings = crate::clips::load_settings_inner(&app);
+    let mut d = Diagnostics {
+        obs_connected: false,
+        obs_version: state.version.lock().ok().and_then(|v| v.clone()),
+        obs_outdated: crate::obs::outdated_obs_version(state.inner()).is_some(),
+        output_mode: None,
+        encoder: None,
+        best_encoder: pick_encoder(&settings.encoder_pref, &detect_obs_encoders()),
+        rate_control: None,
+        bitrate_kbps: None,
+        keyint_sec: None,
+        buffer_seconds: None,
+        buffer_ram_mb: None,
+        fps: None,
+        resolution: None,
+        settings_pending: RELOAD_PENDING.load(std::sync::atomic::Ordering::Relaxed),
+        health: crate::health::latest(),
+        disk_free_bytes: crate::clips::disk_free(settings.clips_dir.clone()).ok(),
+        ffmpeg_found: crate::clips::ffmpeg_available(),
+    };
+    let guard = state.client.lock().await;
+    let Some(client) = guard.as_ref() else {
+        return Ok(d);
+    };
+    d.obs_connected = true;
+    let param = |category: &'static str, name: &'static str| async move {
+        client.profiles().parameter(category, name).await.ok().and_then(|p| p.value)
+    };
+    d.output_mode = param("Output", "Mode").await;
+    d.encoder = param("AdvOut", "RecEncoder").await;
+    d.buffer_seconds = param("AdvOut", "RecRBTime").await.and_then(|v| v.parse().ok());
+    d.buffer_ram_mb = param("AdvOut", "RecRBSize").await.and_then(|v| v.parse().ok());
+    if let Ok(video) = client.config().video_settings().await {
+        d.fps = Some(video.fps_numerator / video.fps_denominator.max(1));
+        d.resolution = Some(format!("{}x{}", video.output_width, video.output_height));
+    }
+    if let (Ok(profile), Ok(appdata)) = (client.profiles().current().await, std::env::var("APPDATA")) {
+        let path = std::path::PathBuf::from(appdata)
+            .join("obs-studio/basic/profiles")
+            .join(profile.replace(' ', "_"))
+            .join("recordEncoder.json");
+        if let Some(json) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        {
+            d.rate_control = json["rate_control"].as_str().map(String::from);
+            d.bitrate_kbps = json["bitrate"].as_u64();
+            d.keyint_sec = json["keyint_sec"].as_f64();
+        }
+    }
+    Ok(d)
+}
+
 /// Detect audio capture sources bound to devices that no longer exist
 /// (unplugged headset, changed default) and reset them to "default" —
 /// otherwise OBS silently records silence on every track.
