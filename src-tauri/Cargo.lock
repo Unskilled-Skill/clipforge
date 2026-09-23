@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "clipforge"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "futures-util",
  "notify",
