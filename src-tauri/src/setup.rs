@@ -332,6 +332,106 @@ pub fn setup_status() -> SetupStatus {
     }
 }
 
+/// Install OBS: winget only *downloads* the installer (hash-verified), then we
+/// run it ourselves as admin.
+///
+/// Letting winget run it failed on real machines: OBS's installer refuses to
+/// overwrite files other apps have loaded — typically a leftover OBS virtual
+/// camera DLL that browsers, Electron apps and Ollama load while listing
+/// cameras. Silent (`/S`) it can't show its "close these apps" dialog, so it
+/// just exits with code 6, which winget reported as "ShellExecute installer
+/// failed: 6". On that code we re-run it with its UI, so the user sees which
+/// apps to close and can hit Retry.
+fn install_obs() -> Result<(), String> {
+    const OBS_FILES_IN_USE: u32 = 6;
+
+    let dir = std::env::temp_dir().join("clipforge-obs-installer");
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = hidden_cmd("winget")
+        .args([
+            "download",
+            "--id",
+            "OBSProject.OBSStudio",
+            "-e",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--skip-license",
+            "--download-directory",
+        ])
+        .arg(&dir)
+        .output()
+        .map_err(|e| format!("winget not available: {e}"))?;
+    let installer = std::fs::read_dir(&dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")))
+        .ok_or_else(|| {
+            format!(
+                "couldn't download the OBS installer: {}",
+                String::from_utf8_lossy(&out.stdout).trim()
+            )
+        })?;
+
+    let mut code = run_elevated_and_wait(&installer, "/S", false)?;
+    if code == OBS_FILES_IN_USE {
+        code = run_elevated_and_wait(&installer, "", true)?;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    match code {
+        0 => Ok(()),
+        OBS_FILES_IN_USE => Err(
+            "OBS files are in use by other apps (often browsers or Ollama). Close them and install again."
+                .into(),
+        ),
+        c => Err(format!("OBS installer failed (exit code {c})")),
+    }
+}
+
+/// Launch `exe` as administrator (one UAC prompt) and wait for its exit code.
+fn run_elevated_and_wait(exe: &std::path::Path, params: &str, visible: bool) -> Result<u32, String> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED};
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+    use windows::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNORMAL};
+
+    let verb = HSTRING::from("runas");
+    let file = HSTRING::from(exe);
+    let params = HSTRING::from(params);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: if visible { SW_SHOWNORMAL.0 } else { SW_HIDE.0 },
+        ..Default::default()
+    };
+    unsafe {
+        if let Err(e) = ShellExecuteExW(&mut info) {
+            return Err(if e.code() == ERROR_CANCELLED.to_hresult() {
+                "Install cancelled: Windows needs your OK on the admin prompt to install OBS.".into()
+            } else {
+                format!("couldn't start the installer: {e}")
+            });
+        }
+        let process = info.hProcess;
+        if process.is_invalid() {
+            return Err("couldn't start the installer".into());
+        }
+        WaitForSingleObject(process, INFINITE);
+        let mut code = 0u32;
+        let got = GetExitCodeProcess(process, &mut code);
+        let _ = CloseHandle(process);
+        got.map_err(|e| format!("couldn't read the installer's result: {e}"))?;
+        Ok(code)
+    }
+}
+
 /// Install a tool via winget; blocks until done. `id` is allow-listed.
 #[tauri::command]
 pub async fn winget_install(id: String) -> Result<(), String> {
@@ -342,6 +442,10 @@ fn winget_install_blocking(id: String) -> Result<(), String> {
     let allowed = ["Gyan.FFmpeg", "OBSProject.OBSStudio"];
     if !allowed.contains(&id.as_str()) {
         return Err("unknown package".into());
+    }
+    // OBS installs machine-wide and can hit in-use files; see install_obs.
+    if id == "OBSProject.OBSStudio" {
+        return install_obs();
     }
     let result = hidden_cmd("winget")
         .args([

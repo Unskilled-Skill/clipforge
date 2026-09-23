@@ -272,6 +272,17 @@ function App() {
   const [renameValue, setRenameValue] = useState("");
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+  // While OBS or ffmpeg is missing, re-check every few seconds: the user may
+  // install it outside the app (or the OBS installer's own window), and the
+  // warning bar must clear without a restart.
+  const setupIncomplete = setup !== null && (!setup.obs_installed || !setup.ffmpeg_installed);
+  useEffect(() => {
+    if (!setupIncomplete || installing) return;
+    const id = setInterval(() => {
+      invoke<SetupStatus>("setup_status").then(setSetup).catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, [setupIncomplete, installing]);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardStep, setOnboardStep] = useState(0);
   const [resetting, setResetting] = useState(false);
