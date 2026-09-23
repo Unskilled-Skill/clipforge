@@ -518,9 +518,16 @@ select:focus,
 
 /* ---------- Grid / cards ---------- */
 
+/* Scroll container holding one section per recording day. */
 .grid {
   padding: 6px 30px 30px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.session { display: flex; flex-direction: column; gap: 14px; }
+.session-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(252px, 1fr));
   gap: 18px;
@@ -2107,3 +2114,69 @@ button.hotkey-rows {
 }
 button.hotkey-rows:hover { background: rgba(255, 255, 255, 0.04); }
 button.hotkey-rows:focus-visible { outline: 2px solid #4c6ef5; outline-offset: 2px; }
+
+/* ---- design polish: sessions, REC card, segmented pickers ---- */
+.session-head { display: flex; align-items: center; gap: 12px; }
+.session-title {
+  margin: 0;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+}
+.session-meta { font-size: 12.5px; color: #a3a7b1; white-space: nowrap; }
+.session-rule { flex: 1; height: 1px; background: #1d1f26; }
+
+/* Recording state reads as REC in coral, not a green "ok". */
+.buffer-pill.armed {
+  background: #2a1414;
+  border-color: #4a1f1f;
+  color: #ff8a80;
+  letter-spacing: 0.14em;
+}
+.buffer-pill.armed .buffer-dot { background: #ff5a4e; }
+.rec-summary { display: flex; flex-direction: column; gap: 3px; }
+.rec-ready {
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  color: #eceef3;
+}
+.rec-line { font-size: 11.5px; color: #a3a7b1; }
+
+/* Segmented pickers (clip length, Discord size). */
+.seg,
+.size-seg {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: #0f1014;
+  border: 1px solid #1d1f26;
+}
+.seg button,
+.size-seg button {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #a3a7b1;
+  font-size: 13px;
+  font-weight: 600;
+}
+.seg button:hover:not(.on),
+.size-seg button:hover:not(.on) { color: #eceef3; }
+.seg button.on,
+.size-seg button.on { background: #1f2540; color: #eceef3; }
+.size-seg button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-height: 40px;
+  padding: 2px 12px;
+}
+.size-note { font-size: 10.5px; font-weight: 500; opacity: 0.75; }
+.size-seg button span { white-space: nowrap; }

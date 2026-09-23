@@ -26,6 +26,15 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+/// RAM the replay buffer reserves, matching the backend's cap
+/// (setup::ensure_replay_buffer_config): bitrate + 25% + audio, min 512 MB.
+/// Auto bitrate is estimated at 20 Mbps (1080p60 AV1/HEVC).
+function bufferRamText(settings: Settings): string {
+  const mbps = settings.bitrate_mbps > 0 ? settings.bitrate_mbps : 20;
+  const mb = Math.max(512, Math.ceil(settings.replay_seconds * ((mbps / 8) * 1.25 + 0.12)));
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+}
+
 // Keys that are safe to bind without a modifier: nothing types them.
 const BARE_OK = /^(f([1-9]|1[0-9]|2[0-4])|pause|scrolllock|insert)$/;
 
@@ -591,27 +600,25 @@ export function SettingsPage(props: {
             </div>
           </div>
           <label className="set-col">
-            <span className="field-label">Clip length (seconds)</span>
-            <input
-              className="mono"
-              type="number"
-              min={15}
-              max={900}
-              value={settings.replay_seconds}
-              onChange={(e) =>
-                setSettings({ ...settings, replay_seconds: Number(e.target.value) })
-              }
-              onBlur={() =>
-                saveSettings({
-                  ...settings,
-                  replay_seconds: Math.min(900, Math.max(15, settings.replay_seconds || 15)),
-                })
-              }
-            />
+            <span className="field-label">Clip length</span>
+            <div className="seg" role="radiogroup" aria-label="Clip length">
+              {[...new Set([30, 60, 120, 180, 300, settings.replay_seconds])]
+                .sort((a, b) => a - b)
+                .map((s) => (
+                  <button
+                    key={s}
+                    role="radio"
+                    aria-checked={settings.replay_seconds === s}
+                    className={settings.replay_seconds === s ? "on" : ""}
+                    onClick={() => saveSettings({ ...settings, replay_seconds: s })}
+                  >
+                    {s < 60 ? `${s}s` : s % 60 === 0 ? `${s / 60} min` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`}
+                  </button>
+                ))}
+            </div>
             <span className="field-hint">
-              How far back a save reaches. Uses about{" "}
-              {Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB of RAM while a game
-              runs. Applies to OBS automatically.
+              How far back a save reaches. Uses about {bufferRamText(settings)} of RAM while a game
+              runs.
             </span>
           </label>
           <div className="set-row">
