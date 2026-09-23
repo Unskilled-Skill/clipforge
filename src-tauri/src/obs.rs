@@ -355,10 +355,18 @@ async fn save_replay_path(state: &ObsState, short: bool) -> Result<String, Strin
         SAVE_REPLY.lock().unwrap().take();
     }
     result?;
-    // Leave a timed-out slot occupied until its late event or a reconnect.
-    tokio::time::timeout(std::time::Duration::from_secs(45), receive).await
-        .map_err(|_| "OBS hasn't finished saving the clip. Check OBS before trying again.".to_string())?
-        .map_err(|_| "OBS reconnected before the clip finished saving. Try again.".to_string())
+    match tokio::time::timeout(std::time::Duration::from_secs(45), receive).await {
+        Ok(reply) => reply.map_err(|_| "OBS reconnected before the clip finished saving. Try again.".to_string()),
+        Err(_) => {
+            // Free the slot: if OBS never reports this save (it failed, the
+            // disk filled, the event socket dropped), keeping it occupied
+            // until a reconnect blocked every later hotkey press for the
+            // rest of the session. A late event still gets its normal
+            // rename/notification in on_clip_saved; only this wait is over.
+            SAVE_REPLY.lock().unwrap().take();
+            Err("OBS hasn't confirmed the clip was saved. Check OBS, then try again.".to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -603,7 +611,7 @@ mod tests {
         let held = SAVE_GATE.lock().await;
         assert!(save_replay_path(&state, false).await.unwrap_err().contains("still saving"));
         drop(held);
-        // A timed-out save still owns its late event until reconnect/event.
+        // A save still waiting for its OBS event blocks a second save.
         let (sender, _receiver) = tokio::sync::oneshot::channel();
         *SAVE_REPLY.lock().unwrap() = Some(sender);
         assert!(save_replay_path(&state, false).await.unwrap_err().contains("previous save"));

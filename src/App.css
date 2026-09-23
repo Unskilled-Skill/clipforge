@@ -2084,3 +2084,26 @@ button.kill-count:hover { background: rgba(240, 96, 95, 0.24); }
 .setup-check p { margin: 8px 0 12px; line-height: 1.5; }
 .setup-check-options { margin-top: 12px; }
 .setup-check-options label { display: flex; gap: 8px; align-items: center; }
+
+/* ---- hotkey rebinding ---- */
+.hotkey-capture.recording {
+  border-color: #4c6ef5;
+  box-shadow: 0 0 0 3px rgba(76, 110, 245, 0.16);
+  color: #9fb4ff;
+}
+.hotkey-problem { color: #f5c46b; }
+.hotkey-foot { align-items: center; justify-content: space-between; }
+/* Sidebar hotkey card is a button that opens the setting. */
+button.hotkey-rows {
+  all: unset;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  cursor: pointer;
+  border-radius: 8px;
+  margin: 0 -6px;
+  padding: 2px 6px;
+  transition: background 0.15s ease;
+}
+button.hotkey-rows:hover { background: rgba(255, 255, 255, 0.04); }
+button.hotkey-rows:focus-visible { outline: 2px solid #4c6ef5; outline-offset: 2px; }
