@@ -368,9 +368,10 @@ function App() {
         port: s.port,
         password: s.password || null,
       });
+      // The buffer is armed by the supervisor only while a game runs; arming
+      // it here at the desktop wasted RAM/GPU and failed with OBS's
+      // "InvalidResourceState" whenever the buffer wasn't available yet.
       setStatus(st);
-      await invoke("start_replay_buffer");
-      setStatus((prev) => ({ ...prev, replay_buffer_active: true }));
       const saved: Settings = { ...s, auto_connect: true };
       setSettings(saved);
       await invoke("save_settings", { settings: saved });

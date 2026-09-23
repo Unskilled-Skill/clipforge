@@ -813,7 +813,6 @@ pub async fn ensure_video_settings(client: &obws::Client, settings: &crate::clip
 /// reloads the current one cleanly. Only while nothing is recording or
 /// streaming; otherwise it stays pending for the next config pass.
 pub async fn reload_profile_if_idle(client: &obws::Client) -> bool {
-    const TEMP: &str = "ClipForge reload";
     let busy = client.replay_buffer().status().await.unwrap_or(true)
         || client.recording().status().await.map(|s| s.active).unwrap_or(true)
         || client.streaming().status().await.map(|s| s.active).unwrap_or(true);
@@ -823,11 +822,70 @@ pub async fn reload_profile_if_idle(client: &obws::Client) -> bool {
     let Ok(current) = client.profiles().current().await else {
         return false;
     };
-    let _ = client.profiles().create(TEMP).await;
-    let reloaded = client.profiles().set_current(TEMP).await.is_ok()
-        && client.profiles().set_current(&current).await.is_ok();
-    let _ = client.profiles().remove(TEMP).await;
+    if current == RELOAD_PROFILE {
+        return recover_from_reload_profile(client).await;
+    }
+    let _ = client.profiles().create(RELOAD_PROFILE).await; // may already exist
+    // OBS applies a profile switch asynchronously. Sending the switch back
+    // before the first one landed was dropped once in real use, leaving
+    // OBS stuck on the empty temp profile (replay buffer unavailable ->
+    // "InvalidResourceState"). Confirm each step before the next.
+    let reloaded = switch_profile(client, RELOAD_PROFILE).await
+        && switch_profile(client, &current).await;
+    if !reloaded {
+        // Never leave OBS on the temp profile, whatever went wrong.
+        switch_profile(client, &current).await;
+    }
+    remove_reload_profile(client).await;
     reloaded
+}
+
+/// Temporary profile used to make OBS reload the real one.
+const RELOAD_PROFILE: &str = "ClipForge reload";
+
+/// Switch profiles and wait until OBS reports it active (up to ~5s,
+/// re-sending the request once a second in case one gets dropped).
+async fn switch_profile(client: &obws::Client, name: &str) -> bool {
+    for attempt in 0..25 {
+        if attempt % 5 == 0 {
+            let _ = client.profiles().set_current(name).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if client.profiles().current().await.is_ok_and(|c| c == name) {
+            return true;
+        }
+    }
+    false
+}
+
+async fn remove_reload_profile(client: &obws::Client) {
+    let still_there = client
+        .profiles()
+        .list()
+        .await
+        .is_ok_and(|l| l.profiles.iter().any(|p| p == RELOAD_PROFILE));
+    let active = client.profiles().current().await.is_ok_and(|c| c == RELOAD_PROFILE);
+    if still_there && !active {
+        let _ = client.profiles().remove(RELOAD_PROFILE).await;
+    }
+}
+
+/// OBS left on the temp profile by an interrupted reload (an older build
+/// had this race): switch back to the user's real profile and clean up.
+/// Returns true when OBS ends up on a real profile (which also reloads it).
+pub async fn recover_from_reload_profile(client: &obws::Client) -> bool {
+    let Ok(list) = client.profiles().list().await else {
+        return false;
+    };
+    if list.current != RELOAD_PROFILE {
+        return true;
+    }
+    let Some(real) = list.profiles.iter().find(|p| *p != RELOAD_PROFILE).cloned() else {
+        return false;
+    };
+    let ok = switch_profile(client, &real).await;
+    remove_reload_profile(client).await;
+    ok
 }
 
 /// Output-affecting changes not yet picked up by OBS (it was busy).
@@ -838,6 +896,8 @@ pub static RELOAD_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::At
 /// edits settings.
 pub async fn apply_all(client: &obws::Client, settings: &crate::clips::Settings, game: Option<&str>) {
     use std::sync::atomic::Ordering;
+    // Settings must land in the user's real profile, not a leftover temp one.
+    recover_from_reload_profile(client).await;
     let mut outputs_changed = ensure_output_config(client, &settings.clips_dir).await;
     let video = ensure_video_settings(client, settings).await;
     outputs_changed |= video.changed;
