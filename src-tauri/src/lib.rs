@@ -406,6 +406,8 @@ pub fn run() {
             obs::obs_status,
             obs::start_replay_buffer,
             obs::save_replay_cmd,
+            obs::save_setup_replay,
+            clips::prepare_setup_sample,
             obs::apply_obs_config,
             obs::add_game_capture_source,
             obs::remove_game_capture_source,

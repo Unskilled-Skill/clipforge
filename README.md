@@ -17,6 +17,10 @@ Outplayed-style game clipping, powered by your own OBS. Press a hotkey, keep the
 - **Exports** — Discord-sized (10/50/500 MB, size-budgeted bitrate, auto-copied to clipboard), audio track picker (full mix / game only / mic only), GIF, frame PNG, multi-clip montage.
 - **Hardware everything** — H264 encoder auto-detected per machine (NVENC → AMF → QuickSync → CPU). Recording stays AV1/whatever your OBS profile uses.
 - **Onboarding tutorial** — first launch walks through setup and how to use the app; replay it anytime from the Tutorial button in the sidebar.
+- **Test my setup** — Settings → Health saves a sample from a running game and opens its last ~10 seconds in the editor. Confirm the picture and expected audio yourself; the original replay is preserved.
+- **Safer keepers** — unreadable favorites stop automatic cleanup. Backup conflicts preserve the existing file and show an error; identical older backups are adopted after checking their contents.
+
+Automatic cleanup also keeps the replay that just finished saving, even if that single clip exceeds the storage cap. It becomes eligible for cleanup on a later save unless starred.
 
 ## Install
 
@@ -30,6 +34,7 @@ Outplayed-style game clipping, powered by your own OBS. Press a hotkey, keep the
 npm install
 npm run tauri dev     # full app (quit the installed tray instance first — hotkey clash)
 npm run dev           # UI only in a browser, with mock data (src/tauri-shim.ts)
+npm test              # setup workflow tests (Node 22.6+)
 .\scripts\dev.ps1     # same as tauri dev, but kills the installed tray instance first
 npm run tauri build -- --bundles nsis
 .\scripts\install.ps1   # rebuild + silent local install + relaunch, no signing/GitHub

@@ -42,23 +42,68 @@ fn backup_dir(app: &AppHandle) -> Option<PathBuf> {
 }
 
 /// Favorites still to copy: (source clip, destination in the backup folder).
-/// A copy counts as done when a same-named file of the same size exists.
-fn pending(app: &AppHandle, dir: &Path) -> (Vec<(PathBuf, PathBuf)>, u32) {
-    let favorites = crate::clips::load_favorites(app.clone()).unwrap_or_default();
+/// A receipt ties a completed copy to its source and both files' metadata.
+type PendingCopies = (Vec<(PathBuf, PathBuf)>, u32);
+
+fn pending(app: &AppHandle, dir: &Path) -> Result<PendingCopies, String> {
+    let favorites = crate::clips::load_favorites(app.clone())?;
     let mut todo = Vec::new();
     let mut done = 0;
     for fav in favorites {
         let src = PathBuf::from(&fav);
-        let (Ok(meta), Some(name)) = (std::fs::metadata(&src), src.file_name()) else {
+        let (Ok(_), Some(name)) = (std::fs::metadata(&src), src.file_name()) else {
             continue; // deleted or renamed away since it was starred
         };
         let dst = dir.join(name);
-        match std::fs::metadata(&dst) {
-            Ok(d) if d.len() == meta.len() => done += 1,
-            _ => todo.push((src, dst)),
+        if verified_copy(&src, &dst) {
+            done += 1;
+        } else {
+            todo.push((src, dst));
         }
     }
-    (todo, done)
+    Ok((todo, done))
+}
+
+fn receipt_path(dst: &Path) -> PathBuf {
+    let mut path = dst.as_os_str().to_owned();
+    path.push(".clipforge.json");
+    PathBuf::from(path)
+}
+
+fn copy_identity(src: &Path, dst: &Path) -> std::io::Result<String> {
+    let stamp = |p: &Path| -> std::io::Result<String> {
+        let m = std::fs::metadata(p)?;
+        Ok(format!("{}:{:?}", m.len(), m.modified()?))
+    };
+    Ok(format!("{}\n{}\n{}", src.canonicalize()?.display(), stamp(src)?, stamp(dst)?))
+}
+
+fn verified_copy(src: &Path, dst: &Path) -> bool {
+    match (copy_identity(src, dst), std::fs::read_to_string(receipt_path(dst))) {
+        (Ok(current), Ok(saved)) => current == saved,
+        _ => false,
+    }
+}
+
+// Only used once when adopting backups made by older versions; status polling
+// uses the receipt instead of rereading hundreds of MB every few seconds.
+fn same_contents(src: &Path, dst: &Path) -> std::io::Result<bool> {
+    use std::io::Read;
+    let mut a = std::fs::File::open(src)?;
+    let mut b = std::fs::File::open(dst)?;
+    let len = a.metadata()?.len();
+    if len != b.metadata()?.len() { return Ok(false); }
+    let mut left = len;
+    let mut x = [0u8; 65536];
+    let mut y = [0u8; 65536];
+    while left > 0 {
+        let n = left.min(x.len() as u64) as usize;
+        a.read_exact(&mut x[..n])?;
+        b.read_exact(&mut y[..n])?;
+        if x[..n] != y[..n] { return Ok(false); }
+        left -= n as u64;
+    }
+    Ok(true)
 }
 
 pub fn status(app: &AppHandle) -> BackupStatus {
@@ -75,9 +120,10 @@ pub fn status(app: &AppHandle) -> BackupStatus {
     s.enabled = true;
     s.folder_ok = dir.is_dir();
     if s.folder_ok {
-        let (todo, done) = pending(app, &dir);
-        s.pending = todo.len() as u32;
-        s.backed_up = done;
+        match pending(app, &dir) {
+            Ok((todo, done)) => { s.pending = todo.len() as u32; s.backed_up = done; },
+            Err(e) => s.error = Some(format!("Couldn't read favorites: {e}")),
+        }
     }
     s
 }
@@ -85,14 +131,22 @@ pub fn status(app: &AppHandle) -> BackupStatus {
 /// Copy via a `.partial` name, then rename, so the sync client never
 /// uploads a half-written file as the real clip.
 fn copy_one(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.exists() {
+        if same_contents(src, dst)? {
+            return std::fs::write(receipt_path(dst), copy_identity(src, dst)?);
+        }
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
+            "A backup with this name already exists. Rename the source clip or choose another backup folder."));
+    }
     let mut tmp = dst.as_os_str().to_owned();
     tmp.push(".partial");
     let tmp = PathBuf::from(tmp);
     std::fs::copy(src, &tmp)?;
-    if dst.exists() {
-        std::fs::remove_file(dst)?; // older/incomplete copy
-    }
-    std::fs::rename(&tmp, dst)
+    // Windows rename fails if a destination appeared during the copy.
+    let result = std::fs::rename(&tmp, dst);
+    if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+    result?;
+    std::fs::write(receipt_path(dst), copy_identity(src, dst)?)
 }
 
 /// Start a backup pass in the background if one is due. `force` skips the
@@ -117,8 +171,10 @@ pub fn maybe_run(app: &AppHandle, force: bool) {
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        let (todo, _) = pending(&app, &dir);
-        let mut error = None;
+        let (todo, mut error) = match pending(&app, &dir) {
+            Ok((todo, _)) => (todo, None),
+            Err(e) => (Vec::new(), Some(format!("Couldn't read favorites: {e}"))),
+        };
         let mut copied = 0;
         for (src, dst) in todo {
             if crate::clips::GAME_RUNNING.load(Ordering::Relaxed) {
@@ -204,7 +260,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn copies_via_partial_and_replaces_stale() {
+    fn backup_receipts_and_same_size_collisions() {
+        let dir = std::env::temp_dir().join(format!("cf-receipt-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("source.mp4");
+        let dst = dir.join("copy.mp4");
+        std::fs::write(&src, b"abcd").unwrap();
+        std::fs::write(&dst, b"wxyz").unwrap();
+        assert!(!verified_copy(&src, &dst));
+        assert!(copy_one(&src, &dst).is_err());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"wxyz");
+        // Identical legacy backups can be adopted, without replacing them.
+        std::fs::write(&dst, b"abcd").unwrap();
+        copy_one(&src, &dst).unwrap();
+        assert!(verified_copy(&src, &dst));
+        // A different source with the same filename/length is never trusted.
+        let other = dir.join("other.mp4");
+        std::fs::write(&other, b"wxyz").unwrap();
+        assert!(!verified_copy(&other, &dst));
+        std::fs::remove_file(&dst).unwrap();
+        assert!(!verified_copy(&src, &dst));
+        copy_one(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"abcd");
+        assert!(verified_copy(&src, &dst));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_replace_an_existing_backup() {
         let dir = std::env::temp_dir().join(format!("cf-backup-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -212,8 +295,8 @@ mod tests {
         let dst = dir.join("backup.mp4");
         std::fs::write(&src, vec![7u8; 4096]).unwrap();
         std::fs::write(&dst, b"half").unwrap(); // stale, incomplete copy
-        copy_one(&src, &dst).unwrap();
-        assert_eq!(std::fs::metadata(&dst).unwrap().len(), 4096);
+        assert!(copy_one(&src, &dst).is_err());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"half");
         assert!(!dir.join("backup.mp4.partial").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

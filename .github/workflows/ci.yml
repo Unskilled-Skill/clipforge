@@ -24,6 +24,9 @@ jobs:
       - name: Type-check and build frontend
         run: npm run build
 
+      - name: Setup workflow tests
+        run: npm test
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -35,3 +38,7 @@ jobs:
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --locked
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked

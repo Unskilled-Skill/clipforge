@@ -14,6 +14,21 @@ use crate::obs::{connect_internal, ensure_autogame_source, ObsState};
 /// silently eat clips forever after a restart.
 pub static BUFFER_PAUSED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, PartialEq)]
+enum BufferAction { Keep, Start, Stop }
+
+fn buffer_action(connected: bool, game: bool, active: bool, paused: bool,
+    managed: bool, no_game_ticks: u32, save_recent: bool) -> BufferAction {
+    if !connected { return BufferAction::Keep; }
+    if paused {
+        if active && !save_recent { BufferAction::Stop } else { BufferAction::Keep }
+    } else if managed && game && !active {
+        BufferAction::Start
+    } else if managed && !game && active && no_game_ticks >= 10 && !save_recent {
+        BufferAction::Stop
+    } else { BufferAction::Keep }
+}
+
 #[derive(Serialize, Clone, PartialEq, Default)]
 pub struct SupervisorState {
     pub obs_running: bool,
@@ -268,31 +283,50 @@ async fn tick(
             .lock()
             .map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_secs(15)))
             .unwrap_or(false);
-        if state.paused {
-            // Explicit user pause overrides everything: down now (no grace),
-            // and stays down until unpaused.
-            if state.buffer_active && !save_recent {
+        match buffer_action(state.connected, state.game.is_some(), state.buffer_active,
+            state.paused, settings.auto_manage_buffer, *no_game_ticks, save_recent) {
+            BufferAction::Stop => {
                 if client.replay_buffer().stop().await.is_ok() {
                     state.buffer_active = false;
                 }
-            }
-        } else if settings.auto_manage_buffer {
-            if state.game.is_some() && !state.buffer_active {
+            },
+            BufferAction::Start => {
                 if client.replay_buffer().start().await.is_ok() {
                     state.buffer_active = true;
                 }
-            } else if state.game.is_none() && state.buffer_active {
-                // Disarm with a grace period: the game must be gone for ~30s
-                // so brief exits, crash-and-relaunch and launcher hops don't
-                // cycle the buffer (and OBS's fragile stop) at all.
-                if *no_game_ticks >= 10 && !save_recent {
-                    if client.replay_buffer().stop().await.is_ok() {
-                        state.buffer_active = false;
-                    }
-                }
-            }
+            },
+            BufferAction::Keep => {},
         }
     }
 
     state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arms_only_for_a_connected_game_and_rearms_after_reconnect() {
+        assert_eq!(buffer_action(true, false, false, false, true, 0, false), BufferAction::Keep);
+        assert_eq!(buffer_action(false, true, false, false, true, 0, false), BufferAction::Keep);
+        assert_eq!(buffer_action(true, true, false, false, true, 0, false), BufferAction::Start);
+        assert_eq!(buffer_action(true, true, true, false, true, 0, false), BufferAction::Keep);
+    }
+
+    #[test]
+    fn exit_grace_and_pending_save_protect_the_buffer() {
+        assert_eq!(buffer_action(true, false, true, false, true, 9, false), BufferAction::Keep);
+        assert_eq!(buffer_action(true, false, true, false, true, 10, true), BufferAction::Keep);
+        assert_eq!(buffer_action(true, false, true, false, true, 10, false), BufferAction::Stop);
+    }
+
+    #[test]
+    fn pause_and_manual_control() {
+        assert_eq!(buffer_action(true, true, false, true, true, 0, false), BufferAction::Keep);
+        assert_eq!(buffer_action(true, true, true, true, false, 0, false), BufferAction::Stop);
+        assert_eq!(buffer_action(true, true, true, true, true, 0, true), BufferAction::Keep);
+        assert_eq!(buffer_action(true, true, false, false, false, 0, false), BufferAction::Keep);
+        assert_eq!(buffer_action(true, false, true, false, false, 50, false), BufferAction::Keep);
+    }
 }

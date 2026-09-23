@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SetupCheck } from "./SetupCheck";
 import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog, openUrl } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -172,6 +173,7 @@ function trackLabels(count: number): TrackMeta[] {
 }
 
 function App() {
+  const [showSetupCheck, setShowSetupCheck] = useState(false);
   const [status, setStatus] = useState<ObsStatus>({
     connected: false,
     replay_buffer_active: false,
@@ -1523,6 +1525,15 @@ function App() {
       </aside>
 
       <main className="main">
+        {showSetupCheck && <SetupCheck
+          supervisor={sup}
+          onClose={() => setShowSetupCheck(false)}
+          onSample={(path) => {
+            setShowSettings(false);
+            selectClip({ path, name: path.split(/[\\/]/).pop() ?? "Setup sample", modified_ms: Date.now(), size_bytes: 0 });
+            void refreshClips();
+          }}
+        />}
         {exportPct != null && (
           <div className="export-bar">
             <div className="export-bar-fill" style={{ transform: `scaleX(${exportPct / 100})` }} />
@@ -2484,6 +2495,7 @@ function App() {
 
       {showSettings && (
         <SettingsPage
+          onTestSetup={() => setShowSetupCheck(true)}
           settings={settings}
           setSettings={setSettings}
           saveSettings={saveSettings}

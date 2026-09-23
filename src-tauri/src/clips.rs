@@ -260,10 +260,15 @@ fn favorites_path(app: &AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 pub fn load_favorites(app: AppHandle) -> Result<Vec<String>, String> {
     let path = favorites_path(&app)?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    read_favorites(&path)
+}
+
+fn read_favorites(path: &std::path::Path) -> Result<Vec<String>, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
     serde_json::from_str(&raw).map_err(|e| e.to_string())
 }
 
@@ -352,12 +357,16 @@ pub fn copy_clip(path: String) -> Result<(), String> {
 /// Recycle oldest non-favorite clips until the folder fits the cap.
 /// Returns how many clips were removed.
 pub fn enforce_storage_cap(app: &AppHandle) -> Result<u32, String> {
+    enforce_storage_cap_preserving(app, None)
+}
+
+pub fn enforce_storage_cap_preserving(app: &AppHandle, keep: Option<&std::path::Path>) -> Result<u32, String> {
     let settings = load_settings_inner(app);
     if settings.max_storage_gb <= 0.0 {
         return Ok(0);
     }
     let cap_bytes = (settings.max_storage_gb * 1024.0 * 1024.0 * 1024.0) as u64;
-    let favorites = load_favorites(app.clone()).unwrap_or_default();
+    let favorites = cleanup_favorites(load_favorites(app.clone()))?;
 
     let clips = list_clips(settings.clips_dir)?;
     let mut total: u64 = clips.iter().map(|c| c.size_bytes).sum();
@@ -371,7 +380,7 @@ pub fn enforce_storage_cap(app: &AppHandle) -> Result<u32, String> {
         if total <= cap_bytes {
             break;
         }
-        if favorites.contains(&clip.path) {
+        if favorites.contains(&clip.path) || keep.is_some_and(|path| path == std::path::Path::new(&clip.path)) {
             continue;
         }
         if trash::delete(&clip.path).is_ok() {
@@ -386,6 +395,57 @@ pub fn enforce_storage_cap(app: &AppHandle) -> Result<u32, String> {
 #[tauri::command]
 pub fn run_storage_cleanup(app: AppHandle) -> Result<u32, String> {
     enforce_storage_cap(&app)
+}
+
+fn cleanup_favorites(result: Result<Vec<String>, String>) -> Result<Vec<String>, String> {
+    result.map_err(|e| format!("Storage cleanup stopped: couldn't read favorites. No clips were removed. {e}"))
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn unreadable_favorites_block_cleanup() {
+        let dir = std::env::temp_dir().join(format!("cf-favorites-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("favorites.json");
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(cleanup_favorites(read_favorites(&path)).is_err());
+        // An unreadable path must not be confused with a missing first-run file.
+        assert!(cleanup_favorites(read_favorites(&dir)).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(cleanup_favorites(read_favorites(&path)).unwrap().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn readable_favorites_remain_protected() {
+        assert_eq!(cleanup_favorites(Ok(vec!["keeper.mp4".into()])).unwrap(), vec!["keeper.mp4"]);
+        assert!(cleanup_favorites(Ok(vec![])).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local ffmpeg installation"]
+    async fn setup_sample_preserves_original_and_keeps_ten_seconds() {
+        let ffmpeg = find_ffmpeg().expect("ffmpeg required for this media integration test");
+        let dir = std::env::temp_dir().join(format!("cf-setup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.mp4");
+        let output = ffmpeg_cmd(&ffmpeg).args([
+            "-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440", "-t", "12",
+            "-c:v", "libx264", "-g", "10", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        ]).arg(&input).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let original = std::fs::read(&input).unwrap();
+        let sample = prepare_setup_sample(input.to_string_lossy().into()).await.unwrap();
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+        let duration = probe_clip_duration(&sample).unwrap();
+        assert!((9.5..=11.0).contains(&duration), "sample duration: {duration}");
+        assert_eq!(audio_stream_count(&ffmpeg, &sample), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1449,6 +1509,19 @@ fn shorten_clip_blocking(path: &str, keep_last: f64) -> Result<(), String> {
 #[tauri::command]
 pub async fn trim_clip(input: String, start: f64, end: f64) -> Result<String, String> {
     blocking(move || trim_clip_blocking(input, start, end)).await
+}
+
+/// Keep the original replay and create a short sample for setup verification.
+#[tauri::command]
+pub async fn prepare_setup_sample(input: String) -> Result<String, String> {
+    blocking(move || {
+        let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found — finish installing it before testing.")?;
+        let duration = clip_duration(&ffmpeg, &input)?;
+        if !duration.is_finite() || duration <= 0.0 {
+            return Err("The saved clip has no playable duration. Check OBS and try again.".into());
+        }
+        trim_clip_blocking(input, (duration - 10.0).max(0.0), duration)
+    }).await
 }
 
 fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, String> {

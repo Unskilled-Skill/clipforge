@@ -55,6 +55,7 @@ fn pretty_game(exe: &str) -> String {
 /// Rename a fresh clip to carry the game name, feedback via sound + toast.
 /// If the short-clip hotkey triggered this save, keep only the tail.
 async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf) {
+    let reply = SAVE_REPLY.lock().unwrap().take();
     if crate::PENDING_SHORT.swap(false, std::sync::atomic::Ordering::Relaxed) {
         let secs = crate::clips::load_settings_inner(app).short_clip_seconds;
         let _ = crate::clips::shorten_clip(&path.to_string_lossy(), secs).await;
@@ -112,8 +113,14 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf) {
         },
     );
 
+    if let Some(reply) = reply {
+        let _ = reply.send(final_path.to_string_lossy().replace('\\', "/"));
+    }
+
     // Keep the folder under the storage cap; favorites survive.
-    let _ = crate::clips::enforce_storage_cap(app);
+    if let Err(error) = crate::clips::enforce_storage_cap_preserving(app, Some(&final_path)) {
+        let _ = app.emit("clip-error", error);
+    }
 }
 
 /// Surface a failure the same way a save success is surfaced — sound + OS
@@ -233,6 +240,8 @@ pub async fn connect_internal(
     if let Some(old) = state.events_task.lock().unwrap().replace(task) {
         old.abort();
     }
+    SAVE_REPLY.lock().unwrap().take();
+    crate::PENDING_SHORT.store(false, std::sync::atomic::Ordering::Relaxed);
 
     let version = client
         .general()
@@ -316,11 +325,26 @@ pub async fn start_replay_buffer(state: tauri::State<'_, ObsState>) -> Result<()
 /// the buffer right after a save: OBS's stop can deadlock ("Stopping Replay
 /// Buffer…" forever) if it lands while the flush is still writing.
 pub static LAST_SAVE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+static SAVE_GATE: Mutex<()> = Mutex::const_new(());
+static SAVE_REPLY: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>> = std::sync::Mutex::new(None);
 
 /// Flush the replay buffer to disk. The resulting file path arrives
 /// asynchronously via the `clip-saved` event. `short` asks for that clip to
 /// be trimmed to its last N seconds (short-clip hotkey).
 pub async fn save_replay(state: &ObsState, short: bool) -> Result<(), String> {
+    save_replay_path(state, short).await.map(|_| ())
+}
+
+async fn save_replay_path(state: &ObsState, short: bool) -> Result<String, String> {
+    let _guard = SAVE_GATE.try_lock().map_err(|_| "A clip is still saving. Wait for it to finish, then try again.")?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    {
+        let mut reply = SAVE_REPLY.lock().unwrap();
+        if reply.is_some() {
+            return Err("The previous save hasn't finished. Wait for OBS or restart it before saving again.".into());
+        }
+        *reply = Some(send);
+    }
     *LAST_SAVE.lock().unwrap() = Some(std::time::Instant::now());
     // Every save sets the flag explicitly, and a failed save clears it: a
     // short press that fails must not shorten the next (full) save.
@@ -328,8 +352,18 @@ pub async fn save_replay(state: &ObsState, short: bool) -> Result<(), String> {
     let result = request_save(state).await;
     if result.is_err() {
         crate::PENDING_SHORT.store(false, std::sync::atomic::Ordering::Relaxed);
+        SAVE_REPLY.lock().unwrap().take();
     }
-    result
+    result?;
+    // Leave a timed-out slot occupied until its late event or a reconnect.
+    tokio::time::timeout(std::time::Duration::from_secs(45), receive).await
+        .map_err(|_| "OBS hasn't finished saving the clip. Check OBS before trying again.".to_string())?
+        .map_err(|_| "OBS reconnected before the clip finished saving. Try again.".to_string())
+}
+
+#[tauri::command]
+pub async fn save_setup_replay(state: tauri::State<'_, ObsState>) -> Result<String, String> {
+    save_replay_path(state.inner(), false).await
 }
 
 async fn request_save(state: &ObsState) -> Result<(), String> {
@@ -562,6 +596,24 @@ pub async fn test_capture_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn disconnected_short_save_clears_pending_trim() {
+        let state = ObsState::default();
+        let held = SAVE_GATE.lock().await;
+        assert!(save_replay_path(&state, false).await.unwrap_err().contains("still saving"));
+        drop(held);
+        // A timed-out save still owns its late event until reconnect/event.
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        *SAVE_REPLY.lock().unwrap() = Some(sender);
+        assert!(save_replay_path(&state, false).await.unwrap_err().contains("previous save"));
+        assert!(SAVE_REPLY.lock().unwrap().is_some());
+        SAVE_REPLY.lock().unwrap().take();
+        assert!(save_replay(&state, true).await.is_err());
+        assert!(!crate::PENDING_SHORT.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(save_replay(&state, false).await.is_err());
+        assert!(!crate::PENDING_SHORT.load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     fn outdated(v: &str) -> bool {
         let state = ObsState::default();

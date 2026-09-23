@@ -402,7 +402,7 @@ function healthChecks(d: Diagnostics): Check[] {
 }
 
 /// Settings "Health" section: a live view of the recording setup.
-export function HealthPanel() {
+export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   useEffect(() => {
     let alive = true;
@@ -453,11 +453,13 @@ export function HealthPanel() {
           </li>
         ))}
       </ul>
+      <button className="btn-ghost" onClick={onTestSetup}>Test my setup</button>
     </section>
   );
 }
 
 export function SettingsPage(props: {
+  onTestSetup: () => void;
   settings: Settings;
   setSettings: (s: Settings) => void;
   saveSettings: (s: Settings) => Promise<void>;
@@ -509,7 +511,7 @@ export function SettingsPage(props: {
         </button>
       </header>
       <div className="settings-body">
-        <HealthPanel />
+        <HealthPanel onTestSetup={props.onTestSetup} />
         <section className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><FilmSlate size={16} weight="fill" /></div>
