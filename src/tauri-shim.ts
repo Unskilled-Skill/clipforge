@@ -34,7 +34,7 @@ const mockSettings = {
   replay_seconds: 180,
   video_fps: 60,
   video_height: 0,
-  bitrate_mbps: 20,
+  bitrate_mbps: 0,
   encoder_pref: "auto",
 };
 

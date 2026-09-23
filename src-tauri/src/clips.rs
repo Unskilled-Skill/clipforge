@@ -161,8 +161,9 @@ fn default_replay_seconds() -> f64 {
 fn default_fps() -> u32 {
     60
 }
+/// 0 = auto (see `setup::target_bitrate_mbps`).
 fn default_bitrate() -> f64 {
-    20.0
+    0.0
 }
 fn default_encoder() -> String {
     "auto".into()

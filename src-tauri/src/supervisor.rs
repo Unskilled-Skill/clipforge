@@ -149,17 +149,9 @@ async fn tick(
                 let guard = obs_state.client.lock().await;
                 if let Some(client) = guard.as_ref() {
                     let _ = ensure_autogame_source(client).await;
-                    crate::setup::ensure_output_config(client, &settings.clips_dir).await;
-                    crate::setup::ensure_replay_buffer_config(client, settings.replay_seconds)
-                        .await;
-                    crate::setup::ensure_audio_devices(client).await;
-                    crate::setup::ensure_audio_tracks(client).await;
-                    // VC track binds now; the game-audio track binds when a
-                    // game is actually detected (see the retarget below) —
-                    // binding it to an arbitrary list entry here would sit on
-                    // the wrong exe until then.
-                    crate::setup::ensure_split_audio(client, None, &settings.vc_exe).await;
-                    crate::setup::ensure_video_settings(client, &settings).await;
+                    // Game-audio track binds when a game is actually detected
+                    // (see the retarget below), so no game here.
+                    crate::setup::apply_all(client, &settings, None).await;
                 }
             }
         }
@@ -237,6 +229,14 @@ async fn tick(
             *no_game_ticks = 0;
         } else {
             *no_game_ticks = no_game_ticks.saturating_add(1);
+        }
+        // Output settings OBS hasn't picked up yet (it was busy when they
+        // were written): reload once the buffer is down and no game runs.
+        if state.game.is_none()
+            && crate::setup::RELOAD_PENDING.load(Ordering::Relaxed)
+            && crate::setup::reload_profile_if_idle(client).await
+        {
+            crate::setup::RELOAD_PENDING.store(false, Ordering::Relaxed);
         }
 
         state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
