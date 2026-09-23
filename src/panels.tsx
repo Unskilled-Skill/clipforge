@@ -4,7 +4,7 @@
 import { useEffect, useRef } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { invoke, openDialog } from "./tauri-shim";
-import appIcon from "./assets/app-icon.png";
+import appIcon from "./assets/logo.svg";
 import type { GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import {
   ArrowCounterClockwise,

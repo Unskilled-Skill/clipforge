@@ -45,7 +45,7 @@ import type {
   SupervisorState,
   ThumbInfo,
 } from "./types";
-import appIcon from "./assets/app-icon.png";
+import appIcon from "./assets/logo.svg";
 import "./App.css";
 
 // Ruler tick positions (seconds) for a clip: coarsest step that still
