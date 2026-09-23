@@ -262,6 +262,10 @@ pub fn setup_status() -> SetupStatus {
 /// Install a tool via winget; blocks until done. `id` is allow-listed.
 #[tauri::command]
 pub async fn winget_install(id: String) -> Result<(), String> {
+    crate::clips::blocking(move || winget_install_blocking(id)).await
+}
+
+fn winget_install_blocking(id: String) -> Result<(), String> {
     let allowed = ["Gyan.FFmpeg", "OBSProject.OBSStudio"];
     if !allowed.contains(&id.as_str()) {
         return Err("unknown package".into());

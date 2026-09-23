@@ -17,6 +17,7 @@ export interface Settings {
   game_blacklist: string[];
   vc_exe: string;
   auto_launch_obs: boolean;
+  launch_at_login: boolean;
   auto_manage_buffer: boolean;
   obs_path: string;
   hotkey_save: string;
