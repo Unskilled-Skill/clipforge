@@ -501,7 +501,7 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
   const checks = diag ? healthChecks(diag) : [];
   const issues = checks.filter((c) => !c.ok).length;
   return (
-    <section className="set-group">
+    <section className="set-group health-group">
       <div className="set-head">
         <div className="set-head-icon"><Heartbeat size={16} weight="fill" /></div>
         <div className="set-head-text">

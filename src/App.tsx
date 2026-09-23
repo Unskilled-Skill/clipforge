@@ -17,7 +17,6 @@ import {
   FilmStrip,
   FolderOpen,
   GameController,
-  Gauge,
   GearSix,
   Headset,
   MagnifyingGlass,
@@ -929,6 +928,29 @@ function App() {
     } finally {
       setMontaging(false);
       setExportPct(null);
+    }
+  }
+
+  // Per-day cleanup: every clip of that day that isn't starred goes to the
+  // Recycle Bin (recoverable), after a confirm that names the count.
+  async function clearUnstarred(day: string, dayClips: ClipInfo[]) {
+    const paths = dayClips.filter((c) => !favorites.includes(c.path)).map((c) => c.path);
+    if (paths.length === 0) return;
+    const ok = await confirmDialog(
+      `Move ${paths.length} unstarred clip${paths.length > 1 ? "s" : ""} from ${day} to the Recycle Bin? Starred clips stay.`,
+      { title: "Keep starred, clear the rest", kind: "warning" }
+    );
+    if (!ok) return;
+    setError(null);
+    try {
+      for (const path of paths) {
+        await invoke("delete_clip", { path });
+      }
+      showToast(`Cleared ${paths.length} clip${paths.length > 1 ? "s" : ""} from ${day}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      await refreshClips();
     }
   }
 
@@ -1892,6 +1914,11 @@ function App() {
                         <h2 className="session-title">{g.label}</h2>
                         <span className="session-meta">{g.meta}</span>
                         <span className="session-rule" />
+                        {g.items.some(({ c }) => !favorites.includes(c.path)) && (
+                          <button className="session-clear" onClick={() => clearUnstarred(g.label, g.items.map(({ c }) => c))}>
+                            Keep starred, clear the rest
+                          </button>
+                        )}
                       </div>
                     )}
                     <div className="session-grid">
@@ -2183,6 +2210,10 @@ function App() {
                   {selected.name}
                 </span>
               )}
+              <span className="editor-meta mono">
+                {formatSize(selected.size_bytes)}
+                {duration > 0 && ` · ${formatDuration(duration)}`}
+              </span>
               <div className="lib-spacer" />
               <button
                 className="btn-delete"
@@ -2205,6 +2236,7 @@ function App() {
               </button>
             </div>
 
+            <div className="editor-stage">
             <div className="player-wrap">
               <video
                 ref={videoRef}
@@ -2239,6 +2271,74 @@ function App() {
                     onLoadedMetadata={(e) => configTrackAudio(e.currentTarget, t.i)}
                   />
                 ))}
+            </div>
+
+            <aside className="export-panel" aria-label="Export">
+              <section className="export-card">
+                <h2 className="export-title">Share to Discord</h2>
+                <div className="size-seg" role="radiogroup" aria-label="Discord size limit">
+                  {[
+                    { mb: 10, note: "Free" },
+                    { mb: 50, note: "Basic" },
+                    { mb: 500, note: "Nitro" },
+                  ].map((o) => (
+                    <button
+                      key={o.mb}
+                      role="radio"
+                      aria-checked={targetMb === o.mb}
+                      className={targetMb === o.mb ? "on" : ""}
+                      onClick={() => setTargetMb(o.mb)}
+                    >
+                      <span>{o.mb} MB</span>
+                      <span className="size-note">{o.note}</span>
+                    </button>
+                  ))}
+                </div>
+                {/* No estimate until the clip's length is known — a 0s range
+                    divides the size budget into a nonsense bitrate. */}
+                {trimEnd - trimStart > 0 && (
+                  <div className="export-quality">
+                    <span>Estimated quality</span>
+                    <span className={`mono ${goodQuality ? "good" : "bad"}`}>
+                      ~{(kbps / 1000).toFixed(1)} Mbps · {goodQuality ? "good" : "trim shorter"}
+                    </span>
+                  </div>
+                )}
+                <button className="btn-discord wide" onClick={exportDiscord} disabled={exporting}>
+                  <DiscordLogo size={17} weight="fill" />
+                  {exporting
+                    ? `exporting… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                    : "Export and copy"}
+                </button>
+              </section>
+              <div className="export-tools">
+                <button className="btn-trim" onClick={doTrim} disabled={trimming || trimEnd <= trimStart}>
+                  <Scissors size={16} />
+                  {trimming ? "trimming…" : "Trim, lossless"}
+                </button>
+                <button
+                  className="btn-trim"
+                  title="Export the trim range as a GIF (15 s max)"
+                  onClick={exportGif}
+                  disabled={trimEnd - trimStart > 15 || trimEnd <= trimStart}
+                >
+                  <Gif size={18} />
+                  GIF
+                </button>
+                <button className="btn-trim" onClick={exportFrame}>
+                  <Camera size={16} />
+                  Save frame
+                </button>
+                <button
+                  className="btn-trim"
+                  title="Copy the clip file, then paste it in Discord without exporting"
+                  onClick={() => selected && copyClip(selected)}
+                >
+                  <Copy size={16} />
+                  Copy file
+                </button>
+              </div>
+            </aside>
             </div>
 
             <div className="trim-section">
@@ -2399,66 +2499,6 @@ function App() {
               )}
             </div>
 
-            <div className="action-row">
-              {/* No estimate until the clip's length is known — a 0s range
-                  divides the size budget into a nonsense bitrate. */}
-              {trimEnd - trimStart > 0 && (
-                <div className={`quality-pill ${goodQuality ? "good" : "bad"}`}>
-                  <Gauge size={15} weight="fill" />
-                  ~{Math.round(kbps)} kbps · {goodQuality ? "good" : "trim shorter"}
-                </div>
-              )}
-              <div className="lib-spacer" />
-              <button
-                className="btn-trim icon-only"
-                title="Copy the clip file — paste in Discord without exporting"
-                aria-label="Copy clip file"
-                onClick={() => selected && copyClip(selected)}
-              >
-                <Copy size={16} />
-              </button>
-              <button className="btn-trim icon-only" title="Save current frame as PNG" aria-label="Save current frame as PNG" onClick={exportFrame}>
-                <Camera size={16} />
-              </button>
-              <button
-                className="btn-trim icon-only"
-                title="Export trim range as GIF (max 15s)"
-                onClick={exportGif}
-                disabled={trimEnd - trimStart > 15 || trimEnd <= trimStart}
-              >
-                <Gif size={18} />
-              </button>
-              <button className="btn-trim" onClick={doTrim} disabled={trimming || trimEnd <= trimStart}>
-                <Scissors size={16} />
-                {trimming ? "trimming…" : "Trim · lossless"}
-              </button>
-              <div className="export-group">
-                <div className="size-seg" role="radiogroup" aria-label="Discord size limit">
-                  {[
-                    { mb: 10, note: "Free" },
-                    { mb: 50, note: "Basic" },
-                    { mb: 500, note: "Nitro" },
-                  ].map((o) => (
-                    <button
-                      key={o.mb}
-                      role="radio"
-                      aria-checked={targetMb === o.mb}
-                      className={targetMb === o.mb ? "on" : ""}
-                      onClick={() => setTargetMb(o.mb)}
-                    >
-                      <span>{o.mb} MB</span>
-                      <span className="size-note">{o.note}</span>
-                    </button>
-                  ))}
-                </div>
-                <button className="btn-discord" onClick={exportDiscord} disabled={exporting}>
-                  <DiscordLogo size={17} weight="fill" />
-                  {exporting
-                    ? `exporting… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
-                    : "Export for Discord"}
-                </button>
-              </div>
-            </div>
             <p className="kbd-hints">
               <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows 1s ·{" "}
               <kbd>[</kbd> set start · <kbd>]</kbd> set end · <kbd>esc</kbd> back
