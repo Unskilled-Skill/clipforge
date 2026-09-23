@@ -482,8 +482,22 @@ pub fn run() {
             set_buffer_paused,
             take_update_notes,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Any way out (tray Quit, updater restart) stops OBS's replay
+            // buffer first; OBS itself stays open, idle.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                static STOPPED: AtomicBool = AtomicBool::new(false);
+                if !STOPPED.swap(true, Ordering::Relaxed) {
+                    let state = app.state::<ObsState>();
+                    let _ = tauri::async_runtime::block_on(tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        obs::stop_buffer_for_exit(state.inner()),
+                    ));
+                }
+            }
+        });
 }
 
 #[cfg(test)]
