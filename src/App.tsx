@@ -326,16 +326,38 @@ function App() {
     setOnboardStep(0);
   }
 
+  // Mid-match (game running, window hidden) new clips are only listed:
+  // thumbnail rendering waits until the game ends or the window is opened,
+  // so ClipForge does no heavy work while you play.
+  const gameRunningRef = useRef(false);
+  const thumbsPendingRef = useRef(false);
   const refreshClips = useCallback(async (dir?: string) => {
     const clipsDir = dir ?? settingsRef.current?.clips_dir;
     if (!clipsDir) return;
     try {
       setClips(await invoke<ClipInfo[]>("list_clips", { dir: clipsDir }));
+      if (gameRunningRef.current && document.hidden) {
+        thumbsPendingRef.current = true;
+        return;
+      }
+      thumbsPendingRef.current = false;
       setThumbs(await invoke<Record<string, ThumbInfo>>("gen_thumbnails", { dir: clipsDir }));
     } catch (e) {
       setError(String(e));
     }
   }, []);
+
+  useEffect(() => {
+    gameRunningRef.current = !!sup?.game;
+    if (!sup?.game && thumbsPendingRef.current) refreshClips();
+  }, [sup?.game, refreshClips]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden && thumbsPendingRef.current) refreshClips();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshClips]);
 
   const connect = useCallback(async (s: Settings) => {
     setConnecting(true);
@@ -1579,6 +1601,24 @@ function App() {
             <span>
               OBS is open with its WebSocket server off, so ClipForge can't connect. Close OBS
               once: ClipForge turns the server on and reopens OBS for you.
+            </span>
+          </div>
+        )}
+        {sup?.render_lag && (
+          <div className="setup-bar">
+            <Warning size={15} weight="fill" />
+            <span>
+              Clips are dropping frames: your GPU is maxed out by the game. Cap the game's FPS a
+              little below your monitor's refresh rate to give recording some room.
+            </span>
+          </div>
+        )}
+        {!sup?.render_lag && sup?.encoder_lag && (
+          <div className="setup-bar">
+            <Warning size={15} weight="fill" />
+            <span>
+              The encoder can't keep up, so clips will stutter. Lower the bitrate or recording
+              FPS in Settings.
             </span>
           </div>
         )}

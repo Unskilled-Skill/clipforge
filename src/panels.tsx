@@ -1,11 +1,11 @@
 // Panels extracted from App.tsx: settings page, onboarding walkthrough and
 // the two app-picker modals. All state stays in App — these are pure views
 // over props, so App.tsx keeps the data flow while this file keeps the bulk.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { invoke, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
-import type { GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
+import type { Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import {
   ArrowCounterClockwise,
   ArrowLeft,
@@ -17,10 +17,12 @@ import {
   FilmSlate,
   GameController,
   HardDrives,
+  Heartbeat,
   Keyboard,
   Lightning,
   Plugs,
   Waveform,
+  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 
@@ -206,6 +208,150 @@ export function VcPickerModal(props: {
   );
 }
 
+type Check = { label: string; value: string; ok: boolean; fix?: string };
+
+function encoderName(id: string | null): string {
+  if (!id || id === "none") return "not set";
+  if (id === "obs_x264") return "CPU (x264)";
+  const codec = id.includes("av1") ? "AV1" : id.includes("265") || id.includes("hevc") ? "HEVC" : "H.264";
+  if (id.includes("amf")) return `AMD ${codec}`;
+  if (id.includes("nvenc")) return `NVIDIA ${codec}`;
+  if (id.includes("qsv")) return `Intel ${codec}`;
+  return id;
+}
+
+/// Turn raw diagnostics into rows a player can read: what OBS is really
+/// using, whether it's right for clipping, and what to do if not.
+function healthChecks(d: Diagnostics): Check[] {
+  const hw = (id: string | null) => !!id && /nvenc|amf|qsv/.test(id);
+  const gb = d.disk_free_bytes != null ? d.disk_free_bytes / 1024 ** 3 : null;
+  const lag = Math.max(d.health.render_lag_pct, d.health.encoder_lag_pct);
+  return [
+    {
+      label: "OBS",
+      value: d.obs_connected ? `Connected, version ${d.obs_version ?? "unknown"}` : "Not connected",
+      ok: d.obs_connected && !d.obs_outdated,
+      fix: !d.obs_connected
+        ? "Start OBS, or check Advanced connection below."
+        : d.obs_outdated
+          ? "Update OBS to 30.2 or newer."
+          : undefined,
+    },
+    {
+      label: "Encoder",
+      value: encoderName(d.encoder),
+      ok: hw(d.encoder) && (!d.best_encoder || d.encoder === d.best_encoder),
+      fix: !hw(d.encoder)
+        ? "Recording on the CPU costs game FPS. Set Encoder to Auto."
+        : d.best_encoder && d.encoder !== d.best_encoder
+          ? `${encoderName(d.best_encoder)} is better here. It switches over after your game.`
+          : undefined,
+    },
+    {
+      label: "Quality",
+      value: d.bitrate_kbps
+        ? `${Math.round(d.bitrate_kbps / 1000)} Mbps ${d.rate_control ?? ""}`.trim()
+        : "Unknown",
+      ok: (d.bitrate_kbps ?? 0) >= 8000,
+    },
+    {
+      label: "Keyframes",
+      value: d.keyint_sec ? `Every ${d.keyint_sec}s` : "OBS default",
+      ok: d.keyint_sec === 1,
+      fix: d.keyint_sec === 1 ? undefined : "Switches to every 1s after your game, so trims land on time.",
+    },
+    {
+      label: "Video",
+      value: d.resolution && d.fps ? `${d.resolution} at ${d.fps} fps` : "Unknown",
+      ok: !!d.resolution,
+    },
+    {
+      label: "Replay buffer",
+      value: d.buffer_seconds ? `${d.buffer_seconds}s, ${d.buffer_ram_mb ?? "?"} MB of RAM` : "Not set",
+      ok: !!d.buffer_seconds && d.output_mode === "Advanced",
+    },
+    {
+      label: "Smoothness",
+      value: lag > 0 ? `${lag.toFixed(1)}% frames dropped, last 30s` : "No dropped frames",
+      ok: lag < 1,
+      fix:
+        d.health.render_lag_pct >= 1
+          ? "Your GPU is maxed out. Cap the game's FPS a little below your monitor's refresh rate."
+          : d.health.encoder_lag_pct >= 1
+            ? "The encoder can't keep up. Lower the bitrate or the recording FPS."
+            : undefined,
+    },
+    {
+      label: "Disk",
+      value: gb != null ? `${gb.toFixed(1)} GB free` : "Unknown",
+      ok: gb == null || gb >= 10,
+      fix: gb != null && gb < 10 ? "OBS stops saving when the drive is full. Free up space or lower the storage cap." : undefined,
+    },
+    {
+      label: "ffmpeg",
+      value: d.ffmpeg_found ? "Installed" : "Missing",
+      ok: d.ffmpeg_found,
+      fix: d.ffmpeg_found ? undefined : "Needed for thumbnails, trims and exports. Use the install button at the top.",
+    },
+  ];
+}
+
+/// Settings "Health" section: a live view of the recording setup.
+export function HealthPanel() {
+  const [diag, setDiag] = useState<Diagnostics | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      invoke<Diagnostics>("obs_diagnostics")
+        .then((d) => {
+          if (alive) setDiag(d);
+        })
+        .catch(() => {});
+    load();
+    const id = setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+  const checks = diag ? healthChecks(diag) : [];
+  const issues = checks.filter((c) => !c.ok).length;
+  return (
+    <section className="set-group">
+      <div className="set-head">
+        <div className="set-head-icon"><Heartbeat size={16} weight="fill" /></div>
+        <div className="set-head-text">
+          <span className="set-head-title">Health</span>
+          <span className="set-head-desc">
+            {!diag
+              ? "Checking…"
+              : issues === 0
+                ? "Everything is set up for clipping"
+                : `${issues} ${issues > 1 ? "things" : "thing"} to look at`}
+          </span>
+        </div>
+      </div>
+      {diag?.settings_pending && (
+        <span className="field-hint">Some changes are waiting. They apply once your game closes.</span>
+      )}
+      <ul className="health-list">
+        {checks.map((c) => (
+          <li key={c.label} className={`health-row ${c.ok ? "ok" : "warn"}`}>
+            {c.ok ? (
+              <CheckCircle size={16} weight="fill" aria-label="OK" />
+            ) : (
+              <WarningCircle size={16} weight="fill" aria-label="Needs attention" />
+            )}
+            <span className="health-label">{c.label}</span>
+            <span className="health-value mono">{c.value}</span>
+            {!c.ok && c.fix && <span className="health-fix">{c.fix}</span>}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function SettingsPage(props: {
   settings: Settings;
   setSettings: (s: Settings) => void;
@@ -258,6 +404,7 @@ export function SettingsPage(props: {
         </button>
       </header>
       <div className="settings-body">
+        <HealthPanel />
         <section className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><FilmSlate size={16} weight="fill" /></div>
