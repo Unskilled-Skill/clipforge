@@ -367,6 +367,9 @@ export function SettingsPage(props: {
             </div>
             <button
               className={`switch ${settings.auto_manage_buffer ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.auto_manage_buffer}
+              aria-label="Auto buffer"
               onClick={() => saveSettings({ ...settings, auto_manage_buffer: !settings.auto_manage_buffer })}
             >
               <span className="knob" />
@@ -379,6 +382,9 @@ export function SettingsPage(props: {
             </div>
             <button
               className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.auto_launch_obs}
+              aria-label="Auto-launch OBS"
               onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
             >
               <span className="knob" />
@@ -394,6 +400,9 @@ export function SettingsPage(props: {
             </div>
             <button
               className={`switch ${settings.auto_clip ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.auto_clip}
+              aria-label="Auto-clip kills"
               onClick={() => saveSettings({ ...settings, auto_clip: !settings.auto_clip })}
             >
               <span className="knob" />
@@ -875,6 +884,9 @@ export function OnboardingModal(props: {
               </div>
               <button
                 className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
+                role="switch"
+                aria-checked={settings.auto_launch_obs}
+                aria-label="Auto-launch OBS"
                 onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
               >
                 <span className="knob" />
@@ -887,6 +899,9 @@ export function OnboardingModal(props: {
               </div>
               <button
                 className={`switch ${settings.auto_manage_buffer ? "on" : ""}`}
+                role="switch"
+                aria-checked={settings.auto_manage_buffer}
+                aria-label="Auto buffer"
                 onClick={() =>
                   saveSettings({ ...settings, auto_manage_buffer: !settings.auto_manage_buffer })
                 }
