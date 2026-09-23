@@ -35,7 +35,7 @@ import {
   Waveform,
   X,
 } from "@phosphor-icons/react";
-import { AppPickerModal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
+import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
 import type {
   ClipInfo,
   ObsStatus,
@@ -241,6 +241,9 @@ function App() {
   });
   // Card focused by keyboard navigation; -1 = none.
   const [focusIdx, setFocusIdx] = useState(-1);
+  // The grid rises in once per session; returning from the editor (Esc) or
+  // Settings shows it instantly.
+  const gridEntered = useRef(false);
   // Back-to-back preview of the selection: queue of paths + position.
   const [previewQueue, setPreviewQueue] = useState<string[] | null>(null);
   const [previewQIdx, setPreviewQIdx] = useState(0);
@@ -1093,11 +1096,15 @@ function App() {
     if (selected) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+      )
+        return;
       // Queue player owns the keys while it's open.
       if (previewQueue) {
-        if (e.key === "Escape") setPreviewQueue(null);
-        else if (e.key === "ArrowRight") queueNext();
+        if (e.key === "ArrowRight") queueNext();
         else if (e.key === "ArrowLeft") setPreviewQIdx((i) => Math.max(0, i - 1));
         else return;
         e.preventDefault();
@@ -1123,8 +1130,14 @@ function App() {
         const next =
           focusIdx === -1 ? 0 : Math.max(0, Math.min(visibleClips.length - 1, focusIdx + delta));
         setFocusIdx(next);
-        cards[next]?.scrollIntoView({ block: "nearest" });
-      } else if (!showSettings && e.key === "Enter" && focusIdx >= 0 && focusIdx < visibleClips.length) {
+        cards[next]?.focus();
+      } else if (
+        !showSettings &&
+        e.key === "Enter" &&
+        !(target instanceof HTMLButtonElement) &&
+        focusIdx >= 0 &&
+        focusIdx < visibleClips.length
+      ) {
         selectClip(visibleClips[focusIdx]);
       }
     };
@@ -1373,21 +1386,21 @@ function App() {
         <div className="titlebar-controls">
           <button
             className="tb-btn"
-            title="Minimize"
+            title="Minimize" aria-label="Minimize"
             onClick={() => isTauri && getCurrentWindow().minimize()}
           >
             <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" strokeWidth="1.2" /></svg>
           </button>
           <button
             className="tb-btn"
-            title="Maximize"
+            title="Maximize" aria-label="Maximize"
             onClick={() => isTauri && getCurrentWindow().toggleMaximize()}
           >
             <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>
           </button>
           <button
             className="tb-btn close"
-            title="Close"
+            title="Close" aria-label="Close"
             onClick={() => isTauri && getCurrentWindow().close()}
           >
             <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" /><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2" /></svg>
@@ -1478,7 +1491,7 @@ function App() {
       <main className="main">
         {exportPct != null && (
           <div className="export-bar">
-            <div className="export-bar-fill" style={{ width: `${exportPct}%` }} />
+            <div className="export-bar-fill" style={{ transform: `scaleX(${exportPct / 100})` }} />
           </div>
         )}
         {error && (
@@ -1505,7 +1518,7 @@ function App() {
                 {launchingObs ? "launching…" : "Launch OBS"}
               </button>
             )}
-            <button className="error-dismiss" title="Dismiss" onClick={() => setError(null)}>
+            <button className="error-dismiss" title="Dismiss" aria-label="Dismiss error" onClick={() => setError(null)}>
               <X size={14} />
             </button>
           </div>
@@ -1558,56 +1571,64 @@ function App() {
                   {clips.length} clips · {totalSize}
                 </span>
               </div>
-              <div className="lib-spacer" />
-              <div className="search-box">
-                <MagnifyingGlass size={15} color="#5f636e" />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === "Escape" && setSearch("")}
-                  placeholder="Search clips…"
-                />
-                {search && (
-                  <button className="search-clear" title="Clear (Esc)" onClick={() => setSearch("")}>
-                    <X size={13} />
+              <div className="lib-actions">
+                <div className="search-box">
+                  <MagnifyingGlass size={15} color="#5f636e" />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => e.key === "Escape" && setSearch("")}
+                    placeholder="Search clips…"
+                  />
+                  {search && (
+                    <button className="search-clear" title="Clear (Esc)" aria-label="Clear search" onClick={() => setSearch("")}>
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+                <select
+                  className="audio-select"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                  title="Sort clips" aria-label="Sort clips"
+                >
+                  <option value="newest">Newest</option>
+                  <option value="oldest">Oldest</option>
+                  <option value="largest">Largest</option>
+                  <option value="longest">Longest</option>
+                  <option value="name">Name</option>
+                </select>
+                <button
+                  className="btn-ghost"
+                  onClick={async () => {
+                    setRefreshing(true);
+                    await refreshClips();
+                    setRefreshing(false);
+                  }}
+                  disabled={refreshing}
+                  title="Reload clips from disk"
+                  aria-label="Refresh"
+                >
+                  <ArrowsClockwise size={15} />
+                  <span className="btn-label">{refreshing ? "refreshing…" : "Refresh"}</span>
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={scanBlack}
+                  disabled={scanning || clips.length === 0}
+                  title="Find clips that recorded only a black screen"
+                  aria-label="Scan for black clips"
+                >
+                  <Sparkle size={15} />
+                  <span className="btn-label">{scanning ? "scanning…" : "Scan for black"}</span>
+                </button>
+                {blackCount > 0 && (
+                  <button className="btn-danger" onClick={deleteAllBlack}>
+                    <Trash size={15} />
+                    Delete {blackCount} black
                   </button>
                 )}
               </div>
-              <select
-                className="audio-select"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-                title="Sort clips"
-              >
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="largest">Largest</option>
-                <option value="longest">Longest</option>
-                <option value="name">Name</option>
-              </select>
-              <button
-                className="btn-ghost"
-                onClick={async () => {
-                  setRefreshing(true);
-                  await refreshClips();
-                  setRefreshing(false);
-                }}
-                disabled={refreshing}
-                title="Reload clips from disk"
-              >
-                <ArrowsClockwise size={15} />
-                {refreshing ? "refreshing…" : "Refresh"}
-              </button>
-              <button className="btn-ghost" onClick={scanBlack} disabled={scanning || clips.length === 0}>
-                <Sparkle size={15} />
-                {scanning ? "scanning…" : "Scan for black"}
-              </button>
-              {blackCount > 0 && (
-                <button className="btn-danger" onClick={deleteAllBlack}>
-                  <Trash size={15} />
-                  Delete {blackCount} black
-                </button>
-              )}
             </header>
 
             <div className="filter-row">
@@ -1673,12 +1694,22 @@ function App() {
                 </div>
               )
             ) : (
-              <div className="grid">
+              <div
+                className={gridEntered.current ? "grid" : "grid enter"}
+                onAnimationEnd={(e) => {
+                  if (e.target === e.currentTarget) gridEntered.current = true;
+                }}
+              >
                 {visibleClips.map((c, i) => (
                   <div
                     key={c.path}
                     className={`card ${i === focusIdx ? "kb-focus" : ""}`}
                     style={{ "--game": gameColor(gameOf(c)) } as React.CSSProperties}
+                    // Roving tabindex: Tab lands on one card, arrows walk the
+                    // grid (library shortcuts below), Enter opens it.
+                    tabIndex={i === Math.max(0, focusIdx) ? 0 : -1}
+                    aria-label={c.name}
+                    onFocus={(e) => e.target === e.currentTarget && setFocusIdx(i)}
                     // Shift-click anywhere on the card range-selects instead of
                     // opening; mousedown guard stops the browser text-select.
                     onMouseDown={(e) => e.shiftKey && e.preventDefault()}
@@ -1758,6 +1789,8 @@ function App() {
                         <button
                           className={`card-select ${montageSel.has(c.path) ? "on" : ""}`}
                           title="Select — shift-click selects the range"
+                          aria-label={montageSel.has(c.path) ? `Deselect ${c.name}` : `Select ${c.name}`}
+                          aria-pressed={montageSel.has(c.path)}
                           onClick={(e) => {
                             e.stopPropagation();
                             handleSelect(c, e.shiftKey);
@@ -1780,6 +1813,7 @@ function App() {
                       <button
                         className="card-trash"
                         title="Move to Recycle Bin"
+                        aria-label={`Delete ${c.name}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           deleteClip(c);
@@ -1790,6 +1824,8 @@ function App() {
                       <button
                         className={`card-star ${favorites.includes(c.path) ? "on" : ""}`}
                         title="Favorite — survives storage cleanup"
+                        aria-label={`Favorite ${c.name}`}
+                        aria-pressed={favorites.includes(c.path)}
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleFavorite(c);
@@ -1818,6 +1854,7 @@ function App() {
                           <button
                             className="card-rename-btn"
                             title="Rename"
+                            aria-label={`Rename ${c.name}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               startLibRename(c);
@@ -1952,6 +1989,7 @@ function App() {
               <button
                 className="btn-delete"
                 title="Show in Explorer"
+                aria-label="Show in Explorer"
                 onClick={() => invoke("show_in_folder", { path: selected.path }).catch(() => {})}
               >
                 <FolderOpen size={15} />
@@ -2164,19 +2202,24 @@ function App() {
             </div>
 
             <div className="action-row">
-              <div className={`quality-pill ${goodQuality ? "good" : "bad"}`}>
-                <Gauge size={15} weight="fill" />
-                ~{Math.round(kbps)} kbps · {goodQuality ? "good" : "trim shorter"}
-              </div>
+              {/* No estimate until the clip's length is known — a 0s range
+                  divides the size budget into a nonsense bitrate. */}
+              {trimEnd - trimStart > 0 && (
+                <div className={`quality-pill ${goodQuality ? "good" : "bad"}`}>
+                  <Gauge size={15} weight="fill" />
+                  ~{Math.round(kbps)} kbps · {goodQuality ? "good" : "trim shorter"}
+                </div>
+              )}
               <div className="lib-spacer" />
               <button
                 className="btn-trim icon-only"
                 title="Copy the clip file — paste in Discord without exporting"
+                aria-label="Copy clip file"
                 onClick={() => selected && copyClip(selected)}
               >
                 <Copy size={16} />
               </button>
-              <button className="btn-trim icon-only" title="Save current frame as PNG" onClick={exportFrame}>
+              <button className="btn-trim icon-only" title="Save current frame as PNG" aria-label="Save current frame as PNG" onClick={exportFrame}>
                 <Camera size={16} />
               </button>
               <button
@@ -2197,6 +2240,7 @@ function App() {
                   value={targetMb}
                   onChange={(e) => setTargetMb(Number(e.target.value))}
                   title="Export size budget"
+                  aria-label="Export size budget"
                 >
                   <option value={10}>10 MB</option>
                   <option value={50}>50 MB · Nitro Basic</option>
@@ -2224,39 +2268,38 @@ function App() {
           </div>
         )}
 
-      {whatsNew && (
-        <div className="modal-backdrop" onClick={() => setWhatsNew(null)}>
-          <div className="modal whatsnew-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <Sparkle size={19} color="#7f9bff" weight="fill" />
-              <span className="modal-title">Updated to v{whatsNew.version}</span>
-              <div className="lib-spacer" />
-              <button className="modal-close" onClick={() => setWhatsNew(null)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <span className="set-label">WHAT'S NEW</span>
-              {whatsNew.notes
-                .split(/\n+/)
-                .filter((l) => l.trim())
-                .map((line, i) => (
-                  <p key={i} className="onboard-copy">
-                    {line.trim()}
-                  </p>
-                ))}
-              {!whatsNew.notes.trim() && (
-                <p className="onboard-copy">Bug fixes and improvements.</p>
-              )}
-            </div>
-            <div className="onboard-footer">
-              <div />
-              <button className="btn-ghost apply-btn" onClick={() => setWhatsNew(null)}>
-                Nice
-              </button>
-            </div>
+      {/* Waits for the tutorial so first launch never stacks two dialogs. */}
+      {whatsNew && !showOnboarding && (
+        <Modal label={`Updated to v${whatsNew.version}`} className="modal whatsnew-modal" onClose={() => setWhatsNew(null)}>
+          <div className="modal-head">
+            <Sparkle size={19} color="#7f9bff" weight="fill" />
+            <span className="modal-title">Updated to v{whatsNew.version}</span>
+            <div className="lib-spacer" />
+            <button className="modal-close" onClick={() => setWhatsNew(null)} aria-label="Close">
+              <X size={16} />
+            </button>
           </div>
-        </div>
+          <div className="modal-body">
+            <span className="set-label">WHAT'S NEW</span>
+            {whatsNew.notes
+              .split(/\n+/)
+              .filter((l) => l.trim())
+              .map((line, i) => (
+                <p key={i} className="onboard-copy">
+                  {line.trim()}
+                </p>
+              ))}
+            {!whatsNew.notes.trim() && (
+              <p className="onboard-copy">Bug fixes and improvements.</p>
+            )}
+          </div>
+          <div className="onboard-footer">
+            <div />
+            <button className="btn-ghost apply-btn" onClick={() => setWhatsNew(null)}>
+              Nice
+            </button>
+          </div>
+        </Modal>
       )}
 
       {ctxMenu && (
@@ -2295,49 +2338,47 @@ function App() {
       )}
 
       {previewQueue && previewQueue[previewQIdx] && (
-        <div className="modal-backdrop" onClick={() => setPreviewQueue(null)}>
-          <div className="queue-player" onClick={(e) => e.stopPropagation()}>
-            <video
-              key={previewQueue[previewQIdx]}
-              src={convertFileSrc(previewQueue[previewQIdx])}
-              autoPlay
-              controls
-              onLoadedMetadata={(e) => {
-                // Honor the clip's saved trim — start at its in-point…
-                const r = trimRanges[previewQueue[previewQIdx]];
-                if (r) e.currentTarget.currentTime = r[0];
-              }}
-              onTimeUpdate={(e) => {
-                // …and advance at its out-point, like the montage will.
-                const r = trimRanges[previewQueue[previewQIdx]];
-                if (r && e.currentTarget.currentTime >= r[1]) queueNext();
-              }}
-              onEnded={queueNext}
-            />
-            <div className="queue-bar">
-              <span className="queue-count">
-                {previewQIdx + 1} / {previewQueue.length}
-              </span>
-              <span className="queue-name">{previewQueue[previewQIdx].split("/").pop()}</span>
-              <div className="lib-spacer" />
-              <button
-                className="btn-ghost"
-                disabled={previewQIdx === 0}
-                onClick={() => setPreviewQIdx((i) => Math.max(0, i - 1))}
-              >
-                <ArrowLeft size={15} />
-                Prev
-              </button>
-              <button className="btn-ghost" onClick={queueNext}>
-                {previewQIdx + 1 < previewQueue.length ? "Next" : "Done"}
-                <ArrowRight size={15} />
-              </button>
-              <button className="btn-ghost" onClick={() => setPreviewQueue(null)} title="Esc">
-                <X size={15} />
-              </button>
-            </div>
+        <Modal label="Clip preview queue" className="queue-player" onClose={() => setPreviewQueue(null)}>
+          <video
+            key={previewQueue[previewQIdx]}
+            src={convertFileSrc(previewQueue[previewQIdx])}
+            autoPlay
+            controls
+            onLoadedMetadata={(e) => {
+              // Honor the clip's saved trim — start at its in-point…
+              const r = trimRanges[previewQueue[previewQIdx]];
+              if (r) e.currentTarget.currentTime = r[0];
+            }}
+            onTimeUpdate={(e) => {
+              // …and advance at its out-point, like the montage will.
+              const r = trimRanges[previewQueue[previewQIdx]];
+              if (r && e.currentTarget.currentTime >= r[1]) queueNext();
+            }}
+            onEnded={queueNext}
+          />
+          <div className="queue-bar">
+            <span className="queue-count">
+              {previewQIdx + 1} / {previewQueue.length}
+            </span>
+            <span className="queue-name">{previewQueue[previewQIdx].split("/").pop()}</span>
+            <div className="lib-spacer" />
+            <button
+              className="btn-ghost"
+              disabled={previewQIdx === 0}
+              onClick={() => setPreviewQIdx((i) => Math.max(0, i - 1))}
+            >
+              <ArrowLeft size={15} />
+              Prev
+            </button>
+            <button className="btn-ghost" onClick={queueNext}>
+              {previewQIdx + 1 < previewQueue.length ? "Next" : "Done"}
+              <ArrowRight size={15} />
+            </button>
+            <button className="btn-ghost" onClick={() => setPreviewQueue(null)} title="Close (Esc)" aria-label="Close preview">
+              <X size={15} />
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
 
       {showAppPicker && (

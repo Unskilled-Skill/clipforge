@@ -1,9 +1,14 @@
 :root {
-  font-family: "Hanken Grotesk", "Segoe UI", sans-serif;
+  font-family: "Hanken Grotesk Variable", "Segoe UI", sans-serif;
   font-size: 14px;
   color: #eceef3;
   background: #0b0c10;
   -webkit-font-smoothing: antialiased;
+
+  /* Motion tokens: one strong ease-out for things entering or reacting,
+     one ease-in-out for things moving across the screen. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
 
 * { box-sizing: border-box; }
@@ -11,7 +16,7 @@ body { margin: 0; overflow: hidden; }
 
 .mono, kbd, .lib-count, .card-meta, .trim-readout, .quality-pill,
 .duration-badge, .brand-ver, .obs-ver, .buffer-pill, .empty-hint {
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
 }
 
 .app-frame {
@@ -32,7 +37,7 @@ body { margin: 0; overflow: hidden; }
   user-select: none;
 }
 .titlebar-title {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -78,13 +83,13 @@ body { margin: 0; overflow: hidden; }
   animation: cf-splash 1.6s ease-in-out infinite;
 }
 .splash-name {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-weight: 700;
   font-size: 19px;
   letter-spacing: -0.01em;
 }
 .splash-hint {
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
   font-size: 11.5px;
   color: #5f636e;
 }
@@ -133,7 +138,7 @@ body { margin: 0; overflow: hidden; }
 }
 .brand-text { display: flex; flex-direction: column; }
 .brand-name {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-weight: 700;
   font-size: 16px;
   letter-spacing: -0.01em;
@@ -205,7 +210,7 @@ body { margin: 0; overflow: hidden; }
 }
 .buffer-pill.armed { color: #40dd80; }
 /* The pill is a button now: click pauses/resumes recording. */
-.buffer-pill { width: 100%; font-family: "JetBrains Mono", monospace; }
+.buffer-pill { width: 100%; font-family: "JetBrains Mono Variable", Consolas, monospace; }
 .buffer-pill:hover { border-color: rgba(64, 221, 128, 0.4); }
 .buffer-pill.paused {
   color: #ffa94d;
@@ -274,16 +279,17 @@ kbd {
   pointer-events: none;
 }
 
-/* One-shot page entrance — content rises in, then never animates again. */
+/* Page entrance — content rises in. The library grid only does this on its
+   first paint of the session (.grid.enter), and the editor never does:
+   both are toggled by Enter/Esc many times a day, where motion reads as lag. */
 @keyframes cf-rise {
   from { opacity: 0; transform: translateY(7px); }
   to { opacity: 1; transform: none; }
 }
-.grid,
-.editor,
+.grid.enter,
 .settings-body,
 .empty-state {
-  animation: cf-rise 0.28s ease backwards;
+  animation: cf-rise 0.28s var(--ease-out) backwards;
 }
 
 .error-bar {
@@ -323,9 +329,21 @@ kbd {
   padding: 22px 30px 18px;
   border-bottom: 1px solid #16181f;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 18px;
+  row-gap: 12px;
   flex-shrink: 0;
+  /* Children size against the header, not the window: the sidebar and
+     the window both eat into it. */
+  container-type: inline-size;
+}
+/* Narrow header: secondary actions collapse to their icons (the buttons
+   keep their accessible names and tooltips). */
+@container (max-width: 820px) {
+  .lib-header .btn-label { display: none; }
+  .lib-header .btn-ghost { padding: 0 11px; }
+  .lib-header { column-gap: 12px; }
 }
 .lib-title {
   display: flex;
@@ -333,7 +351,7 @@ kbd {
   gap: 12px;
 }
 .lib-title h1 {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-weight: 700;
   font-size: 22px;
   letter-spacing: -0.02em;
@@ -349,12 +367,22 @@ kbd {
   white-space: nowrap;
 }
 .lib-spacer { flex: 1; }
+/* Search, sort and actions travel as one group: on a narrow header the
+   whole group drops under the title instead of splitting across rows. */
+.lib-actions {
+  display: flex;
+  align-items: center;
+  gap: inherit;
+  margin-left: auto;
+  min-width: 0;
+}
 
 .search-box {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 220px;
+  flex: 0 1 220px;
+  min-width: 120px;
   height: 38px;
   background: #14151b;
   border: 1px solid #23252f;
@@ -369,6 +397,7 @@ kbd {
   font-size: 13px;
   font-family: inherit;
   width: 100%;
+  min-width: 0;
 }
 
 button {
@@ -386,8 +415,22 @@ textarea,
 .toggle-card,
 .nav-item {
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease,
-    box-shadow 0.15s ease, opacity 0.15s ease;
+    box-shadow 0.15s ease, opacity 0.15s ease, transform 0.12s var(--ease-out);
 }
+/* Press feedback: every button visibly gives under the pointer. */
+button:active:not(:disabled) { transform: scale(0.97); }
+
+/* Keyboard focus on every clickable control: the same accent ring the
+   inputs use below, shown only for keyboard navigation (not mouse clicks). */
+button:focus-visible,
+.chip:focus-visible,
+summary:focus-visible {
+  outline: 2px solid #4c6ef5;
+  outline-offset: 2px;
+}
+/* Dialogs take focus on open so Tab starts inside them; the container
+   itself doesn't need a ring. */
+[role="dialog"]:focus { outline: none; }
 
 /* Focus that's visible without being loud — same ring everywhere. */
 .settings-body input:focus,
@@ -415,6 +458,8 @@ select:focus,
   color: #c3c6cf;
   font-size: 13px;
   font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .btn-ghost:hover:not(:disabled) { border-color: #33363f; }
 
@@ -430,13 +475,17 @@ select:focus,
   color: #f0605f;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
+/* Chips wrap rather than scroll sideways: every game stays visible and
+   mouse users never need a horizontal scrollbar. */
 .filter-row {
   padding: 14px 30px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  overflow-x: auto;
   flex-shrink: 0;
 }
 .chip {
@@ -483,12 +532,14 @@ select:focus,
   border: 1px solid #22242e;
   border-radius: 13px;
   cursor: pointer;
-  transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+  transition: transform 0.18s var(--ease-out), border-color 0.14s ease, box-shadow 0.18s ease;
 }
 .card:hover {
-  transform: translateY(-3px);
   border-color: #3a3f52;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+@media (hover: hover) and (pointer: fine) {
+  .card:hover { transform: translateY(-3px); }
 }
 
 .card-thumb {
@@ -507,9 +558,7 @@ select:focus,
   height: 100%;
   object-fit: cover;
   display: block;
-  transition: transform 0.25s ease;
 }
-.card:hover .card-thumb img { transform: scale(1.045); }
 .thumb-placeholder {
   width: 100%;
   height: 100%;
@@ -589,10 +638,9 @@ select:focus,
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.14s ease, background 0.14s ease;
+  transition: background 0.14s ease;
 }
 .card:hover .play-circle {
-  transform: translate(-50%, -50%) scale(1.12);
   background: rgba(76, 110, 245, 0.85);
 }
 
@@ -966,7 +1014,7 @@ select:focus,
   align-items: center;
 }
 .trim-label {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1144,13 +1192,13 @@ select:focus,
   padding: 12px 15px;
   color: #b8f0cf;
   font-size: 13px;
-  animation: cf-toast 0.25s ease-out;
   backdrop-filter: blur(6px);
   z-index: 50;
-}
-@keyframes cf-toast {
-  from { transform: translate(-50%, 12px); opacity: 0; }
-  to { transform: translate(-50%, 0); opacity: 1; }
+  transition: transform 0.25s var(--ease-out), opacity 0.25s var(--ease-out);
+  @starting-style {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
 }
 
 /* ---------- Settings modal ---------- */
@@ -1186,7 +1234,7 @@ select:focus,
   z-index: 1;
 }
 .modal-title {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-size: 18px;
   font-weight: 700;
 }
@@ -1216,7 +1264,7 @@ select:focus,
   gap: 10px;
 }
 .set-label {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1225,7 +1273,15 @@ select:focus,
 .set-row { display: flex; gap: 10px; }
 .set-col { display: flex; flex-direction: column; gap: 5px; flex: 1; }
 .short-len { max-width: 92px; }
-.field-label { font-size: 11.5px; color: #767a85; }
+/* Label names the field; hint (optional, below it) explains it. Both clear
+   WCAG AA on the settings panels (#16171d / #1a1c23). */
+.field-label { font-size: 11.5px; font-weight: 500; color: #a3a7b1; }
+.field-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #858995;
+  max-width: 68ch;
+}
 
 .modal input,
 .modal textarea,
@@ -1246,7 +1302,7 @@ select:focus,
 .modal textarea.mono,
 .settings-body input.mono,
 .settings-body textarea.mono {
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
   font-size: 12.5px;
 }
 .modal textarea,
@@ -1309,7 +1365,7 @@ select:focus,
 }
 .set-head-text { display: flex; flex-direction: column; gap: 2px; }
 .set-head-title {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -1386,9 +1442,9 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   height: 18px;
   border-radius: 50%;
   background: #fff;
-  transition: left 0.15s ease;
+  transition: transform 0.18s var(--ease-out);
 }
-.switch.on .knob { left: 21px; }
+.switch.on .knob { transform: translateX(18px); }
 
 /* scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -1551,7 +1607,11 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(10px);
   z-index: 40;
-  animation: cf-toast 0.22s ease-out;
+  transition: transform 0.22s var(--ease-out), opacity 0.22s var(--ease-out);
+  @starting-style {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
 }
 .sel-bar .sel-count { color: #e4e6ec; display: flex; align-items: center; }
 .sel-trim-note {
@@ -1612,14 +1672,16 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 }
 .onboard-hero-mark { width: 52px; height: 52px; border-radius: 14px; }
 .onboard-hero-title {
-  font-family: "Space Grotesk", sans-serif;
+  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.01em;
   margin-top: 6px;
 }
 .onboard-hero-sub { font-size: 12.5px; color: #9599a3; }
-.onboard-dot { transition: width 0.2s ease, background 0.2s ease; }
+/* width (not transform) on purpose: the growing pill must push its
+   neighbours aside. Five 6px dots in a rarely seen dialog cost nothing. */
+.onboard-dot { transition: width 0.2s var(--ease-out), background 0.2s ease; }
 .onboard-dot.active { width: 18px; border-radius: 4px; }
 
 /* ---- editor time ruler ---- */
@@ -1634,7 +1696,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   position: absolute;
   top: 0;
   transform: translateX(-50%);
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
   font-size: 9.5px;
   color: #5f636e;
   padding-top: 1px;
@@ -1659,11 +1721,14 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   background: rgba(76, 110, 245, 0.15);
   z-index: 60;
 }
+/* Full-width fill scaled from the left: progress updates many times a
+   second, and scaleX skips the layout that animating width would cost. */
 .export-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #4c6ef5, #6b8bff);
   box-shadow: 0 0 10px rgba(107, 139, 255, 0.7);
-  transition: width 0.3s ease;
+  transform-origin: left;
+  transition: transform 0.3s linear;
 }
 
 /* ---- selection-order badge on cards ---- */
@@ -1678,14 +1743,19 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   color: #fff;
   font-size: 10.5px;
   font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
 }
 
 /* ---- keyboard focus on cards ---- */
-.card.kb-focus {
+.card.kb-focus,
+.card:focus-visible {
+  outline: none;
   border-color: #4c6ef5;
   box-shadow: 0 0 0 2px rgba(76, 110, 245, 0.35);
 }
+/* Hover-only card controls must also surface for keyboard users. */
+.card.kb-focus .card-select,
+.card:focus-within .card-select { opacity: 0.9; }
 
 /* Off-screen cards skip layout/paint — keeps big libraries snappy. */
 .card {
@@ -1734,7 +1804,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   color: #fff;
   font-size: 9.5px;
   font-weight: 700;
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1766,7 +1836,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   border-top: 1px solid #1e2028;
 }
 .queue-count {
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
   font-size: 12px;
   color: #9db2ff;
   background: rgba(76, 110, 245, 0.12);
@@ -1799,7 +1869,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   align-items: center;
   gap: 6px;
   margin-left: 12px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
   font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -1828,9 +1898,10 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   border-radius: 3px;
   background: var(--game, transparent);
   opacity: 0.55;
-  transition: opacity 0.15s ease, top 0.15s ease, bottom 0.15s ease;
+  transform: scaleY(0.96);
+  transition: opacity 0.15s ease, transform 0.15s var(--ease-out);
 }
-.card:hover::before { opacity: 1; top: 10px; bottom: 10px; }
+.card:hover::before { opacity: 1; transform: none; }
 
 /* The editor's player floats on an aura of the clip's game color. */
 .player-wrap {
@@ -1851,7 +1922,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   font-size: 9.5px;
   font-weight: 800;
   letter-spacing: 0.08em;
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
 }
 
 /* ---- dismissable error bar ---- */
@@ -1921,7 +1992,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 
 /* ---- clip counts on filter chips ---- */
 .chip-count {
-  font-family: "JetBrains Mono", monospace;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
   font-size: 10px;
   color: #767a85;
   background: rgba(255, 255, 255, 0.05);
@@ -1937,3 +2008,29 @@ button.kill-count:hover { background: rgba(240, 96, 95, 0.24); }
 /* ---- what's-new popup after an update ---- */
 .whatsnew-modal { width: 480px; }
 .whatsnew-modal .onboard-footer { border-top: 1px solid #1e2028; }
+
+/* ---- reduced motion ----
+   Fewer, gentler animations, not none: fades and colour changes stay,
+   movement, scaling and endless loops go. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes cf-rise {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .buffer-pill.armed .buffer-dot,
+  .titlebar-live-dot,
+  .splash-mark {
+    animation: none;
+  }
+  .card:hover,
+  button:active:not(:disabled) {
+    transform: none;
+  }
+  .toast,
+  .sel-bar {
+    @starting-style {
+      transform: translateX(-50%);
+      opacity: 0;
+    }
+  }
+}
