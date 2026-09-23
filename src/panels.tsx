@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { invoke, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
-import type { Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
+import type { BackupStatus, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import {
   ArrowCounterClockwise,
   ArrowLeft,
@@ -208,6 +208,103 @@ export function VcPickerModal(props: {
   );
 }
 
+function timeAgo(ms: number): string {
+  const min = Math.round((Date.now() - ms) / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+}
+
+/// Storage > Backup: favorites copied to a synced folder between games.
+function BackupSettings(props: { settings: Settings; saveSettings: (s: Settings) => Promise<void> }) {
+  const { settings, saveSettings } = props;
+  const [status, setStatus] = useState<BackupStatus | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  // Typed locally, saved on blur: every save also re-applies OBS config.
+  const [draft, setDraft] = useState(settings.backup_dir);
+  useEffect(() => setDraft(settings.backup_dir), [settings.backup_dir]);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      invoke<BackupStatus>("backup_status")
+        .then((s) => {
+          if (alive) setStatus(s);
+        })
+        .catch(() => {});
+    load();
+    const id = setInterval(load, 4000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [settings.backup_dir]);
+
+  const summary = !status?.enabled
+    ? "Off. Pick a folder to back up your starred clips."
+    : !status.folder_ok
+      ? "Folder not found. Is Google Drive running?"
+      : status.running
+        ? `Backing up… ${status.pending} left`
+        : status.pending > 0
+          ? `${status.backed_up} backed up, ${status.pending} waiting for your game to close`
+          : `All ${status.backed_up} starred ${status.backed_up === 1 ? "clip" : "clips"} backed up${
+              status.last_run_ms ? `, checked ${timeAgo(status.last_run_ms)}` : ""
+            }`;
+
+  return (
+    <div className="set-col">
+      <span className="field-label">Back up starred clips to</span>
+      <div className="set-row">
+        <input
+          className="mono"
+          placeholder="F:/My Drive/ClipForge"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            if (draft !== settings.backup_dir) saveSettings({ ...settings, backup_dir: draft.trim() });
+          }}
+        />
+        <button
+          className="btn-ghost"
+          onClick={async () => {
+            const picked = await openDialog({ directory: true, defaultPath: settings.backup_dir || undefined });
+            if (typeof picked === "string") await saveSettings({ ...settings, backup_dir: picked });
+          }}
+        >
+          Browse
+        </button>
+        {status?.enabled && status.folder_ok && (
+          <button
+            className="btn-ghost"
+            disabled={status.running}
+            onClick={() =>
+              invoke("backup_now")
+                .then(() => setMessage(null))
+                .catch((e) => setMessage(String(e)))
+            }
+          >
+            Back up now
+          </button>
+        )}
+      </div>
+      <span className="field-hint">
+        {summary}
+        {(message || status?.error) && (
+          <>
+            <br />
+            {message || status?.error}
+          </>
+        )}
+      </span>
+      <span className="field-hint">
+        Only starred clips are copied, and only when no game is running, so uploads never slow
+        down your matches. Keep the clips folder above on a local drive.
+      </span>
+    </div>
+  );
+}
+
 type Check = { label: string; value: string; ok: boolean; fix?: string };
 
 function encoderName(id: string | null): string {
@@ -286,6 +383,14 @@ function healthChecks(d: Diagnostics): Check[] {
       value: gb != null ? `${gb.toFixed(1)} GB free` : "Unknown",
       ok: gb == null || gb >= 10,
       fix: gb != null && gb < 10 ? "OBS stops saving when the drive is full. Free up space or lower the storage cap." : undefined,
+    },
+    {
+      label: "Clips folder",
+      value: d.clips_dir_cloud ? `On ${d.clips_dir_cloud}` : "Local drive",
+      ok: !d.clips_dir_cloud,
+      fix: d.clips_dir_cloud
+        ? `Every clip uploads the moment it's saved, which can spike your ping mid-match. Move the clips folder to a local drive and use "Back up starred clips" instead.`
+        : undefined,
     },
     {
       label: "ffmpeg",
@@ -823,6 +928,7 @@ export function SettingsPage(props: {
               0 turns it off.
             </span>
           </label>
+          <BackupSettings settings={settings} saveSettings={saveSettings} />
         </section>
 
         <details className="set-group advanced">

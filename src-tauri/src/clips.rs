@@ -158,6 +158,10 @@ pub struct Settings {
     /// 0 disables the cap.
     #[serde(default = "default_max_storage_gb")]
     pub max_storage_gb: f64,
+    /// Folder favorited clips are copied to after games (e.g. a Google
+    /// Drive folder). Empty = backups off. See `backup.rs`.
+    #[serde(default)]
+    pub backup_dir: String,
     /// Off by default — only useful for CS2/LoL or log-trigger setups.
     #[serde(default)]
     pub auto_clip: bool,
@@ -235,6 +239,7 @@ impl Default for Settings {
             hotkey_short: default_hotkey_short(),
             short_clip_seconds: default_short_secs(),
             max_storage_gb: default_max_storage_gb(),
+            backup_dir: String::new(),
             auto_clip: false,
             auto_clip_delay_s: default_auto_clip_delay(),
             replay_seconds: default_replay_seconds(),
@@ -273,6 +278,8 @@ pub fn toggle_favorite(app: AppHandle, path: String) -> Result<Vec<String>, Stri
     }
     let raw = serde_json::to_string_pretty(&favs).map_err(|e| e.to_string())?;
     std::fs::write(favorites_path(&app)?, raw).map_err(|e| e.to_string())?;
+    // A freshly starred clip gets backed up right away (outside games).
+    crate::backup::maybe_run(&app, true);
     Ok(favs)
 }
 

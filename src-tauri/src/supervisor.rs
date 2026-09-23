@@ -68,6 +68,12 @@ pub async fn run(app: AppHandle) {
         if let Ok(mut current) = app.state::<crate::obs::CurrentGame>().0.lock() {
             *current = state.game.clone();
         }
+        crate::clips::GAME_RUNNING.store(state.game.is_some(), Ordering::Relaxed);
+        // Favorites go to the backup folder only between games, with the
+        // buffer down, so uploads never compete with online play.
+        if state.game.is_none() && !state.buffer_active {
+            crate::backup::maybe_run(&app, false);
+        }
         if state != last_state {
             let _ = app.emit("supervisor-state", state.clone());
             last_state = state;

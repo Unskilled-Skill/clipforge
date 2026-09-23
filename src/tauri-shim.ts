@@ -29,6 +29,7 @@ const mockSettings = {
   hotkey_short: "shift+alt+f10",
   short_clip_seconds: 30,
   max_storage_gb: 100,
+  backup_dir: "F:/My Drive/Media/Clips",
   auto_clip: false,
   auto_clip_delay_s: 8,
   replay_seconds: 180,
@@ -128,7 +129,20 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
         health: { render_lag_pct: 0.2, encoder_lag_pct: 0, active_fps: 60, obs_cpu_pct: 1.4 },
         disk_free_bytes: 3.2 * 1024 ** 3,
         ffmpeg_found: true,
+        clips_dir_cloud: null,
       };
+    case "backup_status":
+      return {
+        enabled: true,
+        folder_ok: true,
+        backed_up: 4,
+        pending: 1,
+        running: false,
+        last_run_ms: Date.now() - 12 * 60 * 1000,
+        error: null,
+      };
+    case "backup_now":
+      return null;
     case "winget_install":
       return null;
     case "launch_obs":
