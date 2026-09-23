@@ -1571,56 +1571,64 @@ function App() {
                   {clips.length} clips · {totalSize}
                 </span>
               </div>
-              <div className="lib-spacer" />
-              <div className="search-box">
-                <MagnifyingGlass size={15} color="#5f636e" />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === "Escape" && setSearch("")}
-                  placeholder="Search clips…"
-                />
-                {search && (
-                  <button className="search-clear" title="Clear (Esc)" aria-label="Clear search" onClick={() => setSearch("")}>
-                    <X size={13} />
+              <div className="lib-actions">
+                <div className="search-box">
+                  <MagnifyingGlass size={15} color="#5f636e" />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => e.key === "Escape" && setSearch("")}
+                    placeholder="Search clips…"
+                  />
+                  {search && (
+                    <button className="search-clear" title="Clear (Esc)" aria-label="Clear search" onClick={() => setSearch("")}>
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+                <select
+                  className="audio-select"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                  title="Sort clips" aria-label="Sort clips"
+                >
+                  <option value="newest">Newest</option>
+                  <option value="oldest">Oldest</option>
+                  <option value="largest">Largest</option>
+                  <option value="longest">Longest</option>
+                  <option value="name">Name</option>
+                </select>
+                <button
+                  className="btn-ghost"
+                  onClick={async () => {
+                    setRefreshing(true);
+                    await refreshClips();
+                    setRefreshing(false);
+                  }}
+                  disabled={refreshing}
+                  title="Reload clips from disk"
+                  aria-label="Refresh"
+                >
+                  <ArrowsClockwise size={15} />
+                  <span className="btn-label">{refreshing ? "refreshing…" : "Refresh"}</span>
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={scanBlack}
+                  disabled={scanning || clips.length === 0}
+                  title="Find clips that recorded only a black screen"
+                  aria-label="Scan for black clips"
+                >
+                  <Sparkle size={15} />
+                  <span className="btn-label">{scanning ? "scanning…" : "Scan for black"}</span>
+                </button>
+                {blackCount > 0 && (
+                  <button className="btn-danger" onClick={deleteAllBlack}>
+                    <Trash size={15} />
+                    Delete {blackCount} black
                   </button>
                 )}
               </div>
-              <select
-                className="audio-select"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-                title="Sort clips" aria-label="Sort clips"
-              >
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="largest">Largest</option>
-                <option value="longest">Longest</option>
-                <option value="name">Name</option>
-              </select>
-              <button
-                className="btn-ghost"
-                onClick={async () => {
-                  setRefreshing(true);
-                  await refreshClips();
-                  setRefreshing(false);
-                }}
-                disabled={refreshing}
-                title="Reload clips from disk"
-              >
-                <ArrowsClockwise size={15} />
-                {refreshing ? "refreshing…" : "Refresh"}
-              </button>
-              <button className="btn-ghost" onClick={scanBlack} disabled={scanning || clips.length === 0}>
-                <Sparkle size={15} />
-                {scanning ? "scanning…" : "Scan for black"}
-              </button>
-              {blackCount > 0 && (
-                <button className="btn-danger" onClick={deleteAllBlack}>
-                  <Trash size={15} />
-                  Delete {blackCount} black
-                </button>
-              )}
             </header>
 
             <div className="filter-row">

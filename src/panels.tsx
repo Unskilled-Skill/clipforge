@@ -267,11 +267,7 @@ export function SettingsPage(props: {
             </div>
           </div>
           <label className="set-col">
-            <span className="field-label">
-              Clip length (seconds) — how far back a save reaches. Longer = more RAM while
-              a game runs (~{Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB at
-              current setting). Applies to OBS automatically.
-            </span>
+            <span className="field-label">Clip length (seconds)</span>
             <input
               className="mono"
               type="number"
@@ -288,6 +284,11 @@ export function SettingsPage(props: {
                 })
               }
             />
+            <span className="field-hint">
+              How far back a save reaches. Uses about{" "}
+              {Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB of RAM while a game
+              runs. Applies to OBS automatically.
+            </span>
           </label>
           <div className="set-row">
             <label className="set-col">
@@ -345,9 +346,9 @@ export function SettingsPage(props: {
               </select>
             </label>
           </div>
-          <span className="field-label">
-            FPS / resolution / encoder apply within seconds. Bitrate applies on the next OBS
-            restart.
+          <span className="field-hint">
+            FPS, resolution and encoder apply within seconds. Bitrate applies the next time
+            OBS restarts.
           </span>
         </section>
 
@@ -462,10 +463,10 @@ export function SettingsPage(props: {
               <span className="set-head-desc">Five tracks per clip — game, voice, desktop, mic, mix</span>
             </div>
           </div>
-          <span className="field-label">
-            Clips record 5 audio tracks — full mix, game, voice chat, desktop, mic — so
-            exports can isolate any of them. Voice-chat and game audio are captured per-app;
-            set your voice app's .exe below (game audio follows the running game).
+          <span className="field-hint">
+            Every clip records 5 audio tracks (full mix, game, voice chat, desktop, mic), so
+            an export can keep any of them. Game audio follows the running game; set your
+            voice-chat app below.
           </span>
           <label className="set-col">
             <span className="field-label">Voice-chat app (.exe)</span>
@@ -513,12 +514,11 @@ export function SettingsPage(props: {
               Find .exe in folder…
             </button>
           </div>
-          <span className="field-label">
-            A universal capture hook catches most fullscreen games automatically, but it
-            misses plenty (anti-cheat, borderless, some exclusive-fullscreen titles). If a
-            game's clips come out black, add a dedicated source (matched by its .exe, so it
-            works whether or not the game is open). Test confirms the source is live in OBS;
-            if it's active but clips are still black, switch the capture type and re-add.
+          <span className="field-hint">
+            Most fullscreen games are captured automatically. If a game's clips come out
+            black, add a dedicated source for it (matched by its .exe, so the game doesn't
+            need to be open). If Test says the source is live but clips are still black,
+            switch the capture type and add it again.
           </span>
           {settings.game_exes.map((exe) => {
             const source = gameSources.find((g) => g.exe === exe);
@@ -634,9 +634,7 @@ export function SettingsPage(props: {
             </button>
           </div>
           <label className="set-col">
-            <span className="field-label">
-              Max storage (GB) — oldest non-favorites auto-recycled, 0 = off
-            </span>
+            <span className="field-label">Max storage (GB)</span>
             <input
               className="mono"
               type="number"
@@ -644,6 +642,10 @@ export function SettingsPage(props: {
               value={settings.max_storage_gb}
               onChange={(e) => saveSettings({ ...settings, max_storage_gb: Number(e.target.value) })}
             />
+            <span className="field-hint">
+              Past this size, the oldest clips that aren't favorites go to the Recycle Bin.
+              0 turns it off.
+            </span>
           </label>
         </section>
 
