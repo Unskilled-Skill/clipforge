@@ -54,5 +54,12 @@ $manifest = [ordered]@{
 $latest = "$repo\src-tauri\target\release\bundle\nsis\latest.json"
 [IO.File]::WriteAllText($latest, ($manifest | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
 
-gh release create "v$Version" $exe "$exe.sig" $latest --title "ClipForge v$Version" --notes $Notes
+# Notes go through a file: PowerShell 5.1 mangles native-command arguments
+# that contain double quotes, so --notes "..." split v0.1.16's notes apart.
+$notesFile = "$repo\src-tauri\target\release\bundle\nsis\notes.md"
+[IO.File]::WriteAllText($notesFile, $Notes, (New-Object System.Text.UTF8Encoding($false)))
+gh release create "v$Version" $exe "$exe.sig" $latest --title "ClipForge v$Version" --notes-file $notesFile
+$ghExit = $LASTEXITCODE
+Remove-Item $notesFile -Force -ErrorAction SilentlyContinue
+if ($ghExit -ne 0) { throw "gh release create failed" }
 Write-Output "released v$Version"
