@@ -178,6 +178,7 @@ async fn tick(
                     // Game-audio track binds when a game is actually detected
                     // (see the retarget below), so no game here.
                     crate::setup::apply_all(client, &settings, None).await;
+                    let _ = app.emit("obs-config-applied", ());
                 }
             }
         }

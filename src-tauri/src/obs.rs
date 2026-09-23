@@ -293,12 +293,21 @@ pub async fn apply_obs_config(
     app: AppHandle,
     state: tauri::State<'_, ObsState>,
 ) -> Result<(), String> {
+    // The Health panel shows what OBS really uses; tell it when a change
+    // starts and lands so it refreshes right away instead of on its next
+    // 5s poll (which looked like settings "not applying").
+    let _ = app.emit("obs-config-applying", ());
     let settings = crate::clips::load_settings_inner(&app);
-    let guard = state.client.lock().await;
-    let client = guard.as_ref().ok_or("not connected")?;
-    let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
-    crate::setup::apply_all(client, &settings, active_game.as_deref()).await;
-    Ok(())
+    let result = async {
+        let guard = state.client.lock().await;
+        let client = guard.as_ref().ok_or("not connected")?;
+        let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
+        crate::setup::apply_all(client, &settings, active_game.as_deref()).await;
+        Ok::<(), String>(())
+    }
+    .await;
+    let _ = app.emit("obs-config-applied", ());
+    result
 }
 
 /// Make sure the replay buffer is running (it is off by default when OBS starts).

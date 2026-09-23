@@ -3,7 +3,7 @@
 // over props, so App.tsx keeps the data flow while this file keeps the bulk.
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { invoke, openDialog } from "./tauri-shim";
+import { invoke, listen, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
 import type { BackupStatus, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import {
@@ -483,6 +483,7 @@ function healthChecks(d: Diagnostics): Check[] {
 /// Settings "Health" section: a live view of the recording setup.
 export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
+  const [applying, setApplying] = useState(false);
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -493,9 +494,19 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
         .catch(() => {});
     load();
     const id = setInterval(load, 5000);
+    // Refresh the moment a settings change reaches OBS, not on the next poll.
+    const unlisten = [
+      listen("obs-config-applying", () => alive && setApplying(true)),
+      listen("obs-config-applied", () => {
+        if (!alive) return;
+        setApplying(false);
+        load();
+      }),
+    ];
     return () => {
       alive = false;
       clearInterval(id);
+      unlisten.forEach((p) => p.then((off) => off()));
     };
   }, []);
   const checks = diag ? healthChecks(diag) : [];
@@ -509,7 +520,9 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
           <span className="set-head-desc">
             {!diag
               ? "Checking…"
-              : issues === 0
+              : applying
+                ? "Applying your change to OBS…"
+                : issues === 0
                 ? "Everything is set up for clipping"
                 : `${issues} ${issues > 1 ? "things" : "thing"} to look at`}
           </span>
