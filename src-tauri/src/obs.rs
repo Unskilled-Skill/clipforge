@@ -328,6 +328,34 @@ pub static LAST_SAVE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::
 static SAVE_GATE: Mutex<()> = Mutex::const_new(());
 static SAVE_REPLY: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>> = std::sync::Mutex::new(None);
 
+/// Quitting ClipForge takes the replay buffer down with it: OBS keeps
+/// running (idle) but stops holding minutes of footage in RAM and encoding
+/// on the GPU for an app that's no longer there to save it.
+///
+/// A save still flushing is allowed to finish first (up to ~10s): OBS's
+/// stop can wedge ("Stopping Replay Buffer…" forever) if it lands mid-flush,
+/// and quitting right after pressing the hotkey must not lose that clip.
+pub async fn stop_buffer_for_exit(state: &ObsState) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(10) {
+        let flushing = SAVE_REPLY.lock().map(|r| r.is_some()).unwrap_or(false);
+        let just_saved = LAST_SAVE
+            .lock()
+            .map(|t| t.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)))
+            .unwrap_or(false);
+        if !flushing && !just_saved {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let guard = state.client.lock().await;
+    if let Some(client) = guard.as_ref() {
+        if client.replay_buffer().status().await.unwrap_or(false) {
+            let _ = client.replay_buffer().stop().await;
+        }
+    }
+}
+
 /// Flush the replay buffer to disk. The resulting file path arrives
 /// asynchronously via the `clip-saved` event. `short` asks for that clip to
 /// be trimmed to its last N seconds (short-clip hotkey).
