@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog } from "./tauri-shim";
+import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog, openUrl } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowLeft,
@@ -1559,6 +1559,31 @@ function App() {
                 </button>
               </>
             )}
+          </div>
+        )}
+
+        {sup?.obs_needs_restart && (
+          <div className="setup-bar">
+            <Warning size={15} weight="fill" />
+            <span>
+              OBS is open with its WebSocket server off, so ClipForge can't connect. Close OBS
+              once: ClipForge turns the server on and reopens OBS for you.
+            </span>
+          </div>
+        )}
+        {sup?.obs_outdated && (
+          <div className="setup-bar">
+            <Warning size={15} weight="fill" />
+            <span>
+              OBS {sup.obs_outdated} is too old: clips won't save until you update to OBS 30.2
+              or newer.
+            </span>
+            <button
+              className="setup-btn"
+              onClick={() => openUrl("https://obsproject.com/download").catch(() => {})}
+            >
+              Get OBS
+            </button>
           </div>
         )}
 

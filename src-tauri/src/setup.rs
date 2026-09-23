@@ -6,9 +6,18 @@ use tauri::AppHandle;
 
 use crate::clips::hidden_cmd;
 
-/// Well-known OBS install locations, most common first.
+/// Where OBS lives: well-known Program Files paths first (no process spawn),
+/// then the install dir OBS's own installer records in the registry
+/// (custom install locations), then Steam's default library (the Steam build
+/// of OBS never touches Program Files).
 pub fn detect_obs_path() -> Option<String> {
-    let candidates = [
+    // Called from the supervisor tick while OBS is missing — cache the
+    // registry/Steam lookup for 30s instead of spawning `reg` every 3s.
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Option<String>)>> =
+        std::sync::Mutex::new(None);
+
+    let exists = |p: &String| std::path::Path::new(p).exists();
+    let fixed = [
         "C:/Program Files/obs-studio/bin/64bit/obs64.exe".to_string(),
         "C:/Program Files (x86)/obs-studio/bin/64bit/obs64.exe".to_string(),
         format!(
@@ -16,9 +25,58 @@ pub fn detect_obs_path() -> Option<String> {
             std::env::var("ProgramFiles").unwrap_or_default().replace('\\', "/")
         ),
     ];
-    candidates
-        .into_iter()
-        .find(|p| std::path::Path::new(p).exists())
+    if let Some(p) = fixed.into_iter().find(exists) {
+        return Some(p);
+    }
+
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((at, hit)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(30) {
+                return hit.clone().filter(exists);
+            }
+        }
+    }
+    let found = [
+        reg_value(r"HKLM\SOFTWARE\OBS Studio", None),
+        reg_value(r"HKLM\SOFTWARE\WOW6432Node\OBS Studio", None),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|dir| format!("{}/bin/64bit/obs64.exe", dir.replace('\\', "/")))
+    .chain(
+        reg_value(r"HKCU\Software\Valve\Steam", Some("SteamPath")).map(|steam| {
+            format!(
+                "{}/steamapps/common/OBS Studio/bin/64bit/obs64.exe",
+                steam.replace('\\', "/")
+            )
+        }),
+    )
+    .find(exists);
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((std::time::Instant::now(), found.clone()));
+    }
+    found
+}
+
+/// Read a registry string via `reg query` (`None` name = the key's default
+/// value). Avoids pulling in the windows crate's registry feature for two
+/// lookups.
+fn reg_value(key: &str, name: Option<&str>) -> Option<String> {
+    let mut cmd = hidden_cmd("reg");
+    cmd.args(["query", key]);
+    match name {
+        Some(n) => cmd.args(["/v", n]),
+        None => cmd.arg("/ve"),
+    };
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // Value line: "    <name>    REG_SZ    <data>"
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.split_once("REG_SZ").map(|(_, v)| v.trim().to_string()))
+        .filter(|v| !v.is_empty())
 }
 
 fn websocket_config_path() -> Option<std::path::PathBuf> {
@@ -49,6 +107,16 @@ fn yes() -> bool {
 }
 fn default_port() -> u16 {
     4455
+}
+
+/// Whether OBS's websocket server is switched on, per its config file. OBS
+/// rewrites the file when the setting changes, so it reflects the live
+/// state closely enough to explain a failed connection.
+pub fn websocket_server_enabled() -> bool {
+    websocket_config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str::<WsConfig>(&raw).ok())
+        .is_some_and(|cfg| cfg.server_enabled)
 }
 
 /// Read the local obs-websocket password (it lives in a user-readable file).
@@ -96,12 +164,7 @@ pub fn enable_websocket_server(obs_running: bool) -> bool {
         changed = true;
     }
     if cfg.server_password.is_empty() {
-        // Random-enough local password without extra crates.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        cfg.server_password = format!("cf{seed:x}");
+        cfg.server_password = random_password();
         changed = true;
     }
     if changed {
@@ -114,6 +177,16 @@ pub fn enable_websocket_server(obs_running: bool) -> bool {
         return false;
     }
     true
+}
+
+/// 128-bit random password for obs-websocket. OBS listens on every network
+/// interface, so the old time-derived `cf{nanos}` was guessable from the
+/// LAN. std's `RandomState` keys come from the OS RNG (fresh per call), which
+/// gives real entropy without an extra crate.
+fn random_password() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let word = || std::collections::hash_map::RandomState::new().build_hasher().finish();
+    format!("cf{:016x}{:016x}", word(), word())
 }
 
 /// OBS shows a blocking Auto-Configuration Wizard on its very first launch

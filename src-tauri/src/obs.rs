@@ -139,6 +139,8 @@ pub struct ObsState {
     /// alive — two listeners meant every save was handled twice (double
     /// sound/toast, markers written twice).
     events_task: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// OBS version reported on the last successful connect.
+    pub version: std::sync::Mutex<Option<String>>,
 }
 
 impl Default for ObsState {
@@ -146,8 +148,23 @@ impl Default for ObsState {
         Self {
             client: Mutex::new(None),
             events_task: std::sync::Mutex::new(None),
+            version: std::sync::Mutex::new(None),
         }
     }
+}
+
+/// Oldest OBS the app's output config works with: clips are recorded as
+/// `hybrid_mp4`, which OBS added in 30.2. Older builds reject the format and
+/// the replay buffer fails without telling anyone why.
+const MIN_OBS: (u64, u64) = (30, 2);
+
+/// `Some(version)` when the connected OBS is older than [`MIN_OBS`].
+pub fn outdated_obs_version(state: &ObsState) -> Option<String> {
+    let version = state.version.lock().ok()?.clone()?;
+    let mut parts = version.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    ((major, minor) < MIN_OBS).then_some(version)
 }
 
 #[derive(Serialize, Clone)]
@@ -223,6 +240,9 @@ pub async fn connect_internal(
         .await
         .map(|v| v.obs_studio_version.to_string())
         .ok();
+    if let Ok(mut v) = state.version.lock() {
+        *v = version.clone();
+    }
 
     let replay_active = client.replay_buffer().status().await.unwrap_or(false);
 
@@ -542,4 +562,24 @@ pub async fn test_capture_source(
     Ok(CaptureTest {
         capturing: status.active || status.showing,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outdated(v: &str) -> bool {
+        let state = ObsState::default();
+        *state.version.lock().unwrap() = Some(v.to_string());
+        outdated_obs_version(&state).is_some()
+    }
+
+    #[test]
+    fn obs_version_gate() {
+        assert!(outdated("29.1.3"));
+        assert!(outdated("30.1.2"));
+        assert!(!outdated("30.2.0"));
+        assert!(!outdated("31.0.3"));
+        assert!(!outdated("32.0.0-beta1"));
+    }
 }
