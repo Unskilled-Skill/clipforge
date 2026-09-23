@@ -24,6 +24,7 @@ export interface Settings {
   hotkey_short: string;
   short_clip_seconds: number;
   max_storage_gb: number;
+  backup_dir: string;
   auto_clip: boolean;
   auto_clip_delay_s: number;
   replay_seconds: number;
@@ -63,6 +64,17 @@ export interface Diagnostics {
   health: { render_lag_pct: number; encoder_lag_pct: number; active_fps: number; obs_cpu_pct: number };
   disk_free_bytes: number | null;
   ffmpeg_found: boolean;
+  clips_dir_cloud: string | null;
+}
+
+export interface BackupStatus {
+  enabled: boolean;
+  folder_ok: boolean;
+  backed_up: number;
+  pending: number;
+  running: boolean;
+  last_run_ms: number | null;
+  error: string | null;
 }
 
 export interface ClipInfo {

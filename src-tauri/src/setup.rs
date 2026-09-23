@@ -879,6 +879,8 @@ pub struct Diagnostics {
     pub health: crate::health::Health,
     pub disk_free_bytes: Option<u64>,
     pub ffmpeg_found: bool,
+    /// Sync client the clips folder lives in (e.g. "Google Drive"), if any.
+    pub clips_dir_cloud: Option<String>,
 }
 
 #[tauri::command]
@@ -905,6 +907,7 @@ pub async fn obs_diagnostics(
         health: crate::health::latest(),
         disk_free_bytes: crate::clips::disk_free(settings.clips_dir.clone()).ok(),
         ffmpeg_found: crate::clips::ffmpeg_available(),
+        clips_dir_cloud: crate::backup::cloud_synced_provider(&settings.clips_dir).map(String::from),
     };
     let guard = state.client.lock().await;
     let Some(client) = guard.as_ref() else {

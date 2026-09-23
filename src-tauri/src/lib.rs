@@ -1,4 +1,5 @@
 mod autoclip;
+mod backup;
 mod clips;
 mod fullscreen;
 mod health;
@@ -440,6 +441,8 @@ pub fn run() {
             setup::launch_obs,
             setup::list_running_apps,
             setup::obs_diagnostics,
+            backup::backup_status,
+            backup::backup_now,
             set_hotkeys,
             set_buffer_paused,
             take_update_notes,
