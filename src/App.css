@@ -4,6 +4,11 @@
   color: #eceef3;
   background: #0b0c10;
   -webkit-font-smoothing: antialiased;
+
+  /* Motion tokens: one strong ease-out for things entering or reacting,
+     one ease-in-out for things moving across the screen. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
 
 * { box-sizing: border-box; }
@@ -274,16 +279,17 @@ kbd {
   pointer-events: none;
 }
 
-/* One-shot page entrance — content rises in, then never animates again. */
+/* Page entrance — content rises in. The library grid only does this on its
+   first paint of the session (.grid.enter), and the editor never does:
+   both are toggled by Enter/Esc many times a day, where motion reads as lag. */
 @keyframes cf-rise {
   from { opacity: 0; transform: translateY(7px); }
   to { opacity: 1; transform: none; }
 }
-.grid,
-.editor,
+.grid.enter,
 .settings-body,
 .empty-state {
-  animation: cf-rise 0.28s ease backwards;
+  animation: cf-rise 0.28s var(--ease-out) backwards;
 }
 
 .error-bar {
@@ -386,8 +392,10 @@ textarea,
 .toggle-card,
 .nav-item {
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease,
-    box-shadow 0.15s ease, opacity 0.15s ease;
+    box-shadow 0.15s ease, opacity 0.15s ease, transform 0.12s var(--ease-out);
 }
+/* Press feedback: every button visibly gives under the pointer. */
+button:active:not(:disabled) { transform: scale(0.97); }
 
 /* Keyboard focus on every clickable control: the same accent ring the
    inputs use below, shown only for keyboard navigation (not mouse clicks). */
@@ -495,12 +503,14 @@ select:focus,
   border: 1px solid #22242e;
   border-radius: 13px;
   cursor: pointer;
-  transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+  transition: transform 0.18s var(--ease-out), border-color 0.14s ease, box-shadow 0.18s ease;
 }
 .card:hover {
-  transform: translateY(-3px);
   border-color: #3a3f52;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+@media (hover: hover) and (pointer: fine) {
+  .card:hover { transform: translateY(-3px); }
 }
 
 .card-thumb {
@@ -519,9 +529,7 @@ select:focus,
   height: 100%;
   object-fit: cover;
   display: block;
-  transition: transform 0.25s ease;
 }
-.card:hover .card-thumb img { transform: scale(1.045); }
 .thumb-placeholder {
   width: 100%;
   height: 100%;
@@ -601,10 +609,9 @@ select:focus,
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.14s ease, background 0.14s ease;
+  transition: background 0.14s ease;
 }
 .card:hover .play-circle {
-  transform: translate(-50%, -50%) scale(1.12);
   background: rgba(76, 110, 245, 0.85);
 }
 
@@ -1156,13 +1163,13 @@ select:focus,
   padding: 12px 15px;
   color: #b8f0cf;
   font-size: 13px;
-  animation: cf-toast 0.25s ease-out;
   backdrop-filter: blur(6px);
   z-index: 50;
-}
-@keyframes cf-toast {
-  from { transform: translate(-50%, 12px); opacity: 0; }
-  to { transform: translate(-50%, 0); opacity: 1; }
+  transition: transform 0.25s var(--ease-out), opacity 0.25s var(--ease-out);
+  @starting-style {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
 }
 
 /* ---------- Settings modal ---------- */
@@ -1398,9 +1405,9 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   height: 18px;
   border-radius: 50%;
   background: #fff;
-  transition: left 0.15s ease;
+  transition: transform 0.18s var(--ease-out);
 }
-.switch.on .knob { left: 21px; }
+.switch.on .knob { transform: translateX(18px); }
 
 /* scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -1563,7 +1570,11 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(10px);
   z-index: 40;
-  animation: cf-toast 0.22s ease-out;
+  transition: transform 0.22s var(--ease-out), opacity 0.22s var(--ease-out);
+  @starting-style {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
 }
 .sel-bar .sel-count { color: #e4e6ec; display: flex; align-items: center; }
 .sel-trim-note {
@@ -1845,9 +1856,10 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   border-radius: 3px;
   background: var(--game, transparent);
   opacity: 0.55;
-  transition: opacity 0.15s ease, top 0.15s ease, bottom 0.15s ease;
+  transform: scaleY(0.96);
+  transition: opacity 0.15s ease, transform 0.15s var(--ease-out);
 }
-.card:hover::before { opacity: 1; top: 10px; bottom: 10px; }
+.card:hover::before { opacity: 1; transform: none; }
 
 /* The editor's player floats on an aura of the clip's game color. */
 .player-wrap {
@@ -1954,3 +1966,29 @@ button.kill-count:hover { background: rgba(240, 96, 95, 0.24); }
 /* ---- what's-new popup after an update ---- */
 .whatsnew-modal { width: 480px; }
 .whatsnew-modal .onboard-footer { border-top: 1px solid #1e2028; }
+
+/* ---- reduced motion ----
+   Fewer, gentler animations, not none: fades and colour changes stay,
+   movement, scaling and endless loops go. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes cf-rise {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .buffer-pill.armed .buffer-dot,
+  .titlebar-live-dot,
+  .splash-mark {
+    animation: none;
+  }
+  .card:hover,
+  button:active:not(:disabled) {
+    transform: none;
+  }
+  .toast,
+  .sel-bar {
+    @starting-style {
+      transform: translateX(-50%);
+      opacity: 0;
+    }
+  }
+}

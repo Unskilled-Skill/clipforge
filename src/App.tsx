@@ -241,6 +241,9 @@ function App() {
   });
   // Card focused by keyboard navigation; -1 = none.
   const [focusIdx, setFocusIdx] = useState(-1);
+  // The grid rises in once per session; returning from the editor (Esc) or
+  // Settings shows it instantly.
+  const gridEntered = useRef(false);
   // Back-to-back preview of the selection: queue of paths + position.
   const [previewQueue, setPreviewQueue] = useState<string[] | null>(null);
   const [previewQIdx, setPreviewQIdx] = useState(0);
@@ -1683,7 +1686,12 @@ function App() {
                 </div>
               )
             ) : (
-              <div className="grid">
+              <div
+                className={gridEntered.current ? "grid" : "grid enter"}
+                onAnimationEnd={(e) => {
+                  if (e.target === e.currentTarget) gridEntered.current = true;
+                }}
+              >
                 {visibleClips.map((c, i) => (
                   <div
                     key={c.path}
