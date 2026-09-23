@@ -479,7 +479,8 @@ fn winget_install_blocking(id: String) -> Result<(), String> {
 
 /// Make sure the replay buffer is enabled in the connected OBS profile —
 /// both output modes — and matches the configured clip length.
-pub async fn ensure_replay_buffer_config(client: &obws::Client, replay_seconds: f64) {
+/// Returns whether anything changed (applied on the next profile reload).
+pub async fn ensure_replay_buffer_config(client: &obws::Client, replay_seconds: f64, bitrate_mbps: f64) -> bool {
     use obws::requests::profiles::SetParameter;
     for (category, name) in [("AdvOut", "RecRB"), ("SimpleOutput", "RecRB")] {
         let current = client
@@ -499,11 +500,14 @@ pub async fn ensure_replay_buffer_config(client: &obws::Client, replay_seconds: 
                 .await;
         }
     }
-    // Buffer length follows the ClipForge "clip length" setting exactly,
-    // and the RAM cap is sized to fit so the tail never gets truncated
-    // (~4.5 MB/s covers a 25 Mbps recording plus audio).
+    // Buffer length follows the ClipForge "clip length" setting exactly, and
+    // the RAM cap is sized from the actual video bitrate so the oldest part
+    // is never dropped. (It used to assume ~25 Mbps: at 50 Mbps a 3-minute
+    // buffer silently lost its first minute.) +25% covers CBR overshoot and
+    // keyframes; 5 AAC tracks add ~0.12 MB/s.
     let secs = replay_seconds.clamp(15.0, 900.0);
-    let size_mb = ((secs * 4.5).ceil() as u64).max(512);
+    let mb_per_sec = bitrate_mbps / 8.0 * 1.25 + 0.12;
+    let size_mb = ((secs * mb_per_sec).ceil() as u64).max(512);
     let mut changed = false;
     for (name, value) in [
         ("RecRBTime", format!("{}", secs as u64)),
@@ -529,11 +533,10 @@ pub async fn ensure_replay_buffer_config(client: &obws::Client, replay_seconds: 
             }
         }
     }
-    // OBS applies the new length only on a buffer (re)start — stop it,
-    // the supervisor re-arms it on the next tick if a game is running.
-    if changed && client.replay_buffer().status().await.unwrap_or(false) {
-        let _ = client.replay_buffer().stop().await;
-    }
+    // OBS applies the new length on the next profile reload (`apply_all`),
+    // not mid-buffer; stopping an armed buffer here threw away the moment
+    // the user was about to clip.
+    changed
 }
 
 /// Point OBS at ClipForge's clips folder and force the output layout the app
@@ -578,9 +581,7 @@ pub async fn ensure_output_config(client: &obws::Client, clips_dir: &str) -> boo
             changed = true;
         }
     }
-    if changed && client.replay_buffer().status().await.unwrap_or(false) {
-        let _ = client.replay_buffer().stop().await;
-    }
+    // Applied by the profile reload in `apply_all` once OBS is idle.
     changed
 }
 
@@ -603,25 +604,43 @@ fn detect_obs_encoders() -> Vec<String> {
     let Ok(raw) = std::fs::read_to_string(newest.path()) else {
         return Vec::new();
     };
-    let re = regex::Regex::new(r"^\s*-\s+([a-z0-9_]+)\s+\(").unwrap();
+    parse_encoder_ids(&raw)
+}
+
+/// Video-encoder ids from an OBS log's "Available Encoders" list.
+fn parse_encoder_ids(raw: &str) -> Vec<String> {
+    // Log lines carry a timestamp: "13:27:06.774: \t- av1_texture_amf (AMD HW AV1)".
+    // The old `^\s*-` pattern never matched those, so no encoder was ever
+    // detected and OBS silently kept whatever it defaulted to.
+    let re = regex::Regex::new(r"^(?:[\d:.]+:)?\s*-\s+([a-z0-9_]+)\s+\(").unwrap();
     let mut ids: Vec<String> = raw
         .lines()
         .filter_map(|l| re.captures(l))
         .map(|c| c[1].to_string())
-        .filter(|id| id.contains("264") || id.contains("265") || id.contains("hevc") || id.contains("av1"))
+        // Video codecs only; QuickSync H.264 ("obs_qsv11_v2") names no codec.
+        .filter(|id| ["264", "265", "hevc", "av1", "qsv"].iter().any(|c| id.contains(c)))
         .collect();
     ids.dedup();
     ids
 }
 
 /// Map a codec preference to this machine's best hardware encoder id.
+/// Vendor order matters on laptops/desktops with an Intel iGPU next to a
+/// discrete card: the dGPU's encoder (NVENC, then AMF) beats QuickSync, which
+/// OBS also logs as "app not on intel GPU, fall back to old qsv encoder".
 fn pick_encoder(pref: &str, available: &[String]) -> Option<String> {
-    let hw = |id: &String| id.contains("amf") || id.contains("nvenc") || id.contains("qsv");
+    // QuickSync's H.264 id ("obs_qsv11_v2") has no codec in its name.
+    let is_codec = |id: &str, codec: &[&str]| {
+        codec.iter().any(|c| id.contains(c))
+            || (codec.contains(&"264") && id.contains("qsv") && !id.contains("hevc") && !id.contains("av1"))
+    };
     let find = |codec: &[&str]| {
-        available
-            .iter()
-            .find(|id| hw(id) && codec.iter().any(|c| id.contains(c)))
-            .cloned()
+        ["nvenc", "amf", "qsv"].iter().find_map(|vendor| {
+            available
+                .iter()
+                .find(|id| id.contains(vendor) && is_codec(id, codec))
+                .cloned()
+        })
     };
     match pref {
         "av1" => find(&["av1"]),
@@ -634,17 +653,75 @@ fn pick_encoder(pref: &str, available: &[String]) -> Option<String> {
     }
 }
 
-/// Apply the app's capture settings (fps / resolution / encoder / bitrate)
-/// to OBS. Stops the replay buffer when something changed so the new
-/// values take effect on the next arm.
-pub async fn ensure_video_settings(client: &obws::Client, settings: &crate::clips::Settings) {
+/// Bitrate to record at. `bitrate_mbps` 0 = auto: sized from the output
+/// resolution, frame rate and codec so fast motion stays sharp without
+/// wasting RAM. Baseline is 1080p60 in AV1/HEVC at 20 Mbps; H.264 needs
+/// ~50% more for the same quality, and CPU x264 is capped so it can't
+/// starve the game.
+pub fn target_bitrate_mbps(settings: &crate::clips::Settings, height: u32, fps: u32, encoder: &str) -> f64 {
+    if settings.bitrate_mbps > 0.0 {
+        return settings.bitrate_mbps;
+    }
+    let base: f64 = match height {
+        0..=720 => 12.0,
+        721..=1080 => 20.0,
+        1081..=1440 => 30.0,
+        _ => 45.0,
+    };
+    let fps_factor = (fps.max(30) as f64 / 60.0).powf(0.7);
+    let efficient = ["av1", "hevc", "265"].iter().any(|c| encoder.contains(c));
+    let codec_factor = if efficient { 1.0 } else { 1.5 };
+    let mbps = (base * fps_factor * codec_factor).round();
+    if encoder == "obs_x264" { mbps.min(25.0) } else { mbps }
+}
+
+/// Encoder settings tuned for clips, merged into the profile's
+/// recordEncoder.json (keys an encoder doesn't know are ignored by OBS):
+/// - CBR: predictable size, so the RAM-backed replay buffer never truncates
+/// - 1s keyframes: lossless trims cut on keyframes, so trims land within a
+///   second and the editor seeks instantly (OBS's default is 4-10s)
+/// - each vendor's quality preset instead of its speed-leaning default
+fn encoder_tuning(encoder: &str, bitrate_mbps: f64) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::json;
+    let mut s = serde_json::Map::new();
+    s.insert("rate_control".into(), json!("CBR"));
+    s.insert("bitrate".into(), json!((bitrate_mbps * 1000.0) as u64));
+    s.insert("keyint_sec".into(), json!(1));
+    if encoder.contains("nvenc") {
+        s.insert("preset2".into(), json!("p5"));
+        s.insert("tune".into(), json!("hq"));
+        s.insert("multipass".into(), json!("qres"));
+    } else if encoder.contains("amf") {
+        s.insert("preset".into(), json!("quality"));
+    } else if encoder.contains("qsv") {
+        s.insert("target_usage".into(), json!("TU2"));
+    } else if encoder == "obs_x264" {
+        // Game and encoder share the CPU: fast preset, keep the game smooth.
+        s.insert("preset".into(), json!("veryfast"));
+        s.insert("profile".into(), json!("high"));
+    }
+    s
+}
+
+/// What `ensure_video_settings` settled on.
+pub struct VideoApplied {
+    /// Output-affecting settings changed; OBS needs a profile reload.
+    pub changed: bool,
+    /// The bitrate actually configured (drives the replay-buffer RAM cap).
+    pub bitrate_mbps: f64,
+}
+
+/// Apply the app's capture settings to OBS: fps, resolution (Lanczos
+/// downscale), this GPU's best encoder and the clip-tuned encoder settings.
+pub async fn ensure_video_settings(client: &obws::Client, settings: &crate::clips::Settings) -> VideoApplied {
     use obws::requests::profiles::SetParameter;
 
     let mut changed = false;
+    let fps = settings.video_fps.clamp(30, 240);
+    let mut out_h = settings.video_height;
 
     if let Ok(video) = client.config().video_settings().await {
-        let fps = settings.video_fps.clamp(30, 240);
-        let (out_w, out_h) = if settings.video_height == 0 {
+        let (out_w, h) = if settings.video_height == 0 {
             (video.base_width, video.base_height)
         } else {
             let h = settings.video_height.min(video.base_height);
@@ -653,10 +730,11 @@ pub async fn ensure_video_settings(client: &obws::Client, settings: &crate::clip
                 * 2;
             (w, h)
         };
+        out_h = h;
         if video.fps_numerator != fps
             || video.fps_denominator != 1
             || video.output_width != out_w
-            || video.output_height != out_h
+            || video.output_height != h
         {
             let _ = client
                 .config()
@@ -666,52 +744,115 @@ pub async fn ensure_video_settings(client: &obws::Client, settings: &crate::clip
                     base_width: None,
                     base_height: None,
                     output_width: Some(out_w),
-                    output_height: Some(out_h),
+                    output_height: Some(h),
                 })
                 .await;
             changed = true;
         }
     }
 
-    // Encoder: only touched when we can resolve a valid id for this GPU.
-    if let Some(encoder) = pick_encoder(&settings.encoder_pref, &detect_obs_encoders()) {
+    // Sharpest downscale when recording below the canvas resolution.
+    let set_param = |category: &'static str, name: &'static str, value: String| async move {
         let current = client
             .profiles()
-            .parameter("AdvOut", "RecEncoder")
+            .parameter(category, name)
             .await
             .ok()
             .and_then(|p| p.value);
-        if current.as_deref() != Some(encoder.as_str()) {
-            let _ = client
-                .profiles()
-                .set_parameter(SetParameter {
-                    category: "AdvOut",
-                    name: "RecEncoder",
-                    value: Some(&encoder),
-                })
-                .await;
-            changed = true;
+        if current.as_deref() == Some(value.as_str()) {
+            return false;
         }
-    }
+        let _ = client
+            .profiles()
+            .set_parameter(SetParameter { category, name, value: Some(&value) })
+            .await;
+        true
+    };
+    changed |= set_param("Video", "ScaleType", "lanczos".into()).await;
 
-    // Bitrate lives in the profile's recordEncoder.json; OBS reads it when
-    // the profile loads, so this part only lands after an OBS restart.
+    // Encoder: only touched when we can resolve a valid id for this GPU.
+    let encoder = pick_encoder(&settings.encoder_pref, &detect_obs_encoders());
+    if let Some(encoder) = &encoder {
+        changed |= set_param("AdvOut", "RecEncoder", encoder.clone()).await;
+    }
+    let encoder_id = encoder.unwrap_or_default();
+    let bitrate_mbps = target_bitrate_mbps(settings, out_h, fps, &encoder_id);
+
+    // Encoder settings live in the profile's recordEncoder.json, which OBS
+    // only reads when the profile loads (see `reload_profile_if_idle`).
+    // Merge rather than overwrite, so keys we don't manage survive.
     if let Ok(profiles) = client.profiles().list().await {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let path = std::path::PathBuf::from(appdata)
                 .join("obs-studio/basic/profiles")
                 .join(profiles.current.replace(' ', "_"))
                 .join("recordEncoder.json");
-            let desired = format!("{{\"bitrate\":{}}}", (settings.bitrate_mbps * 1000.0) as u64);
-            let current = std::fs::read_to_string(&path).unwrap_or_default();
-            if current.trim() != desired && path.parent().is_some_and(|p| p.exists()) {
-                let _ = std::fs::write(&path, desired);
+            if path.parent().is_some_and(|p| p.exists()) {
+                let raw = std::fs::read_to_string(&path).unwrap_or_default();
+                let mut json: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_str(&raw).unwrap_or_default();
+                let before = json.clone();
+                json.extend(encoder_tuning(&encoder_id, bitrate_mbps));
+                if json != before {
+                    if let Ok(out) = serde_json::to_string(&json) {
+                        let _ = std::fs::write(&path, out);
+                        changed = true;
+                    }
+                }
             }
         }
     }
 
-    if changed && client.replay_buffer().status().await.unwrap_or(false) {
-        let _ = client.replay_buffer().stop().await;
+    VideoApplied { changed, bitrate_mbps }
+}
+
+/// Make OBS pick up output changes (mode, encoder, recordEncoder.json):
+/// it only rebuilds its outputs when a profile loads, so written settings
+/// sat unused until OBS restarted — a fresh setup kept recording with
+/// Simple-mode QuickSync. Round-tripping through a temporary profile
+/// reloads the current one cleanly. Only while nothing is recording or
+/// streaming; otherwise it stays pending for the next config pass.
+pub async fn reload_profile_if_idle(client: &obws::Client) -> bool {
+    const TEMP: &str = "ClipForge reload";
+    let busy = client.replay_buffer().status().await.unwrap_or(true)
+        || client.recording().status().await.map(|s| s.active).unwrap_or(true)
+        || client.streaming().status().await.map(|s| s.active).unwrap_or(true);
+    if busy {
+        return false;
+    }
+    let Ok(current) = client.profiles().current().await else {
+        return false;
+    };
+    let _ = client.profiles().create(TEMP).await;
+    let reloaded = client.profiles().set_current(TEMP).await.is_ok()
+        && client.profiles().set_current(&current).await.is_ok();
+    let _ = client.profiles().remove(TEMP).await;
+    reloaded
+}
+
+/// Output-affecting changes not yet picked up by OBS (it was busy).
+pub static RELOAD_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every ClipForge-managed OBS setting, in dependency order, then one
+/// profile reload if outputs changed. Used on connect and after the user
+/// edits settings.
+pub async fn apply_all(client: &obws::Client, settings: &crate::clips::Settings, game: Option<&str>) {
+    use std::sync::atomic::Ordering;
+    let mut outputs_changed = ensure_output_config(client, &settings.clips_dir).await;
+    let video = ensure_video_settings(client, settings).await;
+    outputs_changed |= video.changed;
+    outputs_changed |= ensure_replay_buffer_config(client, settings.replay_seconds, video.bitrate_mbps).await;
+    ensure_audio_devices(client).await;
+    ensure_audio_tracks(client).await;
+    ensure_split_audio(client, game, &settings.vc_exe).await;
+
+    if outputs_changed || RELOAD_PENDING.load(Ordering::Relaxed) {
+        // Reload now if OBS is idle (fresh connect, settings edited at the
+        // desktop). While the buffer is armed it holds the moment the user
+        // may be about to clip, so never stop it for this: the supervisor
+        // reloads once the game has exited and the buffer is down.
+        let done = reload_profile_if_idle(client).await;
+        RELOAD_PENDING.store(!done, Ordering::Relaxed);
     }
 }
 
@@ -933,4 +1074,53 @@ pub fn localize_settings(app: &AppHandle, settings: &mut crate::clips::Settings)
         let _ = crate::clips::save_settings(app.clone(), settings.clone());
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Verbatim from a real OBS 32.2.2 log on an AMD + Intel iGPU machine.
+    const LOG: &str = "13:27:06.774: Available Encoders:
+13:27:06.774:   Video Encoders:
+13:27:06.774: 	- ffmpeg_svt_av1 (SVT-AV1)
+13:27:06.774: 	- ffmpeg_aom_av1 (AOM AV1)
+13:27:06.774: 	- h264_texture_amf (AMD HW H.264 (AVC))
+13:27:06.774: 	- h265_texture_amf (AMD HW H.265 (HEVC))
+13:27:06.774: 	- av1_texture_amf (AMD HW AV1)
+13:27:06.774: 	- obs_qsv11_v2 (QuickSync H.264)
+13:27:06.774: 	- obs_qsv11_hevc (QuickSync HEVC)
+13:27:06.774: 	- obs_x264 (x264)
+13:27:06.774:   Audio Encoders:
+13:27:06.774: 	- ffmpeg_aac (FFmpeg AAC)";
+
+    #[test]
+    fn parses_timestamped_encoder_list() {
+        let ids = parse_encoder_ids(LOG);
+        assert!(ids.contains(&"av1_texture_amf".to_string()), "{ids:?}");
+        assert!(ids.contains(&"obs_x264".to_string()), "{ids:?}");
+        assert!(!ids.iter().any(|i| i.contains("aac")), "{ids:?}");
+    }
+
+    #[test]
+    fn prefers_discrete_gpu_encoder() {
+        let ids = parse_encoder_ids(LOG);
+        assert_eq!(pick_encoder("auto", &ids).as_deref(), Some("av1_texture_amf"));
+        assert_eq!(pick_encoder("hevc", &ids).as_deref(), Some("h265_texture_amf"));
+        assert_eq!(pick_encoder("h264", &ids).as_deref(), Some("h264_texture_amf"));
+        let intel_only: Vec<String> = ["obs_qsv11_v2", "obs_qsv11_hevc", "obs_x264"].map(String::from).into();
+        assert_eq!(pick_encoder("h264", &intel_only).as_deref(), Some("obs_qsv11_v2"));
+        assert_eq!(pick_encoder("auto", &intel_only).as_deref(), Some("obs_qsv11_hevc"));
+    }
+
+    #[test]
+    fn auto_bitrate_scales() {
+        let auto = crate::clips::Settings { bitrate_mbps: 0.0, ..Default::default() };
+        assert_eq!(target_bitrate_mbps(&auto, 1080, 60, "av1_texture_amf"), 20.0);
+        assert_eq!(target_bitrate_mbps(&auto, 1080, 60, "h264_texture_amf"), 30.0);
+        assert!(target_bitrate_mbps(&auto, 1440, 144, "av1_texture_amf") > 30.0);
+        assert!(target_bitrate_mbps(&auto, 2160, 60, "obs_x264") <= 25.0);
+        let fixed = crate::clips::Settings { bitrate_mbps: 50.0, ..Default::default() };
+        assert_eq!(target_bitrate_mbps(&fixed, 1080, 60, "av1_texture_amf"), 50.0);
+    }
 }

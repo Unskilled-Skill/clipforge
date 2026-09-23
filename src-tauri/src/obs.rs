@@ -287,13 +287,8 @@ pub async fn apply_obs_config(
     let settings = crate::clips::load_settings_inner(&app);
     let guard = state.client.lock().await;
     let client = guard.as_ref().ok_or("not connected")?;
-    crate::setup::ensure_output_config(client, &settings.clips_dir).await;
-    crate::setup::ensure_replay_buffer_config(client, settings.replay_seconds).await;
-    crate::setup::ensure_audio_devices(client).await;
-    crate::setup::ensure_audio_tracks(client).await;
     let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
-    crate::setup::ensure_split_audio(client, active_game.as_deref(), &settings.vc_exe).await;
-    crate::setup::ensure_video_settings(client, &settings).await;
+    crate::setup::apply_all(client, &settings, active_game.as_deref()).await;
     Ok(())
 }
 

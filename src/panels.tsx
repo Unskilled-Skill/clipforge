@@ -317,20 +317,25 @@ export function SettingsPage(props: {
               </select>
             </label>
             <label className="set-col">
-              <span className="field-label">Bitrate (Mbps)</span>
-              <input
-                className="mono"
-                type="number"
-                min={4}
-                max={100}
+              <span className="field-label">Bitrate</span>
+              {/* 0 = auto: sized from resolution, fps and codec (backend
+                  target_bitrate_mbps). A custom value from an older version
+                  stays selectable. */}
+              <select
+                className="audio-select wide"
                 value={settings.bitrate_mbps}
-                onChange={(e) =>
-                  saveSettings({
-                    ...settings,
-                    bitrate_mbps: Math.min(100, Math.max(4, Number(e.target.value) || 4)),
-                  })
-                }
-              />
+                onChange={(e) => saveSettings({ ...settings, bitrate_mbps: Number(e.target.value) })}
+              >
+                <option value={0}>Auto (best)</option>
+                {[...new Set([10, 15, 20, 30, 40, 50, 80, settings.bitrate_mbps])]
+                  .filter((v) => v > 0)
+                  .sort((a, b) => a - b)
+                  .map((v) => (
+                    <option key={v} value={v}>
+                      {v} Mbps
+                    </option>
+                  ))}
+              </select>
             </label>
             <label className="set-col">
               <span className="field-label">Encoder</span>
@@ -347,8 +352,8 @@ export function SettingsPage(props: {
             </label>
           </div>
           <span className="field-hint">
-            FPS, resolution and encoder apply within seconds. Bitrate applies the next time
-            OBS restarts.
+            Changes apply to OBS automatically, as soon as no game is running. Auto picks the
+            bitrate from your resolution, frame rate and encoder.
           </span>
         </section>
 
