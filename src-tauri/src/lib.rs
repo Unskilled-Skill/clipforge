@@ -63,9 +63,24 @@ fn normalize_hotkey(raw: &str) -> String {
         .join("+")
 }
 
+/// A global hotkey without a modifier steals that key from every app, so
+/// bare keys are limited to ones nothing types with.
+fn check_modifier(hotkey: &str) -> Result<(), String> {
+    let parts: Vec<&str> = hotkey.split('+').collect();
+    let key = parts.last().copied().unwrap_or_default();
+    let bare_ok = matches!(key, "pause" | "scrolllock" | "insert")
+        || key.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=24).contains(&n));
+    if parts.len() == 1 && !bare_ok {
+        return Err(format!("'{hotkey}' needs Ctrl, Alt or Shift (only F-keys, Pause, Scroll Lock and Insert work alone)"));
+    }
+    Ok(())
+}
+
 fn parse_hotkeys(save: &str, short: &str) -> Result<(Shortcut, Shortcut), String> {
     let save_n = normalize_hotkey(save);
     let short_n = normalize_hotkey(short);
+    check_modifier(&save_n)?;
+    check_modifier(&short_n)?;
     let save: Shortcut = save_n
         .parse()
         .map_err(|_| format!("'{save_n}' is not a valid hotkey"))?;
@@ -158,6 +173,23 @@ fn take_update_notes(app: AppHandle) -> Option<serde_json::Value> {
 #[tauri::command]
 fn set_buffer_paused(paused: bool) {
     supervisor::BUFFER_PAUSED.store(paused, Ordering::Relaxed);
+}
+
+/// Suspend the global hotkeys while the user records a new combo in
+/// Settings. Registered combos are swallowed by Windows before the webview
+/// sees them, so without this pressing the current hotkey (to re-bind it or
+/// build on it) saved a clip instead of being captured.
+#[tauri::command]
+fn set_hotkeys_paused(app: AppHandle, paused: bool) -> Result<(), String> {
+    let gs = app.global_shortcut();
+    if paused {
+        return gs.unregister_all().map_err(|e| e.to_string());
+    }
+    let (save, short) = match app.try_state::<Hotkeys>() {
+        Some(state) => *state.0.lock().unwrap(),
+        None => return Ok(()),
+    };
+    register_hotkeys(&app, save, short)
 }
 
 /// Rebind hotkeys live and persist them to settings.
@@ -446,9 +478,40 @@ pub fn run() {
             backup::backup_status,
             backup::backup_now,
             set_hotkeys,
+            set_hotkeys_paused,
             set_buffer_paused,
             take_update_notes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Names the Settings field produces (from KeyboardEvent.code) must
+    /// parse as global shortcuts.
+    #[test]
+    fn captured_combos_parse() {
+        for (save, short) in [
+            ("alt+f10", "shift+alt+f10"),
+            ("f9", "shift+f9"),
+            ("ctrl+shift+1", "ctrl+shift+2"),
+            ("alt+numpad1", "alt+numpad2"),
+            ("alt+comma", "alt+period"),
+            ("ctrl+backquote", "pause"),
+            ("alt+x", "alt+space"),
+        ] {
+            assert!(parse_hotkeys(save, short).is_ok(), "{save} / {short}: {:?}", parse_hotkeys(save, short).err());
+        }
+    }
+
+    #[test]
+    fn bare_typing_keys_rejected() {
+        assert!(parse_hotkeys("a", "alt+f10").is_err());
+        assert!(parse_hotkeys("space", "alt+f10").is_err());
+        assert!(parse_hotkeys("alt+f10", "alt+f10").is_err());
+        assert!(parse_hotkeys("f24", "insert").is_ok());
+    }
 }

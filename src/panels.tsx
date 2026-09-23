@@ -26,19 +26,89 @@ import {
   X,
 } from "@phosphor-icons/react";
 
-// Turn a keydown into a hotkey string like "ctrl+shift+f9".
-function captureHotkey(e: React.KeyboardEvent): string | null {
+// Keys that are safe to bind without a modifier: nothing types them.
+const BARE_OK = /^(f([1-9]|1[0-9]|2[0-4])|pause|scrolllock|insert)$/;
+
+// Turn a keydown into a hotkey string like "ctrl+shift+f9". Uses the
+// physical key (e.code), so shift+1 records as "shift+1" rather than "!",
+// on any keyboard layout. Returns the modifiers typed so far ("alt+…")
+// while only modifiers are held.
+function captureHotkey(e: React.KeyboardEvent): { combo: string; complete: boolean } {
   e.preventDefault();
   e.stopPropagation();
-  const key = e.key.toLowerCase();
-  if (["control", "shift", "alt", "meta"].includes(key)) return null; // modifier alone
-  const mods = [
-    e.ctrlKey ? "ctrl" : null,
-    e.shiftKey ? "shift" : null,
-    e.altKey ? "alt" : null,
-  ].filter(Boolean);
-  const name = key === " " ? "space" : key;
-  return [...mods, name].join("+");
+  const mods = [e.ctrlKey ? "ctrl" : null, e.shiftKey ? "shift" : null, e.altKey ? "alt" : null].filter(
+    Boolean,
+  ) as string[];
+  if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) {
+    return { combo: mods.length ? `${mods.join("+")}+…` : "", complete: false };
+  }
+  const key = e.code.replace(/^Key/, "").replace(/^Digit/, "").toLowerCase();
+  return { combo: [...mods, key].join("+"), complete: true };
+}
+
+/// Why a combo can't be used, or null when it's fine.
+function hotkeyProblem(combo: string, other: string): string | null {
+  const parts = combo.split("+");
+  const key = parts[parts.length - 1];
+  if (parts.length === 1 && !BARE_OK.test(key)) {
+    return "Add Ctrl, Alt or Shift: a single key would stop working everywhere else.";
+  }
+  if (combo === other) return "That's already your other hotkey.";
+  return null;
+}
+
+/// Click, press a combo, done. Global hotkeys are paused while the field
+/// is focused so even the current combo can be pressed and captured.
+function HotkeyInput(props: {
+  id?: string;
+  value: string;
+  other: string;
+  onChange: (combo: string) => void;
+}) {
+  const { id, value, other, onChange } = props;
+  const [live, setLive] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <>
+      <input
+        id={id}
+        className={`mono hotkey-capture ${live !== null ? "recording" : ""}`}
+        value={live ?? value}
+        placeholder="Press keys… (Esc to cancel)"
+        readOnly
+        onFocus={() => {
+          setLive("");
+          setProblem(null);
+          invoke("set_hotkeys_paused", { paused: true }).catch(() => {});
+        }}
+        onBlur={() => {
+          setLive(null);
+          invoke("set_hotkeys_paused", { paused: false }).catch(() => {});
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.blur();
+            return;
+          }
+          const { combo, complete } = captureHotkey(e);
+          setLive(combo);
+          if (!complete) return;
+          const issue = hotkeyProblem(combo, other);
+          setProblem(issue);
+          if (issue) return;
+          onChange(combo);
+          e.currentTarget.blur();
+        }}
+        onKeyUp={(e) => {
+          // Released the modifiers without finishing a combo: start over.
+          if (live && live.endsWith("…") && !e.ctrlKey && !e.altKey && !e.shiftKey) setLive("");
+        }}
+      />
+      {problem && <span className="field-hint hotkey-problem">{problem}</span>}
+    </>
+  );
 }
 
 // Open dialogs, innermost last — only the top one answers Esc.
@@ -694,34 +764,25 @@ export function SettingsPage(props: {
           </div>
           <div className="set-row">
             <label className="set-col">
-              <span className="field-label">Save clip — click, then press keys</span>
-              <input
-                className="mono hotkey-capture"
+              <span className="field-label">Save clip</span>
+              <HotkeyInput
+                id="hotkey-save"
                 value={hkSave}
-                placeholder="press a combo…"
-                readOnly
-                onKeyDown={(e) => {
-                  const combo = captureHotkey(e);
-                  if (combo) {
-                    setHkSave(combo);
-                    applyHotkeys(combo, hkShort);
-                  }
+                other={hkShort}
+                onChange={(combo) => {
+                  setHkSave(combo);
+                  applyHotkeys(combo, hkShort);
                 }}
               />
             </label>
             <label className="set-col">
-              <span className="field-label">Short clip — click, then press keys</span>
-              <input
-                className="mono hotkey-capture"
+              <span className="field-label">Short clip</span>
+              <HotkeyInput
                 value={hkShort}
-                placeholder="press a combo…"
-                readOnly
-                onKeyDown={(e) => {
-                  const combo = captureHotkey(e);
-                  if (combo) {
-                    setHkShort(combo);
-                    applyHotkeys(hkSave, combo);
-                  }
+                other={hkSave}
+                onChange={(combo) => {
+                  setHkShort(combo);
+                  applyHotkeys(hkSave, combo);
                 }}
               />
             </label>
@@ -735,6 +796,24 @@ export function SettingsPage(props: {
                 onChange={(e) => saveSettings({ ...settings, short_clip_seconds: Number(e.target.value) })}
               />
             </label>
+          </div>
+          <div className="set-row hotkey-foot">
+            <span className="field-hint">
+              Click a field and press the new keys. Use Ctrl, Alt or Shift with a key, or an F-key on
+              its own.
+            </span>
+            {(hkSave !== "alt+f10" || hkShort !== "shift+alt+f10") && (
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  setHkSave("alt+f10");
+                  setHkShort("shift+alt+f10");
+                  applyHotkeys("alt+f10", "shift+alt+f10");
+                }}
+              >
+                Reset to Alt+F10
+              </button>
+            )}
           </div>
         </section>
 

@@ -1511,7 +1511,21 @@ function App() {
             </div>
           )}
           <div className="status-divider" />
-          <div className="hotkey-rows">
+          <button
+            className="hotkey-rows"
+            title="Change hotkeys"
+            aria-label={`Hotkeys: save clip ${settings.hotkey_save}, short clip ${settings.hotkey_short}. Change hotkeys`}
+            onClick={() => {
+              setSelected(null);
+              setShowSettings(true);
+              // Settings mounts next frame; land on the hotkey field ready to record.
+              setTimeout(() => {
+                const el = document.getElementById("hotkey-save");
+                el?.scrollIntoView({ block: "center" });
+                el?.focus();
+              }, 120);
+            }}
+          >
             <div className="hk-row">
               <span>Save clip</span>
               <kbd>{settings.hotkey_save}</kbd>
@@ -1520,7 +1534,7 @@ function App() {
               <span>Short clip</span>
               <kbd>{settings.hotkey_short}</kbd>
             </div>
-          </div>
+          </button>
         </div>
       </aside>
 
