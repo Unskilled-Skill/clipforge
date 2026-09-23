@@ -1,4 +1,4 @@
-﻿use std::ffi::OsStr;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -15,6 +15,18 @@ pub fn hidden_cmd(program: impl AsRef<OsStr>) -> Command {
 }
 
 use serde::{Deserialize, Serialize};
+
+/// Run blocking work (ffmpeg, winget, disk scans) on tokio's blocking pool.
+/// Calling `Command::output()` straight from an async command parks one of
+/// the few async worker threads for the whole encode — enough long trims or
+/// thumbnail scans and the supervisor's 3s OBS/buffer tick starts stalling.
+pub async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+}
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Run an ffmpeg command (output path already added) streaming its
@@ -104,6 +116,9 @@ pub struct Settings {
     pub vc_exe: String,
     #[serde(default = "default_true")]
     pub auto_launch_obs: bool,
+    /// Register the app to start (hidden, in the tray) at Windows login.
+    #[serde(default = "default_true")]
+    pub launch_at_login: bool,
     #[serde(default = "default_true")]
     pub auto_manage_buffer: bool,
     #[serde(default = "default_obs_path")]
@@ -117,7 +132,7 @@ pub struct Settings {
     /// 0 disables the cap.
     #[serde(default = "default_max_storage_gb")]
     pub max_storage_gb: f64,
-    /// Off by default — only useful for CS2/Dota/LoL or log-trigger setups.
+    /// Off by default — only useful for CS2/LoL or log-trigger setups.
     #[serde(default)]
     pub auto_clip: bool,
     /// Seconds to wait after the last kill before saving (multikill window).
@@ -186,6 +201,7 @@ impl Default for Settings {
             game_blacklist: Vec::new(),
             vc_exe: default_vc_exe(),
             auto_launch_obs: true,
+            launch_at_login: true,
             auto_manage_buffer: true,
             obs_path: default_obs_path(),
             hotkey_save: default_hotkey_save(),
@@ -325,6 +341,7 @@ pub fn enforce_storage_cap(app: &AppHandle) -> Result<u32, String> {
             continue;
         }
         if trash::delete(&clip.path).is_ok() {
+            remove_clip_leftovers(app, &clip.path);
             total -= clip.size_bytes;
             removed += 1;
         }
@@ -419,6 +436,7 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     let _ = app
         .asset_protocol_scope()
         .allow_directory(&settings.clips_dir, true);
+    crate::apply_launch_at_login(&app, settings.launch_at_login);
     let path = settings_path(&app)?;
     let raw = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     // Write-then-rename so a crash mid-write can't leave settings.json
@@ -512,8 +530,8 @@ fn find_ffmpeg() -> Option<PathBuf> {
     let packages = dirs_next(std::env::var("LOCALAPPDATA").ok()?)?;
     for entry in std::fs::read_dir(packages).ok()?.filter_map(|e| e.ok()) {
         if entry.file_name().to_string_lossy().starts_with("Gyan.FFmpeg") {
-            for sub in walk_for_ffmpeg(&entry.path()) {
-                return Some(sub);
+            if let Some(found) = walk_for_ffmpeg(&entry.path()).into_iter().next() {
+                return Some(found);
             }
         }
     }
@@ -545,10 +563,26 @@ fn walk_for_ffmpeg(root: &PathBuf) -> Vec<PathBuf> {
 
 /// Move a clip to the Windows Recycle Bin (recoverable).
 #[tauri::command]
-pub fn delete_clip(path: String) -> Result<(), String> {
+pub fn delete_clip(app: AppHandle, path: String) -> Result<(), String> {
     trash::delete(&path).map_err(|e| e.to_string())?;
-    // Sweep the cached thumbnail/waveforms too, or they pile up forever.
-    let p = PathBuf::from(&path);
+    remove_clip_leftovers(&app, &path);
+    Ok(())
+}
+
+/// Everything a deleted clip leaves behind: cached thumbnail/waveforms/
+/// filmstrip/markers in `.thumbs` (they pile up forever otherwise) and its
+/// favorites entry. Shared by manual deletes and the storage cap.
+fn remove_clip_leftovers(app: &AppHandle, path: &str) {
+    if let Ok(mut favs) = load_favorites(app.clone()) {
+        let before = favs.len();
+        favs.retain(|f| f != path);
+        if favs.len() != before {
+            if let (Ok(raw), Ok(fp)) = (serde_json::to_string_pretty(&favs), favorites_path(app)) {
+                let _ = std::fs::write(fp, raw);
+            }
+        }
+    }
+    let p = PathBuf::from(path);
     if let (Some(dir), Some(stem)) = (p.parent(), p.file_stem()) {
         let thumbs = dir.join(".thumbs");
         let stem = stem.to_string_lossy();
@@ -560,7 +594,6 @@ pub fn delete_clip(path: String) -> Result<(), String> {
             let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave{i}.png")));
         }
     }
-    Ok(())
 }
 
 #[derive(Serialize, Clone)]
@@ -632,6 +665,10 @@ fn probe_duration(ffmpeg: &PathBuf, path: &str) -> Result<f64, String> {
 /// Input-side seeking means we never decode more than 10 frames total.
 #[tauri::command]
 pub async fn analyze_black(path: String) -> Result<BlackAnalysis, String> {
+    blocking(move || analyze_black_blocking(path)).await
+}
+
+fn analyze_black_blocking(path: String) -> Result<BlackAnalysis, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let duration = clip_duration(&ffmpeg, &path)?;
 
@@ -688,9 +725,11 @@ pub struct ThumbInfo {
 /// Generate missing thumbnails for every clip in `dir`, into `dir/.thumbs`.
 /// Returns clip path -> { thumbnail path, duration seconds }.
 #[tauri::command]
-pub async fn gen_thumbnails(
-    dir: String,
-) -> Result<std::collections::HashMap<String, ThumbInfo>, String> {
+pub async fn gen_thumbnails(dir: String) -> Result<std::collections::HashMap<String, ThumbInfo>, String> {
+    blocking(move || gen_thumbnails_blocking(dir)).await
+}
+
+fn gen_thumbnails_blocking(dir: String) -> Result<std::collections::HashMap<String, ThumbInfo>, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let thumbs_dir = PathBuf::from(&dir).join(".thumbs");
     std::fs::create_dir_all(&thumbs_dir).map_err(|e| e.to_string())?;
@@ -914,6 +953,10 @@ pub async fn export_discord(
 /// Render an audio waveform strip for the timeline, cached next to thumbs.
 #[tauri::command]
 pub async fn gen_waveform(input: String) -> Result<String, String> {
+    blocking(move || gen_waveform_blocking(input)).await
+}
+
+fn gen_waveform_blocking(input: String) -> Result<String, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let input_path = PathBuf::from(&input);
     let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
@@ -949,6 +992,10 @@ pub async fn gen_waveform(input: String) -> Result<String, String> {
 /// instead of one stretched thumbnail.
 #[tauri::command]
 pub async fn gen_filmstrip(input: String) -> Result<String, String> {
+    blocking(move || gen_filmstrip_blocking(input)).await
+}
+
+fn gen_filmstrip_blocking(input: String) -> Result<String, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let input_path = PathBuf::from(&input);
     let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
@@ -994,6 +1041,10 @@ pub struct TrackWave {
 /// (mix / game / voice / desktop / mic) stacked with its own keep-checkbox.
 #[tauri::command]
 pub async fn gen_waveforms(input: String) -> Result<Vec<TrackWave>, String> {
+    blocking(move || gen_waveforms_blocking(input)).await
+}
+
+fn gen_waveforms_blocking(input: String) -> Result<Vec<TrackWave>, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let count = audio_stream_count(&ffmpeg, &input);
     let input_path = PathBuf::from(&input);
@@ -1161,6 +1212,10 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<S
 /// when done.
 #[tauri::command]
 pub async fn export_gif(input: String, start: f64, end: f64) -> Result<String, String> {
+    blocking(move || export_gif_blocking(input, start, end)).await
+}
+
+fn export_gif_blocking(input: String, start: f64, end: f64) -> Result<String, String> {
     let duration = end - start;
     if duration <= 0.0 {
         return Err("set a trim range first".into());
@@ -1200,6 +1255,10 @@ pub async fn export_gif(input: String, start: f64, end: f64) -> Result<String, S
 /// Grab the frame at `time` as a PNG and put it on the clipboard.
 #[tauri::command]
 pub async fn export_frame(input: String, time: f64) -> Result<String, String> {
+    blocking(move || export_frame_blocking(input, time)).await
+}
+
+fn export_frame_blocking(input: String, time: f64) -> Result<String, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let input_path = PathBuf::from(&input);
     let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy();
@@ -1299,6 +1358,11 @@ pub fn copy_file_to_clipboard(path: &str) -> Result<(), String> {
 /// Replace a clip with only its final `keep_last` seconds (lossless).
 /// Used by the short-clip hotkey so quick moments don't cost 500MB.
 pub async fn shorten_clip(path: &str, keep_last: f64) -> Result<(), String> {
+    let path = path.to_string();
+    blocking(move || shorten_clip_blocking(&path, keep_last)).await
+}
+
+fn shorten_clip_blocking(path: &str, keep_last: f64) -> Result<(), String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let duration = clip_duration(&ffmpeg, path)?;
     if duration <= keep_last + 1.0 {
@@ -1335,10 +1399,14 @@ pub async fn shorten_clip(path: &str, keep_last: f64) -> Result<(), String> {
 /// Lossless trim: stream copy, no re-encode. `start`/`end` in seconds.
 #[tauri::command]
 pub async fn trim_clip(input: String, start: f64, end: f64) -> Result<String, String> {
+    blocking(move || trim_clip_blocking(input, start, end)).await
+}
+
+fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, String> {
     if end <= start {
         return Err("end must be after start".into());
     }
-    let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found â€” install still running?")?;
+    let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found — install still running?")?;
 
     let input_path = PathBuf::from(&input);
     let stem = input_path

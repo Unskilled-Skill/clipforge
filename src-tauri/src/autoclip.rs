@@ -1,6 +1,6 @@
 //! Event-driven auto-clipping — zero cost unless a supported game runs.
 //!
-//! CS2/Dota push kill events to us over Game State Integration (the game
+//! CS2 pushes kill events to us over Game State Integration (the game
 //! POSTs JSON to a localhost port — no polling at all). League is polled
 //! via its official local live-client API, only while it is running.
 //! A kill arms a short countdown; further kills extend it, so a multikill
@@ -224,7 +224,7 @@ pub async fn run(app: AppHandle) {
         };
         if due {
             let state = app.state::<crate::obs::ObsState>();
-            if crate::obs::save_replay(state.inner()).await.is_ok() {
+            if crate::obs::save_replay(state.inner(), false).await.is_ok() {
                 let _ = app.emit("auto-clipped", ());
             }
         }

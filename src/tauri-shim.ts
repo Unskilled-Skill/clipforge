@@ -21,6 +21,7 @@ const mockSettings = {
   game_blacklist: [],
   vc_exe: "discord.exe",
   auto_launch_obs: true,
+  launch_at_login: true,
   auto_manage_buffer: true,
   obs_path: "C:/Program Files/obs-studio/bin/64bit/obs64.exe",
   hotkey_save: "alt+f10",

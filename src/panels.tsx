@@ -334,9 +334,24 @@ export function SettingsPage(props: {
           </div>
           <div className="toggle-card">
             <div className="toggle-text">
+              <span className="toggle-title">Start with Windows</span>
+              <span className="toggle-desc">Launch to the tray at login, ready before you play</span>
+            </div>
+            <button
+              className={`switch ${settings.launch_at_login ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.launch_at_login}
+              aria-label="Start with Windows"
+              onClick={() => saveSettings({ ...settings, launch_at_login: !settings.launch_at_login })}
+            >
+              <span className="knob" />
+            </button>
+          </div>
+          <div className="toggle-card">
+            <div className="toggle-text">
               <span className="toggle-title">Auto-clip kills</span>
               <span className="toggle-desc">
-                CS2 / Dota 2 / League only (official event APIs). Saves a clip a few seconds
+                CS2 and League only (official event APIs). Saves a clip a few seconds
                 after your kill — multikills land in one clip. Other games: hotkey.
               </span>
             </div>
