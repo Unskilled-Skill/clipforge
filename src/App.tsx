@@ -268,6 +268,37 @@ function App() {
     "newest"
   );
   const [targetMb, setTargetMb] = useState(10);
+  // Sidebar/library extras: starred clips already backed up, and what OBS is
+  // really recording with ("AMD AV1 · 1080p60 · 20 Mbps"). Polled slowly;
+  // both are cheap reads.
+  const [backedUp, setBackedUp] = useState(0);
+  const [recLine, setRecLine] = useState<string | null>(null);
+  useEffect(() => {
+    const load = () => {
+      invoke<{ backed_up: number }>("backup_status")
+        .then((b) => setBackedUp(b.backed_up))
+        .catch(() => {});
+      invoke<{ encoder: string | null; resolution: string | null; fps: number | null; bitrate_kbps: number | null }>(
+        "obs_diagnostics",
+      )
+        .then((d) => {
+          const enc = d.encoder ?? "";
+          const codec = enc.includes("av1") ? "AV1" : enc.includes("265") || enc.includes("hevc") ? "HEVC" : "H.264";
+          const vendor = enc.includes("amf") ? "AMD" : enc.includes("nvenc") ? "NVIDIA" : enc.includes("qsv") ? "Intel" : enc === "obs_x264" ? "CPU" : "";
+          const h = d.resolution?.split("x")[1];
+          const parts = [
+            vendor ? `${vendor} ${codec}` : null,
+            h && d.fps ? `${h}p${d.fps}` : null,
+            d.bitrate_kbps ? `${Math.round(d.bitrate_kbps / 1000)} Mbps` : null,
+          ].filter(Boolean);
+          setRecLine(parts.length ? parts.join(" · ") : null);
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 20000);
+    return () => clearInterval(id);
+  }, []);
   const [renaming, setRenaming] = useState(false);
   const [libRenamePath, setLibRenamePath] = useState<string | null>(null);
   const [libRenameValue, setLibRenameValue] = useState("");
@@ -1159,8 +1190,12 @@ function App() {
         e.preventDefault();
         // Column count from layout: cards sharing the first card's top row.
         const cards = document.querySelectorAll<HTMLElement>(".grid .card");
-        let cols = 1;
-        while (cols < cards.length && cards[cols].offsetTop === cards[0].offsetTop) cols++;
+        // Columns from the grid template: with day sessions the first row
+        // can be a short session, so counting cards on it undercounts.
+        const firstGrid = document.querySelector<HTMLElement>(".session-grid");
+        const cols = firstGrid
+          ? Math.max(1, getComputedStyle(firstGrid).gridTemplateColumns.split(" ").length)
+          : 1;
         const delta =
           e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : e.key === "ArrowDown" ? cols : -cols;
         const next =
@@ -1408,6 +1443,47 @@ function App() {
       }
     });
   const totalSize = formatSize(clips.reduce((a, c) => a + c.size_bytes, 0));
+
+  // Library sessions: sorted by date, clips group by the day they were
+  // recorded ("Today · Valorant, CS2 · 6 clips · 1.4 GB"). Other sorts
+  // stay one grid. Flat indices are kept for the keyboard focus.
+  const clipGroups = (() => {
+    const items = visibleClips.map((c, i) => ({ c, i }));
+    if (sortBy !== "newest" && sortBy !== "oldest") {
+      return [{ key: "all", label: "", meta: "", items }];
+    }
+    const dayKey = (ms: number) => new Date(ms).toDateString();
+    const today = dayKey(Date.now());
+    const yesterday = dayKey(Date.now() - 86400000);
+    const groups: { key: string; label: string; meta: string; items: typeof items }[] = [];
+    for (const it of items) {
+      const key = dayKey(it.c.modified_ms);
+      let g = groups[groups.length - 1];
+      if (!g || g.key !== key) {
+        const label =
+          key === today
+            ? "Today"
+            : key === yesterday
+              ? "Yesterday"
+              : new Date(it.c.modified_ms).toLocaleDateString(undefined, {
+                  weekday: "long",
+                  day: "numeric",
+                  month: "long",
+                });
+        g = { key, label, meta: "", items: [] };
+        groups.push(g);
+      }
+      g.items.push(it);
+    }
+    for (const g of groups) {
+      const names = [...new Set(g.items.map(({ c }) => gameOf(c)))];
+      const gamesText = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
+      const n = g.items.length;
+      const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
+      g.meta = `${gamesText} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
+    }
+    return groups;
+  })();
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
 
@@ -1501,8 +1577,14 @@ function App() {
             }}
           >
             <span className="buffer-dot" />
-            {bufferPaused ? "PAUSED" : status.replay_buffer_active ? "BUFFER ARMED" : "IDLE"}
+            {bufferPaused ? "PAUSED" : status.replay_buffer_active ? "REC" : "IDLE"}
           </button>
+          {status.replay_buffer_active && !bufferPaused && (
+            <div className="rec-summary">
+              <span className="rec-ready">Last {formatDuration(settings.replay_seconds)} ready</span>
+              {recLine && <span className="rec-line">{recLine}</span>}
+            </div>
+          )}
           {sup?.game && (
             <div className="game-row">
               <GameController size={15} color="#ff8c42" weight="fill" />
@@ -1671,6 +1753,7 @@ function App() {
                 <h1>Library</h1>
                 <span className="lib-count">
                   {clips.length} clips · {totalSize}
+                  {backedUp > 0 && ` · ${backedUp} backed up`}
                 </span>
               </div>
               <div className="lib-actions">
@@ -1802,7 +1885,17 @@ function App() {
                   if (e.target === e.currentTarget) gridEntered.current = true;
                 }}
               >
-                {visibleClips.map((c, i) => (
+                {clipGroups.map((g) => (
+                  <section className="session" key={g.key} aria-label={g.label || "Clips"}>
+                    {g.label && (
+                      <div className="session-head">
+                        <h2 className="session-title">{g.label}</h2>
+                        <span className="session-meta">{g.meta}</span>
+                        <span className="session-rule" />
+                      </div>
+                    )}
+                    <div className="session-grid">
+                {g.items.map(({ c, i }) => (
                   <div
                     key={c.path}
                     className={`card ${i === focusIdx ? "kb-focus" : ""}`}
@@ -1971,6 +2064,9 @@ function App() {
                       </span>
                     </div>
                   </div>
+                ))}
+                    </div>
+                  </section>
                 ))}
               </div>
             )}
@@ -2337,17 +2433,24 @@ function App() {
                 {trimming ? "trimming…" : "Trim · lossless"}
               </button>
               <div className="export-group">
-                <select
-                  className="audio-select"
-                  value={targetMb}
-                  onChange={(e) => setTargetMb(Number(e.target.value))}
-                  title="Export size budget"
-                  aria-label="Export size budget"
-                >
-                  <option value={10}>10 MB</option>
-                  <option value={50}>50 MB · Nitro Basic</option>
-                  <option value={500}>500 MB · Nitro</option>
-                </select>
+                <div className="size-seg" role="radiogroup" aria-label="Discord size limit">
+                  {[
+                    { mb: 10, note: "Free" },
+                    { mb: 50, note: "Basic" },
+                    { mb: 500, note: "Nitro" },
+                  ].map((o) => (
+                    <button
+                      key={o.mb}
+                      role="radio"
+                      aria-checked={targetMb === o.mb}
+                      className={targetMb === o.mb ? "on" : ""}
+                      onClick={() => setTargetMb(o.mb)}
+                    >
+                      <span>{o.mb} MB</span>
+                      <span className="size-note">{o.note}</span>
+                    </button>
+                  ))}
+                </div>
                 <button className="btn-discord" onClick={exportDiscord} disabled={exporting}>
                   <DiscordLogo size={17} weight="fill" />
                   {exporting
