@@ -8,6 +8,7 @@ import {
   open as realOpenDialog,
   type OpenDialogOptions,
 } from "@tauri-apps/plugin-dialog";
+import { openUrl as realOpenUrl } from "@tauri-apps/plugin-opener";
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -146,9 +147,28 @@ export const convertFileSrc: typeof realConvert = inTauri
         `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#1b1f2e"/><rect x="0" y="120" width="320" height="60" fill="#141824"/><circle cx="${(p.length * 37) % 280 + 20}" cy="80" r="26" fill="#2c3350"/></svg>`
       )}`;
 
+// Browser mock: `?mock-setup` fakes a supervisor state with both OBS setup
+// banners showing, so they can be designed without a real OBS.
 export const listen: typeof realListen = inTauri
   ? realListen
-  : ((() => Promise.resolve(() => {})) as typeof realListen);
+  : (((event: string, handler: (e: { payload: unknown }) => void) => {
+      if (event === "supervisor-state" && new URLSearchParams(location.search).has("mock-setup")) {
+        setTimeout(() =>
+          handler({
+            payload: {
+              obs_running: true,
+              connected: false,
+              game: null,
+              buffer_active: false,
+              paused: false,
+              obs_needs_restart: true,
+              obs_outdated: "29.1.3",
+            },
+          }),
+        );
+      }
+      return Promise.resolve(() => {});
+    }) as unknown as typeof realListen);
 
 export const openDialog = inTauri
   ? realOpenDialog
@@ -162,5 +182,9 @@ export const confirmDialog: typeof realConfirmDialog = inTauri
 export const getVersion: typeof realGetVersion = inTauri
   ? realGetVersion
   : (async () => "dev") as typeof realGetVersion;
+
+export const openUrl: (url: string) => Promise<void> = inTauri
+  ? realOpenUrl
+  : async (url: string) => void window.open(url, "_blank", "noopener");
 
 export const isTauri = inTauri;

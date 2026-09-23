@@ -48,7 +48,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["windows/install-obs.ps1"],
+    "resources": ["windows/install-obs.ps1", "windows/install-ffmpeg.ps1"],
     "windows": {
       "nsis": {
         "installerHooks": "./windows/hooks.nsi"

@@ -21,6 +21,12 @@ pub struct SupervisorState {
     pub game: Option<String>,
     pub buffer_active: bool,
     pub paused: bool,
+    /// OBS is running with its websocket server off (or never set up): the
+    /// config can only be changed while OBS is closed, so the user has to
+    /// close it once. Without this the app just sat disconnected.
+    pub obs_needs_restart: bool,
+    /// Connected OBS is too old for the recording format (version string).
+    pub obs_outdated: Option<String>,
 }
 
 /// Background state machine, one tick every 3s:
@@ -94,9 +100,9 @@ async fn tick(
     if !state.obs_running {
         // OBS closed = safe moment to switch its websocket server on and
         // mint a password if none exists; next tick picks the password up.
-        if settings.password.is_none() {
-            crate::setup::enable_websocket_server(false);
-        }
+        // Unconditional (it's a no-op when already set up): a user who
+        // switched the server off in OBS would otherwise stay disconnected.
+        crate::setup::enable_websocket_server(false);
         // Also pre-seed global.ini so a freshly (silently) installed OBS
         // doesn't stall its first launch behind the Auto-Configuration Wizard.
         crate::setup::suppress_autoconfig_wizard(false);
@@ -157,12 +163,27 @@ async fn tick(
                 }
             }
         }
+        if !state.connected {
+            // Can't connect while OBS runs: either its websocket server is
+            // off (only fixable with OBS closed — tell the user), or OBS has
+            // a different password than we saved (user changed it; re-read).
+            if settings.password.is_none() || !crate::setup::websocket_server_enabled() {
+                state.obs_needs_restart = true;
+            } else if let Some((password, port)) = crate::setup::read_websocket_password() {
+                if settings.password.as_deref() != Some(password.as_str()) || settings.port != port {
+                    settings.password = Some(password);
+                    settings.port = port;
+                    let _ = crate::clips::save_settings(app.clone(), settings.clone());
+                }
+            }
+        }
     } else {
         state.connected = true;
     }
     if !state.connected {
         return state;
     }
+    state.obs_outdated = crate::obs::outdated_obs_version(obs_state.inner());
 
     // 3. Game detection → buffer arm/disarm.
     // Exe whitelist first (works for alt-tabbed games), fullscreen

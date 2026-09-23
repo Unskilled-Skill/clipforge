@@ -39,6 +39,8 @@ export interface SupervisorState {
   game: string | null;
   buffer_active: boolean;
   paused: boolean;
+  obs_needs_restart: boolean;
+  obs_outdated: string | null;
 }
 
 export interface ClipInfo {
