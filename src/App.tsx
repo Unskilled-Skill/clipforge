@@ -1491,7 +1491,7 @@ function App() {
       <main className="main">
         {exportPct != null && (
           <div className="export-bar">
-            <div className="export-bar-fill" style={{ width: `${exportPct}%` }} />
+            <div className="export-bar-fill" style={{ transform: `scaleX(${exportPct / 100})` }} />
           </div>
         )}
         {error && (
