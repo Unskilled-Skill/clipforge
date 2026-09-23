@@ -103,6 +103,21 @@ fn register_hotkeys(app: &AppHandle, save: Shortcut, short: Shortcut) -> Result<
     Ok(())
 }
 
+/// Sync the login-autostart registration with the setting. Installed builds
+/// only, so the registry never points at a dev target/debug exe. Runs at
+/// boot and on every settings save: enabling it unconditionally at boot
+/// made "don't start with Windows" impossible.
+pub fn apply_launch_at_login(app: &AppHandle, enabled: bool) {
+    #[cfg(not(debug_assertions))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        let _ = if enabled { autolaunch.enable() } else { autolaunch.disable() };
+    }
+    #[cfg(debug_assertions)]
+    let _ = (app, enabled);
+}
+
 fn pending_update_path(app: &AppHandle) -> Option<std::path::PathBuf> {
     app.path()
         .app_config_dir()
@@ -249,11 +264,10 @@ pub fn run() {
                     if !should_accept_press(now_ms) {
                         return;
                     }
-                    PENDING_SHORT.store(is_short, Ordering::Relaxed);
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
                         let state = app.state::<ObsState>();
-                        match obs::save_replay(state.inner()).await {
+                        match obs::save_replay(state.inner(), is_short).await {
                             Ok(()) => {}
                             Err(e) => {
                                 obs::notify_failure(&app, "Clip not saved", &e);
@@ -340,13 +354,7 @@ pub fn run() {
                 .allow_directory(&settings.clips_dir, true);
             spawn_dir_watcher(app.handle().clone());
 
-            // Autostart at login — only for the installed build, so the
-            // registry never points at a dev target/debug exe.
-            #[cfg(not(debug_assertions))]
-            {
-                use tauri_plugin_autostart::ManagerExt;
-                let _ = app.autolaunch().enable();
-            }
+            apply_launch_at_login(app.handle(), settings.launch_at_login);
 
             // Launched by autostart: stay in the tray, everything else
             // (OBS launch, buffer management) runs headless as usual.

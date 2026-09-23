@@ -133,12 +133,19 @@ pub fn notify_failure(app: &AppHandle, title: &str, reason: &str) {
 /// Managed state: the live obs-websocket connection, if any.
 pub struct ObsState {
     pub client: Mutex<Option<Client>>,
+    /// The task draining the current event connection. Replaced (and the
+    /// old one aborted) on every reconnect: the supervisor reconnects when
+    /// the *request* socket dies, which can leave the old event socket
+    /// alive — two listeners meant every save was handled twice (double
+    /// sound/toast, markers written twice).
+    events_task: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 impl Default for ObsState {
     fn default() -> Self {
         Self {
             client: Mutex::new(None),
+            events_task: std::sync::Mutex::new(None),
         }
     }
 }
@@ -189,7 +196,7 @@ pub async fn connect_internal(
         .map_err(|e| format!("event stream failed: {e}"))?;
 
     let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
+    let task = tauri::async_runtime::spawn(async move {
         // Keep the client alive for as long as we poll its events.
         let _keep_alive = event_client;
         pin_mut!(events);
@@ -206,6 +213,9 @@ pub async fn connect_internal(
         }
         let _ = app_handle.emit("obs-disconnected", ());
     });
+    if let Some(old) = state.events_task.lock().unwrap().replace(task) {
+        old.abort();
+    }
 
     let version = client
         .general()
@@ -293,9 +303,21 @@ pub async fn start_replay_buffer(state: tauri::State<'_, ObsState>) -> Result<()
 pub static LAST_SAVE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
 /// Flush the replay buffer to disk. The resulting file path arrives
-/// asynchronously via the `clip-saved` event.
-pub async fn save_replay(state: &ObsState) -> Result<(), String> {
+/// asynchronously via the `clip-saved` event. `short` asks for that clip to
+/// be trimmed to its last N seconds (short-clip hotkey).
+pub async fn save_replay(state: &ObsState, short: bool) -> Result<(), String> {
     *LAST_SAVE.lock().unwrap() = Some(std::time::Instant::now());
+    // Every save sets the flag explicitly, and a failed save clears it: a
+    // short press that fails must not shorten the next (full) save.
+    crate::PENDING_SHORT.store(short, std::sync::atomic::Ordering::Relaxed);
+    let result = request_save(state).await;
+    if result.is_err() {
+        crate::PENDING_SHORT.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    result
+}
+
+async fn request_save(state: &ObsState) -> Result<(), String> {
     let guard = state.client.lock().await;
     let client = guard.as_ref().ok_or("not connected")?;
     // If the buffer isn't armed there's nothing to flush — OBS returns a
@@ -320,7 +342,7 @@ pub async fn save_replay(state: &ObsState) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn save_replay_cmd(state: tauri::State<'_, ObsState>) -> Result<(), String> {
-    save_replay(state.inner()).await
+    save_replay(state.inner(), false).await
 }
 
 /// Ensure the current scene has a universal game capture source on top:
