@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { invoke, listen, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
+import { blacklistApp } from "./app-blacklist";
 import type { BackupStatus, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import {
   ArrowCounterClockwise,
@@ -586,6 +587,28 @@ export function SettingsPage(props: {
     addGameSource, testGameSource, removeGame, openAppPicker, addGameFromFolder,
     sup, connect, connecting, onTutorial, onPickVc,
   } = props;
+  const [blockedExe, setBlockedExe] = useState("");
+  const [blacklistBusy, setBlacklistBusy] = useState(false);
+  const [blacklistError, setBlacklistError] = useState<string | null>(null);
+  async function updateBlacklist(next: Settings) {
+    setBlacklistBusy(true);
+    setBlacklistError(null);
+    try {
+      await saveSettings(next);
+      setBlockedExe("");
+    } catch (error) {
+      setBlacklistError(`Could not save the blacklist: ${String(error)}`);
+    } finally {
+      setBlacklistBusy(false);
+    }
+  }
+  async function blockApp(raw: string) {
+    try {
+      await updateBlacklist(blacklistApp(settings, raw));
+    } catch (error) {
+      setBlacklistError(String(error instanceof Error ? error.message : error));
+    }
+  }
   return (
     <div className="settings-page">
       <header className="lib-header">
@@ -951,7 +974,7 @@ export function SettingsPage(props: {
                 <button
                   className="row-remove"
                   disabled={sourceBusy !== null}
-                  title="Remove & never auto-add again"
+                  title="Move to app blacklist"
                   aria-label={`Stop watching ${exe}`}
                   onClick={() => removeGame(exe)}
                 >
@@ -960,17 +983,47 @@ export function SettingsPage(props: {
               </div>
             );
           })}
+        </section>
+
+        <section className="set-group" aria-labelledby="blacklist-title">
+          <div className="set-head">
+            <div className="set-head-icon"><GameController size={16} weight="fill" /></div>
+            <div className="set-head-text">
+              <span className="set-head-title" id="blacklist-title">App blacklist</span>
+              <span className="set-head-desc">Exclude apps from game detection and video capture</span>
+            </div>
+          </div>
+          <span className="field-hint">Discord, Discord PTB and Discord Canary are always excluded. Voice-chat audio follows your audio settings.</span>
+          <label className="field-label" htmlFor="blacklist-exe">App executable</label>
+          <form className="set-row blacklist-entry" onSubmit={(e) => { e.preventDefault(); void blockApp(blockedExe); }}>
+            <input id="blacklist-exe" className="mono" value={blockedExe} placeholder="spotify.exe"
+              disabled={blacklistBusy} onChange={(e) => setBlockedExe(e.target.value)}
+              aria-describedby={blacklistError ? "blacklist-error" : undefined} />
+            <button className="btn-ghost" type="submit" disabled={blacklistBusy || !blockedExe.trim()}>
+              {blacklistBusy ? "Saving…" : "Block app"}
+            </button>
+            <button className="btn-ghost" type="button" disabled={blacklistBusy} onClick={async () => {
+              try {
+                const picked = await openDialog({ filters: [{ name: "Application", extensions: ["exe"] }] });
+                if (typeof picked === "string") await blockApp(picked);
+              } catch (error) { setBlacklistError(String(error)); }
+            }}>Browse…</button>
+          </form>
+          {blacklistError && <span id="blacklist-error" role="alert" className="field-hint">{blacklistError}</span>}
+          {settings.game_blacklist.length === 0 && <span className="field-hint">No additional apps blocked.</span>}
           {settings.game_blacklist.length > 0 && (
             <>
-              <span className="field-label">Blacklisted (won't auto-add):</span>
+              <span className="field-label">Blocked apps</span>
               <div className="blacklist-chips">
                 {settings.game_blacklist.map((g) => (
                   <button
                     key={g}
                     className="chip"
                     title="Remove from blacklist"
+                    aria-label={`Unblock ${g}`}
+                    disabled={blacklistBusy}
                     onClick={() =>
-                      saveSettings({
+                      updateBlacklist({
                         ...settings,
                         game_blacklist: settings.game_blacklist.filter((x) => x !== g),
                       })

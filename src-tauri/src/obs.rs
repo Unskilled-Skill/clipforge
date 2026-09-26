@@ -301,7 +301,9 @@ pub async fn apply_obs_config(
     let result = async {
         let guard = state.client.lock().await;
         let client = guard.as_ref().ok_or("not connected")?;
-        let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
+        let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone())
+            .filter(|g| !settings.capture_blocked(g));
+        enforce_capture_exclusions(client, &settings, active_game.as_deref()).await?;
         crate::setup::apply_all(client, &settings, active_game.as_deref()).await;
         Ok::<(), String>(())
     }
@@ -439,9 +441,7 @@ pub async fn save_replay_cmd(state: tauri::State<'_, ObsState>) -> Result<(), St
     save_replay(state.inner(), false).await
 }
 
-/// Ensure the current scene has a universal game capture source on top:
-/// `any_fullscreen` hooks whatever game runs — no per-game window binding,
-/// no dead sources after a game update renames its window.
+/// Create a game capture source with no target until detection selects an app.
 pub async fn ensure_autogame_source(client: &Client) -> Result<(), String> {
     const NAME: &str = "AutoGame";
 
@@ -466,7 +466,7 @@ pub async fn ensure_autogame_source(client: &Client) -> Result<(), String> {
             scene: scene.id.into(),
             input: NAME,
             kind: "game_capture",
-            settings: Some(serde_json::json!({ "capture_mode": "any_fullscreen" })),
+            settings: Some(autogame_settings(None)),
             enabled: Some(true),
         })
         .await
@@ -474,8 +474,43 @@ pub async fn ensure_autogame_source(client: &Client) -> Result<(), String> {
     Ok(())
 }
 
-/// The universal `any_fullscreen` hook (`ensure_autogame_source`) misses a
-/// lot of games in practice — anti-cheat, exclusive fullscreen, and some
+fn autogame_settings(game: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "capture_mode": "window",
+        "window": format!("::{}", game.unwrap_or("clipforge-no-game.invalid")),
+        "priority": WINDOW_PRIORITY_EXE,
+        "capture_cursor": true,
+        "anti_cheat_hook": true,
+    })
+}
+
+/// Reconcile both previously-created dedicated sources and the automatic hook.
+/// Read OBS settings before updating to avoid restarting the hook each tick.
+pub async fn enforce_capture_exclusions(
+    client: &Client,
+    settings: &crate::clips::Settings,
+    game: Option<&str>,
+) -> Result<(), String> {
+    for input in client.inputs().list(None).await.map_err(|e| e.to_string())? {
+        if let Some(exe) = input.id.name.strip_prefix("Capture: ") {
+            if settings.capture_blocked(exe) {
+                client.inputs().remove(input.id.name.as_str().into()).await.map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    ensure_autogame_source(client).await?;
+    let desired = autogame_settings(game.filter(|g| !settings.capture_blocked(g)));
+    let current = client.inputs().settings::<serde_json::Value>("AutoGame".into())
+        .await.map_err(|e| e.to_string())?;
+    if desired.as_object().unwrap().iter().any(|(key, value)| current.settings.get(key) != Some(value)) {
+        client.inputs().set_settings(obws::requests::inputs::SetSettings {
+            input: "AutoGame".into(), settings: &desired, overlay: Some(true),
+        }).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The automatic game hook misses some games — anti-cheat, exclusive fullscreen, and some
 /// borderless titles just don't get hooked by it. This binds a dedicated
 /// source to one game, matched by executable name so it survives window
 /// title/class changes across game updates and works whether or not the
@@ -494,10 +529,14 @@ const WINDOW_PRIORITY_EXE: i32 = 2;
 
 #[tauri::command]
 pub async fn add_game_capture_source(
+    app: AppHandle,
     state: tauri::State<'_, ObsState>,
     exe: String,
     kind: String,
 ) -> Result<(), String> {
+    if crate::clips::load_settings_inner(&app).capture_blocked(&exe) {
+        return Err(format!("{exe} is blocked. Remove it from the app blacklist first."));
+    }
     if !CAPTURE_KINDS.contains(&kind.as_str()) {
         return Err(format!("unknown capture kind: {kind}"));
     }
@@ -641,6 +680,17 @@ pub async fn test_capture_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_capture_targets_only_the_selected_executable() {
+        let active = autogame_settings(Some("cs2.exe"));
+        assert_eq!(active["capture_mode"], "window");
+        assert_eq!(active["window"], "::cs2.exe");
+        assert_eq!(active["priority"], 2);
+        let idle = autogame_settings(None);
+        assert_eq!(idle["capture_mode"], "window");
+        assert_eq!(idle["window"], "::clipforge-no-game.invalid");
+    }
 
     #[tokio::test]
     async fn disconnected_short_save_clears_pending_trim() {

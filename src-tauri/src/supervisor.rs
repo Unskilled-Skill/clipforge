@@ -223,29 +223,36 @@ async fn tick(
         .map(|p| p.name().to_string_lossy().to_lowercase())
         .collect();
     // Forget heuristic games whose process exited.
-    session_games.retain(|g| running.contains(g));
-    if let Some(fg) = crate::fullscreen::fullscreen_game() {
+    session_games.retain(|g| running.contains(g) && !settings.capture_blocked(g));
+    let foreground = crate::fullscreen::fullscreen_game().filter(|g| !settings.capture_blocked(g));
+    if let Some(fg) = foreground.as_ref() {
         // Auto-learn: remember this exe permanently so next time the game
         // arms the buffer even windowed or before it goes fullscreen — unless
         // the user blacklisted it (removed game / wrongly-detected non-game).
-        let blacklisted = settings.game_blacklist.iter().any(|g| g.to_lowercase() == fg);
-        if !blacklisted
-            && session_games.insert(fg.clone())
-            && !settings.game_exes.iter().any(|g| g.to_lowercase() == fg)
+        if session_games.insert(fg.clone())
+            && !settings.game_exes.iter().any(|g| g.eq_ignore_ascii_case(fg))
         {
-            settings.game_exes.push(fg);
+            settings.game_exes.push(fg.clone());
             let _ = crate::clips::save_settings(app.clone(), settings.clone());
         }
     }
-    state.game = settings
+    state.game = foreground.or_else(|| settings
         .game_exes
         .iter()
         .map(|g| g.to_lowercase())
-        .find(|g| running.contains(g))
-        .or_else(|| session_games.iter().next().cloned());
+        .find(|g| running.contains(g) && !settings.capture_blocked(g))
+        .or_else(|| session_games.iter().next().cloned()));
 
     let guard = obs_state.client.lock().await;
     if let Some(client) = guard.as_ref() {
+        // Constrain OBS itself: its old any_fullscreen source bypassed detection.
+        if let Err(error) = crate::obs::enforce_capture_exclusions(client, &settings, state.game.as_deref()).await {
+            eprintln!("Could not enforce capture exclusions: {error}");
+            // Fail closed rather than record with a stale, possibly blocked source.
+            let _ = client.replay_buffer().stop().await;
+            state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
+            return state;
+        }
         // Point the GameAudio split-track at the game that's actually running.
         if let Some(game) = &state.game {
             if audio_game.as_deref() != Some(game.as_str()) {

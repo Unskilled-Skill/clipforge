@@ -133,8 +133,7 @@ pub struct Settings {
     pub auto_connect: bool,
     #[serde(default = "default_game_exes")]
     pub game_exes: Vec<String>,
-    /// Exes the fullscreen auto-learn must never re-add to `game_exes`
-    /// (removed games, and non-games that were wrongly auto-detected).
+    /// Apps excluded from detection and ClipForge's video capture sources.
     #[serde(default)]
     pub game_blacklist: Vec<String>,
     /// Voice-chat app whose audio gets its own recording track (Discord etc.).
@@ -261,6 +260,43 @@ fn favorites_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn load_favorites(app: AppHandle) -> Result<Vec<String>, String> {
     let path = favorites_path(&app)?;
     read_favorites(&path)
+}
+
+impl Settings {
+    pub fn capture_blocked(&self, exe: &str) -> bool {
+        let exe = exe.trim().to_lowercase();
+        matches!(exe.as_str(), "discord.exe" | "discordptb.exe" | "discordcanary.exe")
+            || self.game_blacklist.iter().any(|g| g.trim().eq_ignore_ascii_case(&exe))
+    }
+
+    pub fn normalize_capture_apps(&mut self) {
+        self.game_blacklist = self.game_blacklist.iter()
+            .map(|g| g.trim().to_lowercase()).filter(|g| !g.is_empty()).collect();
+        self.game_blacklist.sort();
+        self.game_blacklist.dedup();
+        self.game_exes = self.game_exes.iter()
+            .map(|g| g.trim().to_lowercase())
+            .filter(|g| !g.is_empty() && !self.capture_blocked(g)).collect();
+    }
+}
+
+#[cfg(test)]
+mod blacklist_tests {
+    use super::*;
+
+    #[test]
+    fn blacklist_wins_over_watched_apps_and_survives_settings_roundtrip() {
+        let mut settings = Settings::default();
+        settings.game_exes = vec!["Discord.exe".into(), "SPOTIFY.EXE".into(), "cs2.exe".into()];
+        settings.game_blacklist = vec![" Spotify.EXE ".into(), "spotify.exe".into()];
+        settings.normalize_capture_apps();
+        let loaded: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(loaded.game_exes, vec!["cs2.exe"]);
+        assert_eq!(loaded.game_blacklist, vec!["spotify.exe"]);
+        assert!(loaded.capture_blocked("SPOTIFY.EXE"));
+        assert!(loaded.capture_blocked("DiscordCanary.exe"));
+        assert!(!loaded.capture_blocked("cs2.exe"));
+    }
 }
 
 fn read_favorites(path: &std::path::Path) -> Result<Vec<String>, String> {
@@ -495,6 +531,7 @@ pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
         Settings::default()
     };
     crate::setup::localize_settings(&app, &mut settings);
+    settings.normalize_capture_apps();
     Ok(settings)
 }
 
@@ -524,7 +561,8 @@ pub fn remove_watched_game(app: AppHandle, exe: String) -> Result<Settings, Stri
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), String> {
+    settings.normalize_capture_apps();
     // Custom clip folders must also be readable through the asset protocol
     // (thumbnails, waveforms, video playback).
     let _ = app

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SetupCheck } from "./SetupCheck";
+import { isDiscordApp } from "./app-blacklist";
 import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog, openUrl } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -753,7 +754,11 @@ function App() {
   // browse). Also drops it from the blacklist in case it was removed before.
   async function addGameByExe(rawExe: string) {
     if (!settings) return;
-    const exe = rawExe.toLowerCase();
+    const exe = rawExe.trim().toLowerCase();
+    if (isDiscordApp(exe)) {
+      showToast("Discord is excluded from video capture");
+      return;
+    }
     if (settings.game_exes.some((g) => g.toLowerCase() === exe)) {
       showToast(`${exe} is already watched`);
       return;
@@ -794,7 +799,7 @@ function App() {
       // Tear down its OBS source too; ignore if there wasn't one.
       invoke("remove_game_capture_source", { exe }).catch(() => {});
       setGameSources((list) => list.filter((g) => g.exe !== exe));
-      showToast(`Removed ${exe} — won't be auto-added again`);
+      showToast(`Blocked ${exe}`);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1291,8 +1296,8 @@ function App() {
   }
 
   async function saveSettings(s: Settings) {
-    setSettings(s);
     await invoke("save_settings", { settings: s });
+    setSettings(s);
     // Push the change straight to OBS (path, tracks, length, video). Best
     // effort — fails harmlessly when OBS isn't connected yet.
     invoke("apply_obs_config").catch(() => {});

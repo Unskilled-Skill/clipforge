@@ -1523,6 +1523,9 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 .row-remove:hover:not(:disabled) { border-color: rgba(240, 96, 95, 0.5); color: #f0605f; }
 
 .blacklist-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.blacklist-entry { flex-wrap: wrap; }
+.blacklist-entry input { flex: 1 1 180px; min-width: 0; }
+.blacklist-chips .chip { max-width: 100%; overflow-wrap: anywhere; }
 
 .app-picker { width: 520px; }
 .app-list {

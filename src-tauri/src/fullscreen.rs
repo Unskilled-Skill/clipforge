@@ -18,6 +18,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// Processes that go fullscreen but are never games.
 const BLOCKLIST: &[&str] = &[
+    "discord.exe",
+    "discordptb.exe",
+    "discordcanary.exe",
     "explorer.exe",
     "chrome.exe",
     "msedge.exe",
@@ -58,6 +61,18 @@ const BLOCKLIST: &[&str] = &[
     "wallpaper64.exe",
     "wallpaper32.exe",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discord_is_never_auto_detected_as_a_game() {
+        for exe in ["discord.exe", "discordptb.exe", "discordcanary.exe"] {
+            assert!(BLOCKLIST.contains(&exe), "{exe} must not be auto-detected");
+        }
+    }
+}
 
 /// PIDs that own at least one visible top-level window. Used to tell real
 /// running apps from processes hung at exit, which enumerate but are
