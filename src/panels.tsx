@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { invoke, listen, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
-import { blacklistApp } from "./app-blacklist";
+import { blacklistApp, isDiscordApp } from "./app-blacklist";
 import type { BackupStatus, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import {
   ArrowCounterClockwise,
@@ -182,13 +182,17 @@ export function AppPickerModal(props: {
   onRefresh: () => void;
   onFolder: () => Promise<void>;
   onClose: () => void;
+  /** "block" picks an app for the blacklist instead of the watch list. */
+  mode?: "watch" | "block";
 }) {
-  const { settings, runningApps, onAdd, onRefresh, onFolder, onClose } = props;
+  const { settings, runningApps, onAdd, onRefresh, onFolder, onClose, mode = "watch" } = props;
+  const blocking = mode === "block";
+  const title = blocking ? "Block an app" : "Add a game";
   return (
-    <Modal label="Add a game" className="modal app-picker" zIndex={200} onClose={onClose}>
+    <Modal label={title} className="modal app-picker" zIndex={200} onClose={onClose}>
       <div className="modal-head">
         <GameController size={19} color="#7f9bff" weight="fill" />
-        <span className="modal-title">Add a game</span>
+        <span className="modal-title">{title}</span>
         <div className="lib-spacer" />
         <button className="modal-close" onClick={onClose} aria-label="Close">
           <X size={16} />
@@ -196,14 +200,19 @@ export function AppPickerModal(props: {
       </div>
       <div className="modal-body">
         <span className="field-label">
-          Pick a running app to watch as a game. Not listed? Use “Find .exe in folder”.
+          {blocking
+            ? "Pick a running app to exclude from game detection and capture. Not listed? Use “Find .exe in folder”."
+            : "Pick a running app to watch as a game. Not listed? Use “Find .exe in folder”."}
         </span>
         <div className="app-list">
           {runningApps.length === 0 && (
             <span className="field-label">No running windowed apps found.</span>
           )}
           {runningApps.map((a) => {
-            const already = settings.game_exes.some((g) => g.toLowerCase() === a.exe);
+            const exe = a.exe.toLowerCase();
+            const already = blocking
+              ? isDiscordApp(exe) || settings.game_blacklist.some((g) => g.toLowerCase() === exe)
+              : settings.game_exes.some((g) => g.toLowerCase() === exe);
             return (
               <div key={a.exe} className="onboard-check">
                 <span>
@@ -217,7 +226,7 @@ export function AppPickerModal(props: {
                     onClose();
                   }}
                 >
-                  {already ? "added" : "Add"}
+                  {blocking ? (already ? "blocked" : "Block") : already ? "added" : "Add"}
                 </button>
               </div>
             );
@@ -609,6 +618,20 @@ export function SettingsPage(props: {
       setBlacklistError(String(error instanceof Error ? error.message : error));
     }
   }
+  const [blockPickerApps, setBlockPickerApps] = useState<RunningApp[] | null>(null);
+  async function openBlockPicker() {
+    try {
+      setBlockPickerApps(await invoke<RunningApp[]>("list_running_apps"));
+    } catch (error) {
+      setBlacklistError(String(error));
+    }
+  }
+  async function browseBlockedExe() {
+    try {
+      const picked = await openDialog({ filters: [{ name: "Application", extensions: ["exe"] }] });
+      if (typeof picked === "string") await blockApp(picked);
+    } catch (error) { setBlacklistError(String(error)); }
+  }
   return (
     <div className="settings-page">
       <header className="lib-header">
@@ -985,6 +1008,17 @@ export function SettingsPage(props: {
           })}
         </section>
 
+        {blockPickerApps && (
+          <AppPickerModal
+            mode="block"
+            settings={settings}
+            runningApps={blockPickerApps}
+            onAdd={blockApp}
+            onRefresh={openBlockPicker}
+            onFolder={browseBlockedExe}
+            onClose={() => setBlockPickerApps(null)}
+          />
+        )}
         <section className="set-group" aria-labelledby="blacklist-title">
           <div className="set-head">
             <div className="set-head-icon"><GameController size={16} weight="fill" /></div>
@@ -1002,12 +1036,10 @@ export function SettingsPage(props: {
             <button className="btn-ghost" type="submit" disabled={blacklistBusy || !blockedExe.trim()}>
               {blacklistBusy ? "Saving…" : "Block app"}
             </button>
-            <button className="btn-ghost" type="button" disabled={blacklistBusy} onClick={async () => {
-              try {
-                const picked = await openDialog({ filters: [{ name: "Application", extensions: ["exe"] }] });
-                if (typeof picked === "string") await blockApp(picked);
-              } catch (error) { setBlacklistError(String(error)); }
-            }}>Browse…</button>
+            <button className="btn-ghost" type="button" disabled={blacklistBusy} onClick={openBlockPicker}>
+              Pick running app…
+            </button>
+            <button className="btn-ghost" type="button" disabled={blacklistBusy} onClick={browseBlockedExe}>Browse…</button>
           </form>
           {blacklistError && <span id="blacklist-error" role="alert" className="field-hint">{blacklistError}</span>}
           {settings.game_blacklist.length === 0 && <span className="field-hint">No additional apps blocked.</span>}
