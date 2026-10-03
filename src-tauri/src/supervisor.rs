@@ -14,6 +14,9 @@ use crate::engine::ENGINE;
 /// silently eat clips forever after a restart.
 pub static BUFFER_PAUSED: AtomicBool = AtomicBool::new(false);
 
+/// Set by the "Retry" buttons: skip the wait after a failed engine start.
+pub static RETRY_ENGINE_NOW: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, PartialEq)]
 enum BufferAction { Keep, Start, Stop }
 
@@ -143,6 +146,9 @@ async fn tick(
     // 1. Engine
     if !ENGINE.is_running() {
         crate::health::reset();
+        if RETRY_ENGINE_NOW.swap(false, Ordering::Relaxed) {
+            *retry_in = 0;
+        }
         if *retry_in > 0 {
             *retry_in -= 1;
         } else if let Err(error) = {

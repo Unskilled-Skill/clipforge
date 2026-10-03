@@ -7,10 +7,12 @@ use tauri::AppHandle;
 use crate::clips::hidden_cmd;
 use crate::engine::{OutputConfig, ENGINE};
 
-/// Restart the capture engine (the old "Start OBS" button). The supervisor
-/// starts it again on its next tick with fresh settings.
+/// Restart the capture engine, or retry a failed start/download right away
+/// (the old "Start OBS" button). The supervisor brings it back up on its
+/// next tick with fresh settings.
 #[tauri::command]
 pub async fn launch_obs() -> Result<(), String> {
+    crate::supervisor::RETRY_ENGINE_NOW.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::obs::blocking(|| {
         ENGINE.shutdown();
         Ok(())

@@ -131,9 +131,13 @@ export function Modal(props: {
   className: string;
   onClose: () => void;
   zIndex?: number;
+  /** false: backdrop clicks and Esc don't close it (flows that must be finished). */
+  dismissible?: boolean;
   children: ReactNode;
 }) {
-  const { label, className, onClose, zIndex, children } = props;
+  const { label, className, onClose, zIndex, dismissible = true, children } = props;
+  const dismissRef = useRef(dismissible);
+  dismissRef.current = dismissible;
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -147,7 +151,7 @@ export function Modal(props: {
       if (e.key !== "Escape" || modalStack[modalStack.length - 1] !== close) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      close();
+      if (dismissRef.current) close();
     };
     window.addEventListener("keydown", onKey, true);
     return () => {
@@ -158,7 +162,7 @@ export function Modal(props: {
   }, []);
 
   return (
-    <div className="modal-backdrop" style={zIndex ? { zIndex } : undefined} onClick={onClose}>
+    <div className="modal-backdrop" style={zIndex ? { zIndex } : undefined} onClick={dismissible ? onClose : undefined}>
       <div
         ref={ref}
         className={className}
@@ -408,7 +412,8 @@ function BackupSettings(props: { settings: Settings; saveSettings: (s: Settings)
   );
 }
 
-type Check = { label: string; value: string; ok: boolean; fix?: string };
+/// `action` names a one-click fix the Health panel can run for this row.
+type Check = { label: string; value: string; ok: boolean; fix?: string; action?: "install-ffmpeg" | "restart-engine" };
 
 function encoderName(id: string | null): string {
   if (!id || id === "none") return "not set";
@@ -431,7 +436,8 @@ function healthChecks(d: Diagnostics): Check[] {
       label: "Capture engine",
       value: d.obs_connected ? `Running (OBS ${d.obs_version ?? "unknown"})` : "Not running",
       ok: d.obs_connected,
-      fix: !d.obs_connected ? "It starts automatically. If it doesn't, restart ClipForge." : undefined,
+      fix: !d.obs_connected ? "It starts by itself. If it's stuck, retry." : undefined,
+      action: d.obs_connected ? undefined : "restart-engine",
     },
     {
       label: "Encoder",
@@ -495,7 +501,8 @@ function healthChecks(d: Diagnostics): Check[] {
       label: "ffmpeg",
       value: d.ffmpeg_found ? "Installed" : "Missing",
       ok: d.ffmpeg_found,
-      fix: d.ffmpeg_found ? undefined : "Needed for thumbnails, trims and exports. Use the install button at the top.",
+      fix: d.ffmpeg_found ? undefined : "Needed for thumbnails, trims and exports.",
+      action: d.ffmpeg_found ? undefined : "install-ffmpeg",
     },
   ];
 }
@@ -504,6 +511,23 @@ function healthChecks(d: Diagnostics): Check[] {
 export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [applying, setApplying] = useState(false);
+  const [fixing, setFixing] = useState<string | null>(null);
+  const [fixError, setFixError] = useState<string | null>(null);
+  async function runFix(action: NonNullable<Check["action"]>) {
+    setFixing(action);
+    setFixError(null);
+    try {
+      if (action === "install-ffmpeg") await invoke("winget_install", { id: "Gyan.FFmpeg" });
+      else await invoke("launch_obs");
+      setDiag(await invoke<Diagnostics>("obs_diagnostics"));
+    } catch (e) {
+      setFixError(String(e));
+    } finally {
+      // The engine restarts on the supervisor's next tick; keep the button
+      // busy briefly so it isn't pressed again mid-restart.
+      setTimeout(() => setFixing(null), action === "restart-engine" ? 4000 : 0);
+    }
+  }
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -562,9 +586,17 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
             <span className="health-label">{c.label}</span>
             <span className="health-value mono">{c.value}</span>
             {!c.ok && c.fix && <span className="health-fix">{c.fix}</span>}
+            {!c.ok && c.action && (
+              <button className="setup-btn health-action" disabled={fixing !== null} onClick={() => runFix(c.action!)}>
+                {fixing === c.action
+                  ? c.action === "install-ffmpeg" ? "installing…" : "retrying…"
+                  : c.action === "install-ffmpeg" ? "Install" : "Retry"}
+              </button>
+            )}
           </li>
         ))}
       </ul>
+      {fixError && <span className="field-hint" role="alert">{fixError}</span>}
       <button className="btn-ghost" onClick={onTestSetup}>Test my setup</button>
     </section>
   );
@@ -1131,16 +1163,29 @@ export function OnboardingModal(props: {
   connecting: boolean;
   connect: (s: Settings) => Promise<void>;
   installing: string | null;
-  installTool: (label: string, wingetId: string) => Promise<void>;
+  installTool: (label: string, wingetId: string) => Promise<boolean>;
+  engineError: string | null;
+  engineDownloading: boolean;
+  /** First launch: no way out but through every step. */
+  firstRun: boolean;
   onClose: () => void;
   onFinish: () => void;
 }) {
   const {
     step: onboardStep, setStep: setOnboardStep, setup, status, settings, setSettings,
-    saveSettings, installing, installTool, onClose, onFinish,
+    saveSettings, installing, installTool, engineError, engineDownloading, firstRun, onClose, onFinish,
   } = props;
+  // Setup gate: Next stays locked until the required software is in place,
+  // unless an install actually failed. Then the user may continue and fix
+  // it later from Settings → Health instead of being stuck here.
+  const [ffmpegFailed, setFfmpegFailed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const engineReady = status.connected;
+  const ffmpegReady = !!setup?.ffmpeg_installed;
+  const setupFailed = (!engineReady && !!engineError && !engineDownloading) || (!ffmpegReady && ffmpegFailed);
+  const setupBlocked = onboardStep === 1 && !(engineReady && ffmpegReady) && !setupFailed;
   return (
-    <Modal label="ClipForge tutorial" className="modal onboarding-modal" onClose={onClose}>
+    <Modal label="ClipForge tutorial" className="modal onboarding-modal" onClose={onClose} dismissible={false}>
       <div className="modal-head">
         <BookOpen size={19} color="#7f9bff" weight="fill" />
         <span className="modal-title">
@@ -1152,9 +1197,11 @@ export function OnboardingModal(props: {
         </span>
         <div className="lib-spacer" />
         <span className="field-label">{onboardStep + 1} / 5</span>
-        <button className="modal-close" onClick={onClose} aria-label="Close">
-          <X size={16} />
-        </button>
+        {!firstRun && (
+          <button className="modal-close" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        )}
       </div>
       <div className="modal-body onboard-body">
         {onboardStep === 0 && (
@@ -1195,8 +1242,25 @@ export function OnboardingModal(props: {
               )}
               <span>
                 Capture engine{" "}
-                {status.connected ? "— ready" : "— setting up (one-time download)"}
+                {engineReady
+                  ? "— ready"
+                  : engineError && !engineDownloading
+                    ? "— couldn't set up"
+                    : "— downloading (one time, about 150 MB)"}
               </span>
+              {!engineReady && engineError && !engineDownloading && (
+                <button
+                  className="setup-btn"
+                  disabled={retrying}
+                  onClick={async () => {
+                    setRetrying(true);
+                    await invoke("launch_obs").catch(() => {});
+                    setTimeout(() => setRetrying(false), 4000);
+                  }}
+                >
+                  {retrying ? "retrying…" : "Retry"}
+                </button>
+              )}
             </div>
             <div className="onboard-check">
               {setup?.ffmpeg_installed ? (
@@ -1211,12 +1275,24 @@ export function OnboardingModal(props: {
                 <button
                   className="setup-btn"
                   disabled={installing !== null}
-                  onClick={() => installTool("ffmpeg", "Gyan.FFmpeg")}
+                  onClick={async () => setFfmpegFailed(!(await installTool("ffmpeg", "Gyan.FFmpeg")))}
                 >
-                  {installing === "ffmpeg" ? "installing…" : "Install"}
+                  {installing === "ffmpeg" ? "installing…" : ffmpegFailed ? "Try again" : "Install"}
                 </button>
               )}
             </div>
+            {setupBlocked && (
+              <span className="field-hint">
+                {!ffmpegReady && installing === null
+                  ? "Install ffmpeg to continue."
+                  : "Finishing setup, this can take a minute…"}
+              </span>
+            )}
+            {setupFailed && (
+              <span className="field-hint" role="alert">
+                Something couldn't be installed. You can continue and fix it later in Settings → Health.
+              </span>
+            )}
           </section>
         )}
 
@@ -1337,7 +1413,12 @@ export function OnboardingModal(props: {
             </button>
           )}
           {onboardStep < 4 ? (
-            <button className="btn-ghost apply-btn" onClick={() => setOnboardStep((s) => s + 1)}>
+            <button
+              className="btn-ghost apply-btn"
+              disabled={setupBlocked}
+              title={setupBlocked ? "Finish the required setup first" : undefined}
+              onClick={() => setOnboardStep((s) => s + 1)}
+            >
               Next
               <ArrowRight size={15} />
             </button>

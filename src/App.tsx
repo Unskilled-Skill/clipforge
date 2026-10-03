@@ -1282,14 +1282,16 @@ function App() {
 
   // Winget install of a required tool (OBS / ffmpeg), shared by the setup
   // banner and the onboarding walkthrough.
-  async function installTool(label: string, wingetId: string) {
+  async function installTool(label: string, wingetId: string): Promise<boolean> {
     setInstalling(label);
     try {
       await invoke("winget_install", { id: wingetId });
       setSetup(await invoke("setup_status"));
       if (label === "ffmpeg") await refreshClips();
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     } finally {
       setInstalling(null);
     }
@@ -2685,6 +2687,9 @@ function App() {
           connect={connect}
           installing={installing}
           installTool={installTool}
+          engineError={sup?.engine_error ?? null}
+          engineDownloading={sup?.engine_downloading ?? false}
+          firstRun={!localStorage.getItem("clipforge_onboarded")}
           onClose={() => setShowOnboarding(false)}
           onFinish={finishOnboarding}
         />
