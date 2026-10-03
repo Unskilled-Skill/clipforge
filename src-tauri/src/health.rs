@@ -1,4 +1,4 @@
-//! Recording health: is OBS keeping up while a game runs?
+//! Recording health: is the capture engine keeping up while a game runs?
 //!
 //! OBS reports cumulative frame counters. Two ways clips get choppy:
 //! - render lag: the GPU is so busy with the game that OBS can't composite
@@ -62,13 +62,14 @@ fn pct(skipped: u64, total: u64) -> f64 {
     }
 }
 
-/// Feed one stats sample (call once per supervisor tick while connected).
-pub fn record(stats: &obws::responses::general::Stats) -> Health {
+/// Feed one sample of the engine's cumulative counters (render skipped,
+/// render total, encoder skipped, encoder total), once per supervisor tick.
+pub fn record(counters: (u32, u32, u32, u32)) -> Health {
     let now = Counters {
-        render_skipped: stats.render_skipped_frames,
-        render_total: stats.render_total_frames,
-        output_skipped: stats.output_skipped_frames,
-        output_total: stats.output_total_frames,
+        render_skipped: counters.0,
+        render_total: counters.1,
+        output_skipped: counters.2,
+        output_total: counters.3,
     };
     let Ok(mut t) = TRACKER.lock() else {
         return Health::default();
@@ -92,8 +93,8 @@ pub fn record(stats: &obws::responses::general::Stats) -> Health {
     t.latest = Health {
         render_lag_pct: pct(sum.0, sum.1),
         encoder_lag_pct: pct(sum.2, sum.3),
-        active_fps: stats.active_fps,
-        obs_cpu_pct: stats.cpu_usage,
+        active_fps: 0.0,
+        obs_cpu_pct: 0.0,
     };
     t.latest.clone()
 }

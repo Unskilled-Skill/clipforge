@@ -21,7 +21,6 @@ import {
   Heartbeat,
   Keyboard,
   Lightning,
-  Plugs,
   Waveform,
   WarningCircle,
   X,
@@ -182,10 +181,12 @@ export function AppPickerModal(props: {
   onRefresh: () => void;
   onFolder: () => Promise<void>;
   onClose: () => void;
-  /** "block" picks an app for the blacklist instead of the watch list. */
+  /** "block" toggles apps on the blacklist and stays open for several picks. */
   mode?: "watch" | "block";
+  onRemove?: (exe: string) => Promise<void>;
+  busy?: boolean;
 }) {
-  const { settings, runningApps, onAdd, onRefresh, onFolder, onClose, mode = "watch" } = props;
+  const { settings, runningApps, onAdd, onRefresh, onFolder, onClose, mode = "watch", onRemove, busy } = props;
   const blocking = mode === "block";
   const title = blocking ? "Block an app" : "Add a game";
   return (
@@ -201,7 +202,7 @@ export function AppPickerModal(props: {
       <div className="modal-body">
         <span className="field-label">
           {blocking
-            ? "Pick a running app to exclude from game detection and capture. Not listed? Use “Find .exe in folder”."
+            ? "Click apps to block or unblock them. Blocked apps are never detected as games or captured."
             : "Pick a running app to watch as a game. Not listed? Use “Find .exe in folder”."}
         </span>
         <div className="app-list">
@@ -210,24 +211,37 @@ export function AppPickerModal(props: {
           )}
           {runningApps.map((a) => {
             const exe = a.exe.toLowerCase();
+            const alwaysBlocked = blocking && isDiscordApp(exe);
             const already = blocking
-              ? isDiscordApp(exe) || settings.game_blacklist.some((g) => g.toLowerCase() === exe)
+              ? alwaysBlocked || settings.game_blacklist.some((g) => g.toLowerCase() === exe)
               : settings.game_exes.some((g) => g.toLowerCase() === exe);
             return (
               <div key={a.exe} className="onboard-check">
                 <span>
                   <strong>{a.title}</strong> — <span className="mono">{a.exe}</span>
                 </span>
-                <button
-                  className="setup-btn"
-                  disabled={already}
-                  onClick={async () => {
-                    await onAdd(a.exe);
-                    onClose();
-                  }}
-                >
-                  {blocking ? (already ? "blocked" : "Block") : already ? "added" : "Add"}
-                </button>
+                {blocking ? (
+                  <button
+                    className="setup-btn"
+                    disabled={busy || alwaysBlocked}
+                    aria-pressed={already}
+                    title={alwaysBlocked ? "Always excluded" : already ? "Click to unblock" : "Click to block"}
+                    onClick={() => (already ? onRemove?.(exe) : onAdd(a.exe))}
+                  >
+                    {already ? "Blocked ✓" : "Block"}
+                  </button>
+                ) : (
+                  <button
+                    className="setup-btn"
+                    disabled={already}
+                    onClick={async () => {
+                      await onAdd(a.exe);
+                      onClose();
+                    }}
+                  >
+                    {already ? "added" : "Add"}
+                  </button>
+                )}
               </div>
             );
           })}
@@ -406,7 +420,7 @@ function encoderName(id: string | null): string {
   return id;
 }
 
-/// Turn raw diagnostics into rows a player can read: what OBS is really
+/// Turn raw diagnostics into rows a player can read: what the engine is really
 /// using, whether it's right for clipping, and what to do if not.
 function healthChecks(d: Diagnostics): Check[] {
   const hw = (id: string | null) => !!id && /nvenc|amf|qsv/.test(id);
@@ -414,14 +428,10 @@ function healthChecks(d: Diagnostics): Check[] {
   const lag = Math.max(d.health.render_lag_pct, d.health.encoder_lag_pct);
   return [
     {
-      label: "OBS",
-      value: d.obs_connected ? `Connected, version ${d.obs_version ?? "unknown"}` : "Not connected",
-      ok: d.obs_connected && !d.obs_outdated,
-      fix: !d.obs_connected
-        ? "Start OBS, or check Advanced connection below."
-        : d.obs_outdated
-          ? "Update OBS to 30.2 or newer."
-          : undefined,
+      label: "Capture engine",
+      value: d.obs_connected ? `Running (OBS ${d.obs_version ?? "unknown"})` : "Not running",
+      ok: d.obs_connected,
+      fix: !d.obs_connected ? "It starts automatically. If it doesn't, restart ClipForge." : undefined,
     },
     {
       label: "Encoder",
@@ -442,7 +452,7 @@ function healthChecks(d: Diagnostics): Check[] {
     },
     {
       label: "Keyframes",
-      value: d.keyint_sec ? `Every ${d.keyint_sec}s` : "OBS default",
+      value: d.keyint_sec ? `Every ${d.keyint_sec}s` : "Encoder default",
       ok: d.keyint_sec === 1,
       fix: d.keyint_sec === 1 ? undefined : "Switches to every 1s after your game, so trims land on time.",
     },
@@ -471,7 +481,7 @@ function healthChecks(d: Diagnostics): Check[] {
       label: "Disk",
       value: gb != null ? `${gb.toFixed(1)} GB free` : "Unknown",
       ok: gb == null || gb >= 10,
-      fix: gb != null && gb < 10 ? "OBS stops saving when the drive is full. Free up space or lower the storage cap." : undefined,
+      fix: gb != null && gb < 10 ? "Clips can't save when the drive is full. Free up space or lower the storage cap." : undefined,
     },
     {
       label: "Clips folder",
@@ -531,7 +541,7 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
             {!diag
               ? "Checking…"
               : applying
-                ? "Applying your change to OBS…"
+                ? "Applying your change…"
                 : issues === 0
                 ? "Everything is set up for clipping"
                 : `${issues} ${issues > 1 ? "things" : "thing"} to look at`}
@@ -594,7 +604,7 @@ export function SettingsPage(props: {
     hkSave, hkShort, setHkSave, setHkShort, applyHotkeys,
     gameSources, sourceBusy, sourceTest, kindChoice, setKindChoice,
     addGameSource, testGameSource, removeGame, openAppPicker, addGameFromFolder,
-    sup, connect, connecting, onTutorial, onPickVc,
+    sup, onTutorial, onPickVc,
   } = props;
   const [blockedExe, setBlockedExe] = useState("");
   const [blacklistBusy, setBlacklistBusy] = useState(false);
@@ -617,6 +627,12 @@ export function SettingsPage(props: {
     } catch (error) {
       setBlacklistError(String(error instanceof Error ? error.message : error));
     }
+  }
+  function unblockApp(exe: string) {
+    return updateBlacklist({
+      ...settings,
+      game_blacklist: settings.game_blacklist.filter((g) => g.toLowerCase() !== exe.toLowerCase()),
+    });
   }
   const [blockPickerApps, setBlockPickerApps] = useState<RunningApp[] | null>(null);
   async function openBlockPicker() {
@@ -742,7 +758,7 @@ export function SettingsPage(props: {
             </label>
           </div>
           <span className="field-hint">
-            Changes apply to OBS automatically, as soon as no game is running. Auto picks the
+            Changes apply automatically, as soon as no game is running. Auto picks the
             bitrate from your resolution, frame rate and encoder.
           </span>
         </section>
@@ -766,21 +782,6 @@ export function SettingsPage(props: {
               aria-checked={settings.auto_manage_buffer}
               aria-label="Auto buffer"
               onClick={() => saveSettings({ ...settings, auto_manage_buffer: !settings.auto_manage_buffer })}
-            >
-              <span className="knob" />
-            </button>
-          </div>
-          <div className="toggle-card">
-            <div className="toggle-text">
-              <span className="toggle-title">Auto-launch OBS</span>
-              <span className="toggle-desc">Start OBS hidden when it is not running</span>
-            </div>
-            <button
-              className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
-              role="switch"
-              aria-checked={settings.auto_launch_obs}
-              aria-label="Auto-launch OBS"
-              onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
             >
               <span className="knob" />
             </button>
@@ -966,7 +967,7 @@ export function SettingsPage(props: {
                     ? `dedicated ${source.kind === "window_capture" ? "window capture" : "game capture"}`
                     : "universal capture only"}
                   {test === "error" && " — test failed"}
-                  {test && test !== "error" && (test.capturing ? " — active in OBS ✓" : " — not active ✗")}
+                  {test && test !== "error" && (test.capturing ? " — capturing ✓" : " — not active ✗")}
                 </span>
                 <select
                   className="audio-select"
@@ -1014,6 +1015,8 @@ export function SettingsPage(props: {
             settings={settings}
             runningApps={blockPickerApps}
             onAdd={blockApp}
+            onRemove={unblockApp}
+            busy={blacklistBusy}
             onRefresh={openBlockPicker}
             onFolder={browseBlockedExe}
             onClose={() => setBlockPickerApps(null)}
@@ -1054,12 +1057,7 @@ export function SettingsPage(props: {
                     title="Remove from blacklist"
                     aria-label={`Unblock ${g}`}
                     disabled={blacklistBusy}
-                    onClick={() =>
-                      updateBlacklist({
-                        ...settings,
-                        game_blacklist: settings.game_blacklist.filter((x) => x !== g),
-                      })
-                    }
+                    onClick={() => unblockApp(g)}
                   >
                     {g} <X size={11} />
                   </button>
@@ -1117,67 +1115,6 @@ export function SettingsPage(props: {
           <BackupSettings settings={settings} saveSettings={saveSettings} />
         </section>
 
-        <details className="set-group advanced">
-          <summary>
-            <div className="set-head">
-              <div className="set-head-icon"><Plugs size={16} weight="fill" /></div>
-              <div className="set-head-text">
-                <span className="set-head-title">Advanced connection</span>
-                <span className="set-head-desc">
-                  Auto-configured — only for remote or portable OBS setups
-                </span>
-              </div>
-            </div>
-          </summary>
-          <div className="set-row">
-            <input
-              className="mono"
-              value={settings.host}
-              onChange={(e) => setSettings({ ...settings, host: e.target.value })}
-              placeholder="host"
-            />
-            <input
-              className="mono port"
-              type="number"
-              value={settings.port}
-              onChange={(e) => setSettings({ ...settings, port: Number(e.target.value) })}
-            />
-          </div>
-          <input
-            type="password"
-            value={settings.password ?? ""}
-            onChange={(e) => setSettings({ ...settings, password: e.target.value })}
-            placeholder="obs-websocket password (auto-detected normally)"
-          />
-          <div className="set-row">
-            <input
-              className="mono"
-              value={settings.obs_path}
-              onChange={(e) => setSettings({ ...settings, obs_path: e.target.value })}
-              onBlur={() => invoke("save_settings", { settings })}
-              placeholder="obs64.exe path (auto-detected normally)"
-            />
-            <button
-              className="btn-ghost"
-              onClick={async () => {
-                const picked = await openDialog({
-                  defaultPath: settings.obs_path,
-                  filters: [{ name: "OBS executable", extensions: ["exe"] }],
-                });
-                if (typeof picked === "string") {
-                  const next = { ...settings, obs_path: picked };
-                  setSettings(next);
-                  await invoke("save_settings", { settings: next });
-                }
-              }}
-            >
-              Browse
-            </button>
-          </div>
-          <button className="btn-ghost apply-btn" onClick={() => connect(settings)} disabled={connecting}>
-            {connecting ? "connecting…" : "Apply & connect"}
-          </button>
-        </details>
       </div>
     </div>
   );
@@ -1200,7 +1137,7 @@ export function OnboardingModal(props: {
 }) {
   const {
     step: onboardStep, setStep: setOnboardStep, setup, status, settings, setSettings,
-    saveSettings, connecting, connect, installing, installTool, onClose, onFinish,
+    saveSettings, installing, installTool, onClose, onFinish,
   } = props;
   return (
     <Modal label="ClipForge tutorial" className="modal onboarding-modal" onClose={onClose}>
@@ -1232,7 +1169,7 @@ export function OnboardingModal(props: {
               </span>
             </div>
             <p className="onboard-copy">
-              ClipForge keeps a rolling buffer of your gameplay through OBS. Hit a hotkey (or
+              ClipForge keeps a rolling buffer of your gameplay in memory. Hit a hotkey (or
               let auto-clip catch a kill) and the last stretch of footage saves as a clip —
               no manual recording, no huge files piling up.
             </p>
@@ -1251,21 +1188,15 @@ export function OnboardingModal(props: {
           <section className="set-group">
             <span className="set-label">REQUIRED SOFTWARE</span>
             <div className="onboard-check">
-              {setup?.obs_installed ? (
+              {status.connected ? (
                 <CheckCircle size={16} weight="fill" color="#40dd80" />
               ) : (
                 <Circle size={16} color="#767a85" />
               )}
-              <span>OBS Studio {setup?.obs_installed ? "— installed" : "— required to record"}</span>
-              {!setup?.obs_installed && (
-                <button
-                  className="setup-btn"
-                  disabled={installing !== null}
-                  onClick={() => installTool("OBS Studio", "OBSProject.OBSStudio")}
-                >
-                  {installing === "OBS Studio" ? "installing…" : "Install"}
-                </button>
-              )}
+              <span>
+                Capture engine{" "}
+                {status.connected ? "— ready" : "— setting up (one-time download)"}
+              </span>
             </div>
             <div className="onboard-check">
               {setup?.ffmpeg_installed ? (
@@ -1286,31 +1217,13 @@ export function OnboardingModal(props: {
                 </button>
               )}
             </div>
-            <div className="onboard-check">
-              {status.connected ? (
-                <CheckCircle size={16} weight="fill" color="#40dd80" />
-              ) : (
-                <Circle size={16} color="#767a85" />
-              )}
-              <span>
-                OBS connection{" "}
-                {status.connected
-                  ? `— ${status.obs_version ?? "connected"}`
-                  : "— connects automatically once OBS is running"}
-              </span>
-              {!status.connected && setup?.obs_installed && (
-                <button className="setup-btn" disabled={connecting} onClick={() => connect(settings)}>
-                  {connecting ? "connecting…" : "Connect"}
-                </button>
-              )}
-            </div>
           </section>
         )}
 
         {onboardStep === 2 && (
           <section className="set-group">
             <p className="onboard-copy">
-              Clip length controls how far back a save reaches — OBS keeps this much
+              Clip length controls how far back a save reaches — ClipForge keeps this much
               footage buffered in RAM at all times.
             </p>
             <label className="set-col">
@@ -1336,21 +1249,6 @@ export function OnboardingModal(props: {
                 }
               />
             </label>
-            <div className="toggle-card">
-              <div className="toggle-text">
-                <span className="toggle-title">Auto-launch OBS</span>
-                <span className="toggle-desc">Start OBS hidden when it isn't running</span>
-              </div>
-              <button
-                className={`switch ${settings.auto_launch_obs ? "on" : ""}`}
-                role="switch"
-                aria-checked={settings.auto_launch_obs}
-                aria-label="Auto-launch OBS"
-                onClick={() => saveSettings({ ...settings, auto_launch_obs: !settings.auto_launch_obs })}
-              >
-                <span className="knob" />
-              </button>
-            </div>
             <div className="toggle-card">
               <div className="toggle-text">
                 <span className="toggle-title">Auto buffer</span>

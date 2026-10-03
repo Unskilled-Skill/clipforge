@@ -1,6 +1,7 @@
 mod autoclip;
 mod backup;
 mod clips;
+mod engine;
 mod fullscreen;
 mod health;
 mod obs;
@@ -10,7 +11,6 @@ mod supervisor;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use obs::ObsState;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
@@ -278,7 +278,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(ObsState::default())
         .manage(obs::CurrentGame::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -300,8 +299,7 @@ pub fn run() {
                     }
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let state = app.state::<ObsState>();
-                        match obs::save_replay(state.inner(), is_short).await {
+                        match obs::save_replay(&app, is_short).await {
                             Ok(()) => {}
                             Err(e) => {
                                 obs::notify_failure(&app, "Clip not saved", &e);
@@ -484,16 +482,15 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            // Any way out (tray Quit, updater restart) stops OBS's replay
-            // buffer first; OBS itself stays open, idle.
+        .run(|_app, event| {
+            // Any way out (tray Quit, updater restart) stops the replay
+            // buffer and shuts the capture engine down cleanly.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 static STOPPED: AtomicBool = AtomicBool::new(false);
                 if !STOPPED.swap(true, Ordering::Relaxed) {
-                    let state = app.state::<ObsState>();
                     let _ = tauri::async_runtime::block_on(tokio::time::timeout(
                         std::time::Duration::from_secs(15),
-                        obs::stop_buffer_for_exit(state.inner()),
+                        obs::stop_buffer_for_exit(),
                     ));
                 }
             }

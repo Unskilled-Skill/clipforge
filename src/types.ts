@@ -15,6 +15,7 @@ export interface Settings {
   auto_connect: boolean;
   game_exes: string[];
   game_blacklist: string[];
+  window_capture_games: string[];
   vc_exe: string;
   auto_launch_obs: boolean;
   launch_at_login: boolean;
@@ -42,6 +43,8 @@ export interface SupervisorState {
   paused: boolean;
   obs_needs_restart: boolean;
   obs_outdated: string | null;
+  engine_downloading: boolean;
+  engine_error: string | null;
   render_lag: boolean;
   encoder_lag: boolean;
 }

@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 
 use crate::clips::load_settings_inner;
-use crate::obs::{connect_internal, ensure_autogame_source, ObsState};
+use crate::engine::ENGINE;
 
 /// User-requested pause: the buffer stays down regardless of running games
 /// until unpaused. Deliberately session-only — a forgotten pause shouldn't
@@ -36,12 +36,14 @@ pub struct SupervisorState {
     pub game: Option<String>,
     pub buffer_active: bool,
     pub paused: bool,
-    /// OBS is running with its websocket server off (or never set up): the
-    /// config can only be changed while OBS is closed, so the user has to
-    /// close it once. Without this the app just sat disconnected.
+    /// Kept false: the embedded engine has no websocket to switch on.
     pub obs_needs_restart: bool,
-    /// Connected OBS is too old for the recording format (version string).
+    /// Kept None: the engine ships its own OBS runtime.
     pub obs_outdated: Option<String>,
+    /// First run: the capture engine's runtime is downloading.
+    pub engine_downloading: bool,
+    /// Why the capture engine couldn't start, if it couldn't.
+    pub engine_error: Option<String>,
     /// The GPU is too busy with the game for OBS to render every frame
     /// (sustained over ~30s): clips will stutter.
     pub render_lag: bool,
@@ -50,36 +52,25 @@ pub struct SupervisorState {
 }
 
 /// Background state machine, one tick every 3s:
-///   1. OBS process missing → spawn it (tray-minimized)
-///   2. websocket down → reconnect with saved credentials
-///   3. game running → arm replay buffer; no game → disarm
+///   1. capture engine down → download its runtime if needed, start it
+///   2. settings → engine config (output changes wait for the buffer to stop)
+///   3. game running → aim capture at it and arm the buffer; no game → disarm
 /// Emits `supervisor-state` to the frontend whenever anything changes.
 pub async fn run(app: AppHandle) {
     let mut system = System::new();
     let mut last_state = SupervisorState::default();
-    // Skip the OBS-launch step right after a spawn so a slow-starting
-    // OBS is not spawned twice.
-    let mut launch_cooldown: u8 = 0;
     // Games discovered by the fullscreen heuristic. Once seen, the game
     // counts as running until its process exits — alt-tabbing out must
     // not disarm the buffer mid-match.
     let mut session_games: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Exe the GameAudio split-track is currently bound to; retarget on change.
-    let mut audio_game: Option<String> = None;
     // Consecutive ticks without a detected game — the buffer only disarms
     // after a grace period, not the instant a game exits.
     let mut no_game_ticks: u32 = 0;
+    // Ticks to wait before retrying a failed engine start/download.
+    let mut retry_in: u32 = 0;
 
     loop {
-        let state = tick(
-            &app,
-            &mut system,
-            &mut launch_cooldown,
-            &mut session_games,
-            &mut audio_game,
-            &mut no_game_ticks,
-        )
-        .await;
+        let state = tick(&app, &mut system, &mut session_games, &mut no_game_ticks, &mut retry_in).await;
         if let Ok(mut current) = app.state::<crate::obs::CurrentGame>().0.lock() {
             *current = state.game.clone();
         }
@@ -97,113 +88,64 @@ pub async fn run(app: AppHandle) {
     }
 }
 
+/// Bring the engine up: fetch the OBS runtime on first run, then start it
+/// with the current settings applied.
+async fn start_engine(app: &AppHandle, settings: &crate::clips::Settings, state: &mut SupervisorState) -> Result<(), String> {
+    if !crate::engine::runtime_dir().join("obs.dll").exists() {
+        state.engine_downloading = true;
+        let _ = app.emit("supervisor-state", state.clone());
+        let result = crate::engine::bootstrap().await;
+        state.engine_downloading = false;
+        result.map_err(|e| format!("Couldn't download the capture engine: {e}"))?;
+    }
+    let settings = settings.clone();
+    crate::obs::blocking(move || {
+        let video = crate::engine::video_config(settings.video_fps, settings.video_height);
+        ENGINE.ensure_started(video, &settings.vc_exe)?;
+        crate::setup::apply_all(&settings)
+    })
+    .await?;
+    let _ = app.emit("obs-config-applied", ());
+    Ok(())
+}
+
 async fn tick(
     app: &AppHandle,
     system: &mut System,
-    launch_cooldown: &mut u8,
     session_games: &mut std::collections::HashSet<String>,
-    audio_game: &mut Option<String>,
     no_game_ticks: &mut u32,
+    retry_in: &mut u32,
 ) -> SupervisorState {
     let mut settings = load_settings_inner(app);
     let mut state = SupervisorState::default();
-    // First-run friendliness: detect OBS path / clips dir / websocket
-    // password on machines that never configured anything.
     crate::setup::localize_settings(app, &mut settings);
 
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-
-    // 1. OBS process
-    state.obs_running = system
-        .processes()
-        .values()
-        .any(|p| p.name().eq_ignore_ascii_case("obs64.exe"));
-
-    if !state.obs_running {
-        // OBS closed = safe moment to switch its websocket server on and
-        // mint a password if none exists; next tick picks the password up.
-        // Unconditional (it's a no-op when already set up): a user who
-        // switched the server off in OBS would otherwise stay disconnected.
-        crate::setup::enable_websocket_server(false);
-        // Also pre-seed global.ini so a freshly (silently) installed OBS
-        // doesn't stall its first launch behind the Auto-Configuration Wizard.
-        crate::setup::suppress_autoconfig_wizard(false);
-        if *launch_cooldown > 0 {
-            *launch_cooldown -= 1;
-        } else if settings.auto_launch_obs {
-            let exe = std::path::PathBuf::from(&settings.obs_path);
-            if let Some(dir) = exe.parent() {
-                let spawned = crate::clips::hidden_cmd(&exe)
-                    .current_dir(dir)
-                    .args(["--minimize-to-tray", "--disable-shutdown-check"])
-                    .spawn();
-                if spawned.is_ok() {
-                    // ~5 ticks = 15s grace for OBS to boot
-                    *launch_cooldown = 5;
-                }
-            }
-        }
-        return state;
-    }
-
-    // 2. Connection — verify liveness with a cheap request, not just presence.
-    let obs_state = app.state::<ObsState>();
-    let alive = {
-        let guard = obs_state.client.lock().await;
-        match guard.as_ref() {
-            Some(client) => client.general().version().await.is_ok(),
-            None => false,
-        }
-    };
-    if !alive {
-        *obs_state.client.lock().await = None;
-        if settings.password.is_some() {
-            state.connected = connect_internal(
-                app,
-                obs_state.inner(),
-                settings.host.clone(),
-                settings.port,
-                settings.password.clone(),
-            )
-            .await
-            .is_ok();
-            if state.connected {
-                let guard = obs_state.client.lock().await;
-                if let Some(client) = guard.as_ref() {
-                    let _ = ensure_autogame_source(client).await;
-                    // Game-audio track binds when a game is actually detected
-                    // (see the retarget below), so no game here.
-                    crate::setup::apply_all(client, &settings, None).await;
-                    let _ = app.emit("obs-config-applied", ());
-                }
-            }
-        }
-        if !state.connected {
-            // Can't connect while OBS runs: either its websocket server is
-            // off (only fixable with OBS closed — tell the user), or OBS has
-            // a different password than we saved (user changed it; re-read).
-            if settings.password.is_none() || !crate::setup::websocket_server_enabled() {
-                state.obs_needs_restart = true;
-            } else if let Some((password, port)) = crate::setup::read_websocket_password() {
-                if settings.password.as_deref() != Some(password.as_str()) || settings.port != port {
-                    settings.password = Some(password);
-                    settings.port = port;
-                    let _ = crate::clips::save_settings(app.clone(), settings.clone());
-                }
-            }
-        }
-    } else {
-        state.connected = true;
-    }
-    if !state.connected {
+    // 1. Engine
+    if !ENGINE.is_running() {
         crate::health::reset();
-        return state;
+        if *retry_in > 0 {
+            *retry_in -= 1;
+        } else if let Err(error) = start_engine(app, &settings, &mut state).await {
+            eprintln!("{error}");
+            if let Ok(mut slot) = ENGINE.error.lock() {
+                *slot = Some(error.clone());
+            }
+            state.engine_error = Some(error);
+            *retry_in = 20; // ~1 min
+        }
+        if !ENGINE.is_running() {
+            state.engine_error = ENGINE.error.lock().ok().and_then(|e| e.clone());
+            return state;
+        }
     }
-    state.obs_outdated = crate::obs::outdated_obs_version(obs_state.inner());
+    state.obs_running = true;
+    state.connected = true;
+
+    // 2. Settings changed while recording land once the buffer is down.
+    if crate::setup::RELOAD_PENDING.load(Ordering::Relaxed) && !ENGINE.buffer_active() {
+        let s = settings.clone();
+        let _ = crate::obs::blocking(move || crate::setup::apply_all(&s)).await;
+    }
 
     // 3. Game detection → buffer arm/disarm.
     // Exe whitelist first (works for alt-tabbed games), fullscreen
@@ -215,6 +157,7 @@ async fn tick(
     // enumeration alone kept the buffer armed at an idle desktop and
     // blocked updates for as long as the corpse existed. Real games always
     // have a window, even alt-tabbed.
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let windowed = crate::fullscreen::pids_with_visible_windows();
     let running: std::collections::HashSet<String> = system
         .processes()
@@ -243,68 +186,54 @@ async fn tick(
         .find(|g| running.contains(g) && !settings.capture_blocked(g))
         .or_else(|| session_games.iter().next().cloned()));
 
-    let guard = obs_state.client.lock().await;
-    if let Some(client) = guard.as_ref() {
-        // Constrain OBS itself: its old any_fullscreen source bypassed detection.
-        if let Err(error) = crate::obs::enforce_capture_exclusions(client, &settings, state.game.as_deref()).await {
-            eprintln!("Could not enforce capture exclusions: {error}");
-            // Fail closed rather than record with a stale, possibly blocked source.
-            let _ = client.replay_buffer().stop().await;
-            state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
-            return state;
-        }
-        // Point the GameAudio split-track at the game that's actually running.
-        if let Some(game) = &state.game {
-            if audio_game.as_deref() != Some(game.as_str()) {
-                crate::setup::ensure_split_audio(client, Some(game), &settings.vc_exe).await;
-                *audio_game = Some(game.clone());
-            }
-        }
-        if state.game.is_some() {
-            *no_game_ticks = 0;
-        } else {
-            *no_game_ticks = no_game_ticks.saturating_add(1);
-        }
-        // Output settings OBS hasn't picked up yet (it was busy when they
-        // were written): reload once the buffer is down and no game runs.
-        if state.game.is_none()
-            && crate::setup::RELOAD_PENDING.load(Ordering::Relaxed)
-            && crate::setup::reload_profile_if_idle(client).await
-        {
-            crate::setup::RELOAD_PENDING.store(false, Ordering::Relaxed);
-        }
+    // Aim the capture at the game (or idle it). Blocked apps never reach
+    // here: `state.game` is already filtered.
+    let game = state.game.clone();
+    let window_capture = game
+        .as_ref()
+        .is_some_and(|g| settings.window_capture_games.iter().any(|w| w.eq_ignore_ascii_case(g)));
+    if let Err(error) = crate::obs::blocking(move || ENGINE.set_game(game.as_deref(), window_capture)).await {
+        eprintln!("Could not retarget capture: {error}");
+        // Fail closed rather than record with a stale, possibly blocked target.
+        let _ = crate::obs::blocking(|| ENGINE.stop_buffer()).await;
+        state.buffer_active = ENGINE.buffer_active();
+        return state;
+    }
+    if state.game.is_some() {
+        *no_game_ticks = 0;
+    } else {
+        *no_game_ticks = no_game_ticks.saturating_add(1);
+    }
 
-        state.buffer_active = client.replay_buffer().status().await.unwrap_or(false);
-        crate::clips::GAME_RUNNING.store(state.game.is_some(), Ordering::Relaxed);
-        // Only meaningful while a game is running and the buffer records;
-        // a desktop with nothing to capture isn't "lagging".
-        if let Ok(stats) = client.general().stats().await {
-            let health = crate::health::record(&stats);
-            state.render_lag = state.game.is_some() && crate::health::is_lagging(health.render_lag_pct);
-            state.encoder_lag = state.buffer_active && crate::health::is_lagging(health.encoder_lag_pct);
-        }
-        state.paused = BUFFER_PAUSED.load(Ordering::Relaxed);
-        // Never issue a stop within 15s of a replay save — OBS's stop can
-        // wedge ("Stopping Replay Buffer…" forever) if it lands while the
-        // flush is still writing.
-        let save_recent = crate::obs::LAST_SAVE
-            .lock()
-            .map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_secs(15)))
-            .unwrap_or(false);
-        match buffer_action(state.connected, state.game.is_some(), state.buffer_active,
-            state.paused, settings.auto_manage_buffer, *no_game_ticks, save_recent) {
-            BufferAction::Stop => {
-                if client.replay_buffer().stop().await.is_ok() {
-                    state.buffer_active = false;
-                }
-            },
-            BufferAction::Start => {
-                if client.replay_buffer().start().await.is_ok() {
-                    state.buffer_active = true;
-                }
-            },
-            BufferAction::Keep => {},
-        }
+    state.buffer_active = ENGINE.buffer_active();
+    crate::clips::GAME_RUNNING.store(state.game.is_some(), Ordering::Relaxed);
+    // Only meaningful while a game is running and the buffer records;
+    // a desktop with nothing to capture isn't "lagging".
+    if let Some(counters) = ENGINE.frame_counters() {
+        let health = crate::health::record(counters);
+        state.render_lag = state.game.is_some() && crate::health::is_lagging(health.render_lag_pct);
+        state.encoder_lag = state.buffer_active && crate::health::is_lagging(health.encoder_lag_pct);
+    }
+    state.paused = BUFFER_PAUSED.load(Ordering::Relaxed);
+    // Never stop within 15s of a replay save — the flush may still be writing.
+    let save_recent = crate::obs::LAST_SAVE
+        .lock()
+        .map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_secs(15)))
+        .unwrap_or(false);
+    match buffer_action(state.connected, state.game.is_some(), state.buffer_active,
+        state.paused, settings.auto_manage_buffer, *no_game_ticks, save_recent) {
+        BufferAction::Stop => {
+            if crate::obs::blocking(|| ENGINE.stop_buffer()).await.is_ok() {
+                state.buffer_active = false;
+            }
+        },
+        BufferAction::Start => {
+            match crate::obs::blocking(|| ENGINE.start_buffer()).await {
+                Ok(()) => state.buffer_active = true,
+                Err(error) => state.engine_error = Some(error),
+            }
+        },
+        BufferAction::Keep => {},
     }
 
     state

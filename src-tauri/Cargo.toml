@@ -16,16 +16,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+libobs-bootstrapper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }
 
 [dependencies]
 tauri = { version = "2", features = ["image-png", "protocol-asset", "tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-obws = { version = "0.15.0", features = ["events"] }
 tokio = { version = "1.52.3", features = ["full"] }
 tauri-plugin-global-shortcut = "2.3.2"
-futures-util = "0.3.32"
 trash = "5.2.6"
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_UI_Shell", "Win32_Storage_FileSystem"] }
 tauri-plugin-autostart = "2.5.1"
@@ -38,6 +37,11 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-dialog = "2"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+# Embedded OBS engine (GPL). Pinned: the API is pre-1.0 and changes often.
+libobs-wrapper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }
+libobs-bootstrapper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }
+libobs-window-helper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }
+log = "0.4"
 
 
 [profile.release]

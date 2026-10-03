@@ -223,8 +223,7 @@ pub async fn run(app: AppHandle) {
             }
         };
         if due {
-            let state = app.state::<crate::obs::ObsState>();
-            if crate::obs::save_replay(state.inner(), false).await.is_ok() {
+            if crate::obs::save_replay(&app, false).await.is_ok() {
                 let _ = app.emit("auto-clipped", ());
             }
         }

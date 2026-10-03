@@ -1,9 +1,13 @@
-use futures_util::{pin_mut, StreamExt};
-use obws::{events::Event, Client};
+//! Clip saving and capture control on top of the embedded engine
+//! (`engine.rs`). Command names predate the engine (they used to drive OBS
+//! Studio over obs-websocket) and are kept so the frontend stays unchanged.
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Mutex;
+
+use crate::engine::ENGINE;
 
 /// Game currently detected by the supervisor, used to name new clips.
 #[derive(Default)]
@@ -54,9 +58,9 @@ fn pretty_game(exe: &str) -> String {
 
 /// Rename a fresh clip to carry the game name, feedback via sound + toast.
 /// If the short-clip hotkey triggered this save, keep only the tail.
-async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf) {
-    let reply = SAVE_REPLY.lock().unwrap().take();
-    if crate::PENDING_SHORT.swap(false, std::sync::atomic::Ordering::Relaxed) {
+/// Returns the clip's final path.
+async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -> String {
+    if short {
         let secs = crate::clips::load_settings_inner(app).short_clip_seconds;
         let _ = crate::clips::shorten_clip(&path.to_string_lossy(), secs).await;
     }
@@ -102,25 +106,18 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf) {
         )
         .show();
 
+    let final_str = final_path.to_string_lossy().replace('\\', "/");
     // Annotate the clip with recent kill positions (timeline markers).
     // The buffer ends at save time, so this works for hotkey saves too.
-    crate::autoclip::write_kill_markers(&final_path.to_string_lossy().replace('\\', "/"));
+    crate::autoclip::write_kill_markers(&final_str);
 
-    let _ = app.emit(
-        "clip-saved",
-        ClipSaved {
-            path: final_path.to_string_lossy().replace('\\', "/"),
-        },
-    );
-
-    if let Some(reply) = reply {
-        let _ = reply.send(final_path.to_string_lossy().replace('\\', "/"));
-    }
+    let _ = app.emit("clip-saved", ClipSaved { path: final_str.clone() });
 
     // Keep the folder under the storage cap; favorites survive.
     if let Err(error) = crate::clips::enforce_storage_cap_preserving(app, Some(&final_path)) {
         let _ = app.emit("clip-error", error);
     }
+    final_str
 }
 
 /// Surface a failure the same way a save success is surfaced — sound + OS
@@ -137,43 +134,6 @@ pub fn notify_failure(app: &AppHandle, title: &str, reason: &str) {
     let _ = app.notification().builder().title(title).body(reason).show();
 }
 
-/// Managed state: the live obs-websocket connection, if any.
-pub struct ObsState {
-    pub client: Mutex<Option<Client>>,
-    /// The task draining the current event connection. Replaced (and the
-    /// old one aborted) on every reconnect: the supervisor reconnects when
-    /// the *request* socket dies, which can leave the old event socket
-    /// alive — two listeners meant every save was handled twice (double
-    /// sound/toast, markers written twice).
-    events_task: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    /// OBS version reported on the last successful connect.
-    pub version: std::sync::Mutex<Option<String>>,
-}
-
-impl Default for ObsState {
-    fn default() -> Self {
-        Self {
-            client: Mutex::new(None),
-            events_task: std::sync::Mutex::new(None),
-            version: std::sync::Mutex::new(None),
-        }
-    }
-}
-
-/// Oldest OBS the app's output config works with: clips are recorded as
-/// `hybrid_mp4`, which OBS added in 30.2. Older builds reject the format and
-/// the replay buffer fails without telling anyone why.
-const MIN_OBS: (u64, u64) = (30, 2);
-
-/// `Some(version)` when the connected OBS is older than [`MIN_OBS`].
-pub fn outdated_obs_version(state: &ObsState) -> Option<String> {
-    let version = state.version.lock().ok()?.clone()?;
-    let mut parts = version.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-    let major = parts.next().unwrap_or(0);
-    let minor = parts.next().unwrap_or(0);
-    ((major, minor) < MIN_OBS).then_some(version)
-}
-
 #[derive(Serialize, Clone)]
 pub struct ObsStatus {
     pub connected: bool,
@@ -186,432 +146,135 @@ pub struct ClipSaved {
     pub path: String,
 }
 
-/// Connect to obs-websocket and start listening for events.
-#[tauri::command]
-pub async fn obs_connect(
-    app: AppHandle,
-    state: tauri::State<'_, ObsState>,
-    host: String,
-    port: u16,
-    password: Option<String>,
-) -> Result<ObsStatus, String> {
-    connect_internal(&app, state.inner(), host, port, password).await
-}
-
-pub async fn connect_internal(
-    app: &AppHandle,
-    state: &ObsState,
-    host: String,
-    port: u16,
-    password: Option<String>,
-) -> Result<ObsStatus, String> {
-    let client = Client::connect(host.clone(), port, password.clone())
-        .await
-        .map_err(|e| format!("connect failed: {e}"))?;
-
-    // Second connection just for the event stream: obws consumes the
-    // event receiver, and we want the request client to stay usable.
-    let event_client = Client::connect(host, port, password)
-        .await
-        .map_err(|e| format!("event connect failed: {e}"))?;
-
-    let events = event_client
-        .events()
-        .map_err(|e| format!("event stream failed: {e}"))?;
-
-    let app_handle = app.clone();
-    let task = tauri::async_runtime::spawn(async move {
-        // Keep the client alive for as long as we poll its events.
-        let _keep_alive = event_client;
-        pin_mut!(events);
-        while let Some(event) = events.next().await {
-            match event {
-                Event::ReplayBufferSaved { path } => {
-                    on_clip_saved(&app_handle, path).await;
-                }
-                Event::ReplayBufferStateChanged { active, .. } => {
-                    let _ = app_handle.emit("replay-buffer-state", active);
-                }
-                _ => {}
-            }
-        }
-        let _ = app_handle.emit("obs-disconnected", ());
-    });
-    if let Some(old) = state.events_task.lock().unwrap().replace(task) {
-        old.abort();
-    }
-    SAVE_REPLY.lock().unwrap().take();
-    crate::PENDING_SHORT.store(false, std::sync::atomic::Ordering::Relaxed);
-
-    let version = client
-        .general()
-        .version()
-        .await
-        .map(|v| v.obs_studio_version.to_string())
-        .ok();
-    if let Ok(mut v) = state.version.lock() {
-        *v = version.clone();
-    }
-
-    let replay_active = client.replay_buffer().status().await.unwrap_or(false);
-
-    *state.client.lock().await = Some(client);
-
-    Ok(ObsStatus {
-        connected: true,
-        replay_buffer_active: replay_active,
-        obs_version: version,
-    })
-}
-
-#[tauri::command]
-pub async fn obs_status(state: tauri::State<'_, ObsState>) -> Result<ObsStatus, String> {
-    let guard = state.client.lock().await;
-    match guard.as_ref() {
-        Some(client) => {
-            let replay_active = client.replay_buffer().status().await.unwrap_or(false);
-            Ok(ObsStatus {
-                connected: true,
-                replay_buffer_active: replay_active,
-                obs_version: None,
-            })
-        }
-        None => Ok(ObsStatus {
-            connected: false,
-            replay_buffer_active: false,
-            obs_version: None,
-        }),
+fn status() -> ObsStatus {
+    let info = ENGINE.info();
+    ObsStatus {
+        connected: ENGINE.is_running(),
+        replay_buffer_active: info.active,
+        obs_version: info.version,
     }
 }
 
-/// Re-push all ClipForge-managed OBS config (output path, tracks, replay
-/// length, audio routing, video settings) right now, instead of waiting for
-/// the next reconnect. Called by the frontend after the user changes settings
-/// like the clips folder so the change lands in OBS immediately.
+/// Run blocking engine work off the async runtime.
+pub async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+/// Kept for the frontend's "connect" button: the supervisor starts the
+/// engine, so this only reports its state (or why it failed to start).
 #[tauri::command]
-pub async fn apply_obs_config(
-    app: AppHandle,
-    state: tauri::State<'_, ObsState>,
-) -> Result<(), String> {
-    // The Health panel shows what OBS really uses; tell it when a change
-    // starts and lands so it refreshes right away instead of on its next
-    // 5s poll (which looked like settings "not applying").
+pub async fn obs_connect() -> Result<ObsStatus, String> {
+    match ENGINE.error.lock().ok().and_then(|e| e.clone()) {
+        Some(error) if !ENGINE.is_running() => Err(error),
+        _ => Ok(status()),
+    }
+}
+
+#[tauri::command]
+pub async fn obs_status() -> Result<ObsStatus, String> {
+    Ok(status())
+}
+
+/// Push all ClipForge-managed capture settings (clips folder, encoder,
+/// bitrate, buffer length, video size, voice-chat app) to the engine now.
+/// Output changes wait for the buffer to stop if it's recording.
+#[tauri::command]
+pub async fn apply_obs_config(app: AppHandle) -> Result<(), String> {
     let _ = app.emit("obs-config-applying", ());
     let settings = crate::clips::load_settings_inner(&app);
-    let result = async {
-        let guard = state.client.lock().await;
-        let client = guard.as_ref().ok_or("not connected")?;
-        let active_game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone())
-            .filter(|g| !settings.capture_blocked(g));
-        enforce_capture_exclusions(client, &settings, active_game.as_deref()).await?;
-        crate::setup::apply_all(client, &settings, active_game.as_deref()).await;
-        Ok::<(), String>(())
-    }
-    .await;
+    let result = blocking(move || crate::setup::apply_all(&settings)).await;
     let _ = app.emit("obs-config-applied", ());
     result
 }
 
-/// Make sure the replay buffer is running (it is off by default when OBS starts).
 #[tauri::command]
-pub async fn start_replay_buffer(state: tauri::State<'_, ObsState>) -> Result<(), String> {
-    let guard = state.client.lock().await;
-    let client = guard.as_ref().ok_or("not connected")?;
-    let active = client
-        .replay_buffer()
-        .status()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !active {
-        client
-            .replay_buffer()
-            .start()
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+pub async fn start_replay_buffer() -> Result<(), String> {
+    blocking(|| ENGINE.start_buffer()).await
 }
 
-/// When the last replay save was requested. The supervisor refuses to stop
-/// the buffer right after a save: OBS's stop can deadlock ("Stopping Replay
-/// Buffer…" forever) if it lands while the flush is still writing.
+/// When the last replay save was requested. The supervisor won't stop the
+/// buffer right after a save (the flush may still be writing).
 pub static LAST_SAVE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 static SAVE_GATE: Mutex<()> = Mutex::const_new(());
-static SAVE_REPLY: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>> = std::sync::Mutex::new(None);
 
-/// Quitting ClipForge takes the replay buffer down with it: OBS keeps
-/// running (idle) but stops holding minutes of footage in RAM and encoding
-/// on the GPU for an app that's no longer there to save it.
-///
-/// A save still flushing is allowed to finish first (up to ~10s): OBS's
-/// stop can wedge ("Stopping Replay Buffer…" forever) if it lands mid-flush,
-/// and quitting right after pressing the hotkey must not lose that clip.
-pub async fn stop_buffer_for_exit(state: &ObsState) {
-    let started = std::time::Instant::now();
-    while started.elapsed() < std::time::Duration::from_secs(10) {
-        let flushing = SAVE_REPLY.lock().map(|r| r.is_some()).unwrap_or(false);
-        let just_saved = LAST_SAVE
-            .lock()
-            .map(|t| t.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)))
-            .unwrap_or(false);
-        if !flushing && !just_saved {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    let guard = state.client.lock().await;
-    if let Some(client) = guard.as_ref() {
-        if client.replay_buffer().status().await.unwrap_or(false) {
-            let _ = client.replay_buffer().stop().await;
-        }
-    }
+/// Quitting ClipForge stops the buffer and shuts the engine down. A save
+/// still flushing is allowed to finish first (it holds the save gate).
+pub async fn stop_buffer_for_exit() {
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), SAVE_GATE.lock()).await;
+    let _ = blocking(|| {
+        ENGINE.shutdown();
+        Ok(())
+    })
+    .await;
 }
 
-/// Flush the replay buffer to disk. The resulting file path arrives
-/// asynchronously via the `clip-saved` event. `short` asks for that clip to
-/// be trimmed to its last N seconds (short-clip hotkey).
-pub async fn save_replay(state: &ObsState, short: bool) -> Result<(), String> {
-    save_replay_path(state, short).await.map(|_| ())
+/// Flush the replay buffer to disk. `short` trims the clip to its last N
+/// seconds (short-clip hotkey).
+pub async fn save_replay(app: &AppHandle, short: bool) -> Result<(), String> {
+    save_replay_path(app, short).await.map(|_| ())
 }
 
-async fn save_replay_path(state: &ObsState, short: bool) -> Result<String, String> {
-    let _guard = SAVE_GATE.try_lock().map_err(|_| "A clip is still saving. Wait for it to finish, then try again.")?;
-    let (send, receive) = tokio::sync::oneshot::channel();
-    {
-        let mut reply = SAVE_REPLY.lock().unwrap();
-        if reply.is_some() {
-            return Err("The previous save hasn't finished. Wait for OBS or restart it before saving again.".into());
-        }
-        *reply = Some(send);
-    }
+async fn save_replay_path(app: &AppHandle, short: bool) -> Result<String, String> {
+    let _guard = SAVE_GATE
+        .try_lock()
+        .map_err(|_| "A clip is still saving. Wait for it to finish, then try again.")?;
     *LAST_SAVE.lock().unwrap() = Some(std::time::Instant::now());
-    // Every save sets the flag explicitly, and a failed save clears it: a
-    // short press that fails must not shorten the next (full) save.
-    crate::PENDING_SHORT.store(short, std::sync::atomic::Ordering::Relaxed);
-    let result = request_save(state).await;
-    if result.is_err() {
-        crate::PENDING_SHORT.store(false, std::sync::atomic::Ordering::Relaxed);
-        SAVE_REPLY.lock().unwrap().take();
+    if !ENGINE.is_running() {
+        return Err("The capture engine isn't running yet. Give it a few seconds, then try again.".into());
     }
-    result?;
-    match tokio::time::timeout(std::time::Duration::from_secs(45), receive).await {
-        Ok(reply) => reply.map_err(|_| "OBS reconnected before the clip finished saving. Try again.".to_string()),
-        Err(_) => {
-            // Free the slot: if OBS never reports this save (it failed, the
-            // disk filled, the event socket dropped), keeping it occupied
-            // until a reconnect blocked every later hotkey press for the
-            // rest of the session. A late event still gets its normal
-            // rename/notification in on_clip_saved; only this wait is over.
-            SAVE_REPLY.lock().unwrap().take();
-            Err("OBS hasn't confirmed the clip was saved. Check OBS, then try again.".to_string())
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn save_setup_replay(state: tauri::State<'_, ObsState>) -> Result<String, String> {
-    save_replay_path(state.inner(), false).await
-}
-
-async fn request_save(state: &ObsState) -> Result<(), String> {
-    let guard = state.client.lock().await;
-    let client = guard.as_ref().ok_or("not connected")?;
-    // If the buffer isn't armed there's nothing to flush — OBS returns a
-    // cryptic "OutputNotRunning". Arm it now (so the next save works) and
-    // tell the user plainly instead of leaking the raw error.
-    if !client.replay_buffer().status().await.unwrap_or(false) {
-        let _ = client.replay_buffer().start().await;
+    if !ENGINE.buffer_active() {
+        // Nothing to flush. Arm it now so the next save works, and say so.
+        let _ = blocking(|| ENGINE.start_buffer()).await;
         return Err(
             "Replay buffer wasn't recording yet — just started it. Play for a few seconds, then save again."
                 .into(),
         );
     }
-    client.replay_buffer().save().await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("OutputNotRunning") {
-            "Replay buffer isn't recording — make sure a game is detected.".into()
-        } else {
-            msg
-        }
-    })
+    let path = blocking(|| ENGINE.save()).await?;
+    Ok(on_clip_saved(app, path, short).await)
 }
 
 #[tauri::command]
-pub async fn save_replay_cmd(state: tauri::State<'_, ObsState>) -> Result<(), String> {
-    save_replay(state.inner(), false).await
+pub async fn save_setup_replay(app: AppHandle) -> Result<String, String> {
+    save_replay_path(&app, false).await
 }
 
-/// Create a game capture source with no target until detection selects an app.
-pub async fn ensure_autogame_source(client: &Client) -> Result<(), String> {
-    const NAME: &str = "AutoGame";
-
-    let inputs = client
-        .inputs()
-        .list(Some("game_capture"))
-        .await
-        .map_err(|e| e.to_string())?;
-    if inputs.iter().any(|i| i.id.name == NAME) {
-        return Ok(());
-    }
-
-    let scene = client
-        .scenes()
-        .current_program_scene()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    client
-        .inputs()
-        .create(obws::requests::inputs::Create {
-            scene: scene.id.into(),
-            input: NAME,
-            kind: "game_capture",
-            settings: Some(autogame_settings(None)),
-            enabled: Some(true),
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+#[tauri::command]
+pub async fn save_replay_cmd(app: AppHandle) -> Result<(), String> {
+    save_replay(&app, false).await
 }
 
-fn autogame_settings(game: Option<&str>) -> serde_json::Value {
-    serde_json::json!({
-        "capture_mode": "window",
-        "window": format!("::{}", game.unwrap_or("clipforge-no-game.invalid")),
-        "priority": WINDOW_PRIORITY_EXE,
-        "capture_cursor": true,
-        "anti_cheat_hook": true,
-    })
-}
-
-/// Reconcile both previously-created dedicated sources and the automatic hook.
-/// Read OBS settings before updating to avoid restarting the hook each tick.
-pub async fn enforce_capture_exclusions(
-    client: &Client,
-    settings: &crate::clips::Settings,
-    game: Option<&str>,
-) -> Result<(), String> {
-    for input in client.inputs().list(None).await.map_err(|e| e.to_string())? {
-        if let Some(exe) = input.id.name.strip_prefix("Capture: ") {
-            if settings.capture_blocked(exe) {
-                client.inputs().remove(input.id.name.as_str().into()).await.map_err(|e| e.to_string())?;
-            }
-        }
-    }
-    ensure_autogame_source(client).await?;
-    let desired = autogame_settings(game.filter(|g| !settings.capture_blocked(g)));
-    let current = client.inputs().settings::<serde_json::Value>("AutoGame".into())
-        .await.map_err(|e| e.to_string())?;
-    if desired.as_object().unwrap().iter().any(|(key, value)| current.settings.get(key) != Some(value)) {
-        client.inputs().set_settings(obws::requests::inputs::SetSettings {
-            input: "AutoGame".into(), settings: &desired, overlay: Some(true),
-        }).await.map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// The automatic game hook misses some games — anti-cheat, exclusive fullscreen, and some
-/// borderless titles just don't get hooked by it. This binds a dedicated
-/// source to one game, matched by executable name so it survives window
-/// title/class changes across game updates and works whether or not the
-/// game is running right now (OBS just starts capturing once it launches).
-///
-/// `kind` is either `"window_capture"` (BitBlt/WGC — often the more reliable
-/// pick in practice) or `"game_capture"` (the DXGI hook — needed for some
-/// exclusive-fullscreen or anti-cheat titles that block window capture).
-fn game_capture_source_name(exe: &str) -> String {
-    format!("Capture: {exe}")
-}
-
+/// Capture method per game. The automatic hook (`game_capture`) follows the
+/// detected game by exe; `window_capture` (WGC) is the per-game fallback for
+/// games the hook shows black. Stored in settings, applied by the supervisor.
 const CAPTURE_KINDS: [&str; 2] = ["window_capture", "game_capture"];
-/// OBS `enum window_priority`: 0 = class, 1 = title, 2 = executable.
-const WINDOW_PRIORITY_EXE: i32 = 2;
 
 #[tauri::command]
-pub async fn add_game_capture_source(
-    app: AppHandle,
-    state: tauri::State<'_, ObsState>,
-    exe: String,
-    kind: String,
-) -> Result<(), String> {
-    if crate::clips::load_settings_inner(&app).capture_blocked(&exe) {
+pub async fn add_game_capture_source(app: AppHandle, exe: String, kind: String) -> Result<(), String> {
+    let mut settings = crate::clips::load_settings_inner(&app);
+    if settings.capture_blocked(&exe) {
         return Err(format!("{exe} is blocked. Remove it from the app blacklist first."));
     }
     if !CAPTURE_KINDS.contains(&kind.as_str()) {
         return Err(format!("unknown capture kind: {kind}"));
     }
-    // Best-effort real title/class for a nicer label in OBS; matching is by
-    // executable (priority below) either way, so an empty title/class when
-    // the game isn't running is fine.
-    let window = match crate::fullscreen::find_window_for_exe(&exe) {
-        Some((title, class)) => format!("{title}:{class}:{exe}"),
-        None => format!("::{exe}"),
-    };
-    let name = game_capture_source_name(&exe);
-
-    let guard = state.client.lock().await;
-    let client = guard.as_ref().ok_or("not connected")?;
-
-    // Replace any stale source for this game — same name, possibly a
-    // different kind than last time, or a window/title that's since changed.
-    // Input names are unique across ALL kinds in OBS, so an unconditional
-    // remove-by-name is both simpler and more robust than filtering by kind
-    // (kind filters can miss versioned-kind mismatches, leaving a stale
-    // source that makes the create below fail with ResourceAlreadyExists).
-    let _ = client.inputs().remove(name.as_str().into()).await;
-
-    let scene = client
-        .scenes()
-        .current_program_scene()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let settings = if kind == "game_capture" {
-        serde_json::json!({
-            "capture_mode": "window",
-            "window": window,
-            "priority": WINDOW_PRIORITY_EXE,
-            "capture_cursor": true,
-            "anti_cheat_hook": true,
-        })
-    } else {
-        serde_json::json!({
-            "window": window,
-            "priority": WINDOW_PRIORITY_EXE,
-            "cursor": true,
-            // Capture method 2 = WGC ("Windows 10 1903 and up"). Auto often
-            // picks BitBlt, which black-screens on many modern games; WGC
-            // captures reliably on anything this app targets (Win10 20H1+).
-            "method": 2,
-        })
-    };
-
-    client
-        .inputs()
-        .create(obws::requests::inputs::Create {
-            scene: scene.id.into(),
-            input: &name,
-            kind: &kind,
-            settings: Some(settings),
-            enabled: Some(true),
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let exe = exe.trim().to_lowercase();
+    settings.window_capture_games.retain(|g| *g != exe);
+    if kind == "window_capture" {
+        settings.window_capture_games.push(exe);
+    }
+    crate::clips::save_settings(app, settings)
 }
 
 #[tauri::command]
-pub async fn remove_game_capture_source(
-    state: tauri::State<'_, ObsState>,
-    exe: String,
-) -> Result<(), String> {
-    let guard = state.client.lock().await;
-    let client = guard.as_ref().ok_or("not connected")?;
-    client
-        .inputs()
-        .remove(game_capture_source_name(&exe).as_str().into())
-        .await
-        .map_err(|e| e.to_string())
+pub async fn remove_game_capture_source(app: AppHandle, exe: String) -> Result<(), String> {
+    let mut settings = crate::clips::load_settings_inner(&app);
+    settings
+        .window_capture_games
+        .retain(|g| !g.eq_ignore_ascii_case(exe.trim()));
+    crate::clips::save_settings(app, settings)
 }
 
 #[derive(Serialize)]
@@ -620,31 +283,14 @@ pub struct GameSource {
     pub kind: String,
 }
 
-/// Which games currently have a dedicated capture source configured (as
-/// opposed to relying on the universal AutoGame fallback), and which kind.
+/// Games switched to window capture (everything else uses the hook).
 #[tauri::command]
-pub async fn list_game_capture_sources(
-    state: tauri::State<'_, ObsState>,
-) -> Result<Vec<GameSource>, String> {
-    let guard = state.client.lock().await;
-    let client = guard.as_ref().ok_or("not connected")?;
-    let mut out = Vec::new();
-    for kind in CAPTURE_KINDS {
-        let inputs = client
-            .inputs()
-            .list(Some(kind))
-            .await
-            .map_err(|e| e.to_string())?;
-        out.extend(inputs.into_iter().filter_map(|i| {
-            i.id.name
-                .strip_prefix("Capture: ")
-                .map(|exe| GameSource {
-                    exe: exe.to_string(),
-                    kind: kind.to_string(),
-                })
-        }));
-    }
-    Ok(out)
+pub async fn list_game_capture_sources(app: AppHandle) -> Result<Vec<GameSource>, String> {
+    Ok(crate::clips::load_settings_inner(&app)
+        .window_capture_games
+        .into_iter()
+        .map(|exe| GameSource { exe, kind: "window_capture".into() })
+        .collect())
 }
 
 #[derive(Serialize)]
@@ -652,29 +298,13 @@ pub struct CaptureTest {
     pub capturing: bool,
 }
 
-/// Ask OBS whether the source is actively rendering in the program output.
-///
-/// Deliberately uses `GetSourceActive`, NOT a source screenshot: forcing a
-/// screenshot render of a game-capture hook can freeze OBS's preview and the
-/// hook itself, which is exactly what broke on real hardware. This is a
-/// lightweight query with no render side effects. It confirms the source is
-/// live in the scene; whether the picture is actually the game (vs. black) is
-/// something the user still confirms by eye or by saving a test clip.
+/// Whether the capture source currently has a picture (the hook attached,
+/// or the window was found). Whether it's the game rather than black is
+/// still confirmed by eye or a test clip.
 #[tauri::command]
-pub async fn test_capture_source(
-    state: tauri::State<'_, ObsState>,
-    name: String,
-) -> Result<CaptureTest, String> {
-    let guard = state.client.lock().await;
-    let client = guard.as_ref().ok_or("not connected")?;
-    let status = client
-        .sources()
-        .active(name.as_str().into())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(CaptureTest {
-        capturing: status.active || status.showing,
-    })
+pub async fn test_capture_source(name: String) -> Result<CaptureTest, String> {
+    let _ = name;
+    Ok(CaptureTest { capturing: ENGINE.info().game_hooked })
 }
 
 #[cfg(test)]
@@ -682,46 +312,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn automatic_capture_targets_only_the_selected_executable() {
-        let active = autogame_settings(Some("cs2.exe"));
-        assert_eq!(active["capture_mode"], "window");
-        assert_eq!(active["window"], "::cs2.exe");
-        assert_eq!(active["priority"], 2);
-        let idle = autogame_settings(None);
-        assert_eq!(idle["capture_mode"], "window");
-        assert_eq!(idle["window"], "::clipforge-no-game.invalid");
-    }
-
-    #[tokio::test]
-    async fn disconnected_short_save_clears_pending_trim() {
-        let state = ObsState::default();
-        let held = SAVE_GATE.lock().await;
-        assert!(save_replay_path(&state, false).await.unwrap_err().contains("still saving"));
-        drop(held);
-        // A save still waiting for its OBS event blocks a second save.
-        let (sender, _receiver) = tokio::sync::oneshot::channel();
-        *SAVE_REPLY.lock().unwrap() = Some(sender);
-        assert!(save_replay_path(&state, false).await.unwrap_err().contains("previous save"));
-        assert!(SAVE_REPLY.lock().unwrap().is_some());
-        SAVE_REPLY.lock().unwrap().take();
-        assert!(save_replay(&state, true).await.is_err());
-        assert!(!crate::PENDING_SHORT.load(std::sync::atomic::Ordering::Relaxed));
-        assert!(save_replay(&state, false).await.is_err());
-        assert!(!crate::PENDING_SHORT.load(std::sync::atomic::Ordering::Relaxed));
-    }
-
-    fn outdated(v: &str) -> bool {
-        let state = ObsState::default();
-        *state.version.lock().unwrap() = Some(v.to_string());
-        outdated_obs_version(&state).is_some()
-    }
-
-    #[test]
-    fn obs_version_gate() {
-        assert!(outdated("29.1.3"));
-        assert!(outdated("30.1.2"));
-        assert!(!outdated("30.2.0"));
-        assert!(!outdated("31.0.3"));
-        assert!(!outdated("32.0.0-beta1"));
+    fn friendly_game_names() {
+        assert_eq!(pretty_game("valorant-win64-shipping.exe"), "Valorant");
+        assert_eq!(pretty_game("deadlock.exe"), "Deadlock");
+        assert_eq!(pretty_game("MyGame-Win64-Shipping.exe"), "Mygame");
     }
 }

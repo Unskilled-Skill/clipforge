@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SetupCheck } from "./SetupCheck";
 import { isDiscordApp } from "./app-blacklist";
-import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog, openUrl } from "./tauri-shim";
+import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowLeft,
@@ -308,7 +308,7 @@ function App() {
   // While OBS or ffmpeg is missing, re-check every few seconds: the user may
   // install it outside the app (or the OBS installer's own window), and the
   // warning bar must clear without a restart.
-  const setupIncomplete = setup !== null && (!setup.obs_installed || !setup.ffmpeg_installed);
+  const setupIncomplete = setup !== null && !setup.ffmpeg_installed;
   useEffect(() => {
     if (!setupIncomplete || installing) return;
     const id = setInterval(() => {
@@ -1586,7 +1586,7 @@ function App() {
         <div className={`status-card ${status.replay_buffer_active ? "armed" : ""}`}>
           <div className="obs-row">
             <span className={`obs-dot ${status.connected ? "on" : ""}`} />
-            <span className="obs-name">OBS Studio</span>
+            <span className="obs-name">{sup?.engine_downloading ? "Setting up capture…" : "Capture engine"}</span>
             <span className="obs-ver">{status.obs_version ?? ""}</span>
           </div>
           <button
@@ -1665,7 +1665,7 @@ function App() {
         {error && (
           <div className="error-bar">
             <span>{error}</span>
-            {/connect|websocket|not connected|obs/i.test(error) && (
+            {/capture engine|replay buffer/i.test(error) && (
               <button
                 className="setup-btn"
                 disabled={launchingObs}
@@ -1674,7 +1674,7 @@ function App() {
                   try {
                     await invoke("launch_obs");
                     setError(null);
-                    showToast("Launching OBS — connecting…");
+                    showToast("Restarting the capture engine…");
                     setTimeout(() => connect(settings), 4000);
                   } catch (e) {
                     setError(String(e));
@@ -1683,7 +1683,7 @@ function App() {
                   }
                 }}
               >
-                {launchingObs ? "launching…" : "Launch OBS"}
+                {launchingObs ? "restarting…" : "Restart capture"}
               </button>
             )}
             <button className="error-dismiss" title="Dismiss" aria-label="Dismiss error" onClick={() => setError(null)}>
@@ -1695,50 +1695,40 @@ function App() {
           <div className="setup-bar disk-bar">
             <Warning size={15} weight="fill" />
             <span>
-              Low disk space — {formatSize(diskFree)} free on the clips drive. OBS stops saving
+              Low disk space — {formatSize(diskFree)} free on the clips drive. ClipForge stops saving
               clips when it runs out; delete some clips or lower the storage cap.
             </span>
           </div>
         )}
-        {setup && (!setup.obs_installed || !setup.ffmpeg_installed) && (
-          <div className="setup-bar">
-            <Warning size={15} weight="fill" />
-            {!setup.obs_installed && (
-              <>
-                <span>OBS Studio is not installed — ClipForge needs it to record.</span>
-                <button
-                  className="setup-btn"
-                  disabled={installing !== null}
-                  onClick={() => installTool("OBS Studio", "OBSProject.OBSStudio")}
-                >
-                  {installing === "OBS Studio" ? "installing…" : "Install OBS"}
-                </button>
-              </>
-            )}
-            {setup.obs_installed && !setup.ffmpeg_installed && (
-              <>
-                <span>ffmpeg is missing — needed for thumbnails, trims and exports.</span>
-                <button
-                  className="setup-btn"
-                  disabled={installing !== null}
-                  onClick={() => installTool("ffmpeg", "Gyan.FFmpeg")}
-                >
-                  {installing === "ffmpeg" ? "installing…" : "Install ffmpeg"}
-                </button>
-              </>
-            )}
-          </div>
-        )}
-
-        {sup?.obs_needs_restart && (
+        {sup?.engine_downloading && (
           <div className="setup-bar">
             <Warning size={15} weight="fill" />
             <span>
-              OBS is open with its WebSocket server off, so ClipForge can't connect. Close OBS
-              once: ClipForge turns the server on and reopens OBS for you.
+              Downloading the capture engine (one time, about 150 MB). Clips record as soon as
+              it's done.
             </span>
           </div>
         )}
+        {sup?.engine_error && !sup.engine_downloading && (
+          <div className="setup-bar">
+            <Warning size={15} weight="fill" />
+            <span>{sup.engine_error} ClipForge retries every minute.</span>
+          </div>
+        )}
+        {setup && !setup.ffmpeg_installed && (
+          <div className="setup-bar">
+            <Warning size={15} weight="fill" />
+            <span>ffmpeg is missing — needed for thumbnails, trims and exports.</span>
+            <button
+              className="setup-btn"
+              disabled={installing !== null}
+              onClick={() => installTool("ffmpeg", "Gyan.FFmpeg")}
+            >
+              {installing === "ffmpeg" ? "installing…" : "Install ffmpeg"}
+            </button>
+          </div>
+        )}
+
         {sup?.render_lag && (
           <div className="setup-bar">
             <Warning size={15} weight="fill" />
@@ -1757,22 +1747,6 @@ function App() {
             </span>
           </div>
         )}
-        {sup?.obs_outdated && (
-          <div className="setup-bar">
-            <Warning size={15} weight="fill" />
-            <span>
-              OBS {sup.obs_outdated} is too old: clips won't save until you update to OBS 30.2
-              or newer.
-            </span>
-            <button
-              className="setup-btn"
-              onClick={() => openUrl("https://obsproject.com/download").catch(() => {})}
-            >
-              Get OBS
-            </button>
-          </div>
-        )}
-
         {showSettings ? null : !selected ? (
           <>
             <header className="lib-header">
