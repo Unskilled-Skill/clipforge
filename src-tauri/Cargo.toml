@@ -1,7 +1,8 @@
 [package]
 name = "clipforge"
-version = "0.1.28"
-description = "A Tauri App"
+version = "0.1.29"
+description = "Game clipping with an embedded OBS engine"
+license = "GPL-3.0-or-later"
 authors = ["you"]
 edition = "2021"
 

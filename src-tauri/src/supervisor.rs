@@ -90,6 +90,26 @@ pub async fn run(app: AppHandle) {
 
 /// Bring the engine up: fetch the OBS runtime on first run, then start it
 /// with the current settings applied.
+/// Close an OBS Studio that older ClipForge versions launched in the
+/// background (recognised by the flags they used): its game hook would
+/// hold the game and keep the built-in engine from capturing it. An OBS
+/// the user opened themselves is left alone.
+fn close_legacy_obs(system: &mut System) {
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+    );
+    for process in system.processes().values() {
+        let ours = process.name().eq_ignore_ascii_case("obs64.exe")
+            && process.cmd().iter().any(|a| a.to_string_lossy() == "--minimize-to-tray")
+            && process.cmd().iter().any(|a| a.to_string_lossy() == "--disable-shutdown-check");
+        if ours {
+            process.kill();
+        }
+    }
+}
+
 async fn start_engine(app: &AppHandle, settings: &crate::clips::Settings, state: &mut SupervisorState) -> Result<(), String> {
     if !crate::engine::runtime_dir().join("obs.dll").exists() {
         state.engine_downloading = true;
@@ -125,7 +145,10 @@ async fn tick(
         crate::health::reset();
         if *retry_in > 0 {
             *retry_in -= 1;
-        } else if let Err(error) = start_engine(app, &settings, &mut state).await {
+        } else if let Err(error) = {
+            close_legacy_obs(system);
+            start_engine(app, &settings, &mut state).await
+        } {
             eprintln!("{error}");
             if let Ok(mut slot) = ENGINE.error.lock() {
                 *slot = Some(error.clone());

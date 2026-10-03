@@ -56,7 +56,21 @@ fn pretty_game(exe: &str) -> String {
     }
 }
 
-/// Rename a fresh clip to carry the game name, feedback via sound + toast.
+/// Short chimes embedded in the exe: rising = saved, falling = failed.
+/// Our own sounds rather than Windows' system ones, which read as errors.
+static SAVED_SOUND: &[u8] = include_bytes!("../sounds/clip-saved.wav");
+static FAILED_SOUND: &[u8] = include_bytes!("../sounds/clip-failed.wav");
+
+/// Play an embedded WAV without blocking (audible in-game feedback).
+fn play(sound: &'static [u8]) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    unsafe {
+        let _ = PlaySoundW(PCWSTR(sound.as_ptr() as *const u16), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
+}
+
+/// Rename a fresh clip to carry the game name, feedback via chime + toast.
 /// If the short-clip hotkey triggered this save, keep only the tail.
 /// Returns the clip's final path.
 async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -> String {
@@ -88,12 +102,7 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -
         _ => path,
     };
 
-    // Audible in-game feedback; async so we never block the event loop.
-    unsafe {
-        use windows::core::w;
-        use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
-        let _ = PlaySoundW(w!("SystemAsterisk"), None, SND_ALIAS | SND_ASYNC);
-    }
+    play(SAVED_SOUND);
     let _ = app
         .notification()
         .builder()
@@ -120,17 +129,13 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -
     final_str
 }
 
-/// Surface a failure the same way a save success is surfaced — sound + OS
+/// Surface a failure the same way a save success is surfaced — chime + OS
 /// notification, not just an in-app banner. The app is normally minimized
 /// or behind a fullscreen game exactly when this matters (hotkey pressed,
 /// startup hotkey registration failed), so anything window-only is
 /// invisible at the moment a friend would actually need to see it.
 pub fn notify_failure(app: &AppHandle, title: &str, reason: &str) {
-    unsafe {
-        use windows::core::w;
-        use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
-        let _ = PlaySoundW(w!("SystemHand"), None, SND_ALIAS | SND_ASYNC);
-    }
+    play(FAILED_SOUND);
     let _ = app.notification().builder().title(title).body(reason).show();
 }
 
