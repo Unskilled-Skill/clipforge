@@ -464,7 +464,7 @@ function healthChecks(d: Diagnostics): Check[] {
     {
       label: "Replay buffer",
       value: d.buffer_seconds ? `${d.buffer_seconds}s, ${d.buffer_ram_mb ?? "?"} MB of RAM` : "Not set",
-      ok: !!d.buffer_seconds && d.output_mode === "Advanced",
+      ok: !!d.buffer_seconds,
     },
     {
       label: "Smoothness",
