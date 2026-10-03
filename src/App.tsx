@@ -465,6 +465,17 @@ function App() {
       ),
       listen("auto-clip-armed", () => showToast("Kill detected — clipping in a few seconds…")),
       listen("auto-clipped", () => showToast("Auto-clipped!")),
+      // The game hook failed on a game and the backend switched it to
+      // window capture: pick up the changed settings and say so.
+      listen<string>("capture-fallback", async (e) => {
+        showToast(`${e.payload} switched to window capture`);
+        try {
+          setSettings(await invoke<Settings>("load_settings"));
+          setGameSources(await invoke<{ exe: string; kind: string }[]>("list_game_capture_sources"));
+        } catch {
+          /* next settings load picks it up */
+        }
+      }),
       listen<string>("update-installing", (e) =>
         showToast(`Updating to v${e.payload} — restarting shortly…`)
       ),

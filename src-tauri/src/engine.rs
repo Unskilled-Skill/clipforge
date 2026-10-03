@@ -22,8 +22,8 @@ use libobs_wrapper::{
     },
     encoders::{ObsAudioEncoderType, ObsVideoEncoderType},
     scenes::{ObsSceneItemRef, ObsSceneRef, SceneItemTrait},
-    sources::ObsSourceRef,
-    utils::{AudioEncoderInfo, ObsPath, OutputInfo, SourceInfo, StartupInfo, VideoEncoderInfo},
+    sources::{ObsFilterRef, ObsSourceRef, ObsSourceTrait},
+    utils::{AudioEncoderInfo, FilterInfo, ObsPath, OutputInfo, SourceInfo, StartupInfo, VideoEncoderInfo},
 };
 
 /// Tracks as an OBS mixer bitmask (bit 0 = track 1).
@@ -70,6 +70,8 @@ struct Inner {
     vc_audio: ObsSourceRef,
     _desktop: ObsSourceRef,
     _mic: ObsSourceRef,
+    /// RNNoise on the mic: strips keyboard clatter and fan hum. Toggled, not removed.
+    mic_denoise: ObsFilterRef,
     replay: Option<ObsReplayBufferOutputRef>,
     output: Option<OutputConfig>,
     video: VideoConfig,
@@ -114,6 +116,17 @@ fn add_item(scene: &mut ObsSceneRef, id: &str, name: &str, json: serde_json::Val
 
 fn source(scene: &mut ObsSceneRef, id: &str, name: &str, json: serde_json::Value) -> Result<ObsSourceRef, String> {
     Ok(add_item(scene, id, name, json)?.inner_source().clone())
+}
+
+/// Enable/disable a filter (raw libobs: the wrapper has no setter).
+fn set_enabled(filter: &ObsFilterRef, enabled: bool) -> Result<(), String> {
+    let ptr = filter.__native_handle();
+    filter
+        .runtime()
+        .run_with_obs_result(move || unsafe {
+            libobs_wrapper::sys::obs_source_set_enabled(ptr.raw_ptr_unchecked(), enabled);
+        })
+        .map_err(err)
 }
 
 /// Route a source to the given tracks (raw libobs: the wrapper has no setter).
@@ -237,6 +250,12 @@ impl Engine {
         set_mixers(&desktop, MIX | DESKTOP)?;
         let mic = source(&mut scene, "wasapi_input_capture", "Mic", serde_json::json!({ "device_id": "default" }))?;
         set_mixers(&mic, MIX | MIC)?;
+        let denoise_settings = data(&scene, serde_json::json!({ "method": "rnnoise" }))?;
+        let mic_denoise = ctx
+            .obs_filter(FilterInfo::new("noise_suppress_filter", "Noise Suppression", Some(denoise_settings), None))
+            .map_err(err)?;
+        mic.apply_filter(&mic_denoise).map_err(err)?;
+        set_enabled(&mic_denoise, false)?;
         // Game and voice chat isolated on their own tracks. They already come
         // through desktop audio, so they stay out of the mix (no doubling).
         // Hidden while no game runs: application capture of an exe that isn't
@@ -257,6 +276,7 @@ impl Engine {
             vc_audio,
             _desktop: desktop,
             _mic: mic,
+            mic_denoise,
             replay: None,
             output: None,
             video,
@@ -323,6 +343,12 @@ impl Engine {
         inner.game = game.map(str::to_string);
         inner.target = target;
         Ok(())
+    }
+
+    pub fn set_mic_noise_suppression(&self, on: bool) -> Result<(), String> {
+        let guard = self.inner.lock().map_err(err)?;
+        let inner = guard.as_ref().ok_or("capture engine not running")?;
+        set_enabled(&inner.mic_denoise, on)
     }
 
     pub fn set_vc_exe(&self, vc_exe: &str) -> Result<(), String> {

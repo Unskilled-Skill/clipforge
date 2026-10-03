@@ -128,25 +128,35 @@ pub fn fullscreen_game() -> Option<String> {
             return None;
         }
 
+        let name = window_exe(hwnd)?;
+        if BLOCKLIST.contains(&name.as_str()) {
+            return None;
+        }
+        Some(name)
+    }
+}
+
+/// Lowercase exe name of the app that owns the foreground window.
+pub fn foreground_exe() -> Option<String> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return None;
+    }
+    window_exe(hwnd)
+}
+
+fn window_exe(hwnd: HWND) -> Option<String> {
+    unsafe {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
             return None;
         }
-
         let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid).ok()?;
         let mut buf = [0u16; 260];
         let len = GetModuleBaseNameW(handle, None, &mut buf) as usize;
         let _ = CloseHandle(handle);
-        if len == 0 {
-            return None;
-        }
-        let name = String::from_utf16_lossy(&buf[..len]).to_lowercase();
-
-        if BLOCKLIST.contains(&name.as_str()) {
-            return None;
-        }
-        Some(name)
+        (len > 0).then(|| String::from_utf16_lossy(&buf[..len]).to_lowercase())
     }
 }
 

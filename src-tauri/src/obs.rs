@@ -122,11 +122,48 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -
 
     let _ = app.emit("clip-saved", ClipSaved { path: final_str.clone() });
 
+    // A black clip from the game hook means the hook attached but isn't
+    // seeing the game (some anti-cheat/overlay setups). Window capture
+    // works there, so switch that game over for every clip after this one.
+    if let Some(game) = game.clone() {
+        let settings = crate::clips::load_settings_inner(app);
+        let hooked = !settings.window_capture_games.iter().any(|g| g.eq_ignore_ascii_case(&game));
+        if hooked && crate::clips::ffmpeg_available() {
+            let (app, path) = (app.clone(), final_str.clone());
+            tauri::async_runtime::spawn(async move {
+                if crate::clips::analyze_black(path).await.is_ok_and(|a| a.is_black) {
+                    fall_back_to_window_capture(&app, &game, "Your last clip came out black.");
+                }
+            });
+        }
+    }
+
     // Keep the folder under the storage cap; favorites survive.
     if let Err(error) = crate::clips::enforce_storage_cap_preserving(app, Some(&final_path)) {
         let _ = app.emit("clip-error", error);
     }
     final_str
+}
+
+/// Switch `exe` to window capture for good (the game hook failed on it)
+/// and tell the user why. The choice shows in Settings → Games watched,
+/// where they can switch back.
+pub fn fall_back_to_window_capture(app: &AppHandle, exe: &str, why: &str) {
+    let mut settings = crate::clips::load_settings_inner(app);
+    if settings.window_capture_games.iter().any(|g| g.eq_ignore_ascii_case(exe)) {
+        return;
+    }
+    settings.window_capture_games.push(exe.to_lowercase());
+    if crate::clips::save_settings(app.clone(), settings).is_err() {
+        return;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title(format!("{} now uses window capture", pretty_game(exe)))
+        .body(format!("{why} ClipForge switched capture methods so your clips show the game."))
+        .show();
+    let _ = app.emit("capture-fallback", exe.to_string());
 }
 
 /// Surface a failure the same way a save success is surfaced — chime + OS

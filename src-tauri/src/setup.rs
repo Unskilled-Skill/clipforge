@@ -222,6 +222,7 @@ pub fn apply_all(settings: &crate::clips::Settings) -> Result<(), String> {
     let applied = ENGINE.configure(output, video)?;
     RELOAD_PENDING.store(!applied, Ordering::Relaxed);
     ENGINE.set_vc_exe(&settings.vc_exe)?;
+    ENGINE.set_mic_noise_suppression(settings.mic_noise_suppression)?;
     Ok(())
 }
 
@@ -250,6 +251,9 @@ pub struct Diagnostics {
     pub ffmpeg_found: bool,
     /// Sync client the clips folder lives in (e.g. "Google Drive"), if any.
     pub clips_dir_cloud: Option<String>,
+    /// Running with admin rights (GPU priority for capture).
+    pub elevated: bool,
+    pub mic_noise_suppression: bool,
 }
 
 #[tauri::command]
@@ -276,6 +280,8 @@ pub async fn obs_diagnostics(app: AppHandle) -> Result<Diagnostics, String> {
         disk_free_bytes: crate::clips::disk_free(settings.clips_dir.clone()).ok(),
         ffmpeg_found: crate::clips::ffmpeg_available(),
         clips_dir_cloud: crate::backup::cloud_synced_provider(&settings.clips_dir).map(String::from),
+        elevated: crate::elevation::is_elevated(),
+        mic_noise_suppression: settings.mic_noise_suppression,
     })
 }
 

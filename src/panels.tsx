@@ -3,7 +3,7 @@
 // over props, so App.tsx keeps the data flow while this file keeps the bulk.
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { invoke, listen, openDialog } from "./tauri-shim";
+import { confirmDialog, invoke, listen, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
 import { blacklistApp, isDiscordApp } from "./app-blacklist";
 import type { BackupStatus, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
@@ -440,6 +440,11 @@ function healthChecks(d: Diagnostics): Check[] {
       action: d.obs_connected ? undefined : "restart-engine",
     },
     {
+      label: "Admin rights",
+      value: d.elevated ? "On — capture has GPU priority" : "Off",
+      ok: true,
+    },
+    {
       label: "Encoder",
       value: encoderName(d.encoder),
       ok: hw(d.encoder) && (!d.best_encoder || d.encoder === d.best_encoder),
@@ -639,6 +644,8 @@ export function SettingsPage(props: {
     sup, onTutorial, onPickVc,
   } = props;
   const [blockedExe, setBlockedExe] = useState("");
+  const [elevating, setElevating] = useState(false);
+  const [elevateError, setElevateError] = useState<string | null>(null);
   const [blacklistBusy, setBlacklistBusy] = useState(false);
   const [blacklistError, setBlacklistError] = useState<string | null>(null);
   async function updateBlacklist(next: Settings) {
@@ -835,6 +842,45 @@ export function SettingsPage(props: {
           </div>
           <div className="toggle-card">
             <div className="toggle-text">
+              <span className="toggle-title">Run with admin rights</span>
+              <span className="toggle-desc">
+                Gives recording GPU priority (fewer dropped frames when a game maxes your GPU) and
+                captures games whose anti-cheat blocks it. Windows asks once to allow it.
+              </span>
+            </div>
+            <button
+              className={`switch ${settings.run_elevated ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.run_elevated}
+              aria-label="Run with admin rights"
+              disabled={elevating}
+              onClick={async () => {
+                const enabled = !settings.run_elevated;
+                setElevating(true);
+                setElevateError(null);
+                try {
+                  await invoke("set_run_elevated", { enabled });
+                  setSettings({ ...settings, run_elevated: enabled });
+                  if (enabled && !(await invoke<boolean>("is_running_elevated"))) {
+                    const now = await confirmDialog("Restart ClipForge with admin rights now?", {
+                      title: "ClipForge",
+                      kind: "info",
+                    });
+                    if (now) await invoke("restart_elevated");
+                  }
+                } catch (error) {
+                  setElevateError(String(error));
+                } finally {
+                  setElevating(false);
+                }
+              }}
+            >
+              <span className="knob" />
+            </button>
+          </div>
+          {elevateError && <span className="field-hint" role="alert">{elevateError}</span>}
+          <div className="toggle-card">
+            <div className="toggle-text">
               <span className="toggle-title">Auto-clip kills</span>
               <span className="toggle-desc">
                 CS2 and League only (official event APIs). Saves a clip a few seconds
@@ -944,6 +990,21 @@ export function SettingsPage(props: {
               </button>
             </div>
           </label>
+          <div className="toggle-card">
+            <div className="toggle-text">
+              <span className="toggle-title">Mic noise suppression</span>
+              <span className="toggle-desc">Removes keyboard clatter and fan hum from your mic</span>
+            </div>
+            <button
+              className={`switch ${settings.mic_noise_suppression ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.mic_noise_suppression}
+              aria-label="Mic noise suppression"
+              onClick={() => saveSettings({ ...settings, mic_noise_suppression: !settings.mic_noise_suppression })}
+            >
+              <span className="knob" />
+            </button>
+          </div>
         </section>
 
         <section className="set-group">

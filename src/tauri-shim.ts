@@ -147,6 +147,11 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return null;
     case "launch_obs":
       return null;
+    case "set_run_elevated":
+    case "restart_elevated":
+      return null;
+    case "is_running_elevated":
+      return false;
     case "apply_obs_config":
       return null;
     case "list_running_apps":

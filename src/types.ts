@@ -16,6 +16,8 @@ export interface Settings {
   game_exes: string[];
   game_blacklist: string[];
   window_capture_games: string[];
+  mic_noise_suppression: boolean;
+  run_elevated: boolean;
   vc_exe: string;
   auto_launch_obs: boolean;
   launch_at_login: boolean;
@@ -68,6 +70,8 @@ export interface Diagnostics {
   disk_free_bytes: number | null;
   ffmpeg_found: boolean;
   clips_dir_cloud: string | null;
+  elevated: boolean;
+  mic_noise_suppression: boolean;
 }
 
 export interface BackupStatus {

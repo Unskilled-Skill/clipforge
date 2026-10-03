@@ -14,6 +14,9 @@ use crate::engine::ENGINE;
 /// silently eat clips forever after a restart.
 pub static BUFFER_PAUSED: AtomicBool = AtomicBool::new(false);
 
+/// In-game ticks (3s each) the hook gets before falling back to window capture.
+const HOOK_GRACE_TICKS: u32 = 10;
+
 /// Set by the "Retry" buttons: skip the wait after a failed engine start.
 pub static RETRY_ENGINE_NOW: AtomicBool = AtomicBool::new(false);
 
@@ -71,9 +74,11 @@ pub async fn run(app: AppHandle) {
     let mut no_game_ticks: u32 = 0;
     // Ticks to wait before retrying a failed engine start/download.
     let mut retry_in: u32 = 0;
+    // Consecutive in-game ticks the game hook hasn't attached.
+    let mut unhooked_ticks: u32 = 0;
 
     loop {
-        let state = tick(&app, &mut system, &mut session_games, &mut no_game_ticks, &mut retry_in).await;
+        let state = tick(&app, &mut system, &mut session_games, &mut no_game_ticks, &mut retry_in, &mut unhooked_ticks).await;
         if let Ok(mut current) = app.state::<crate::obs::CurrentGame>().0.lock() {
             *current = state.game.clone();
         }
@@ -138,6 +143,7 @@ async fn tick(
     session_games: &mut std::collections::HashSet<String>,
     no_game_ticks: &mut u32,
     retry_in: &mut u32,
+    unhooked_ticks: &mut u32,
 ) -> SupervisorState {
     let mut settings = load_settings_inner(app);
     let mut state = SupervisorState::default();
@@ -232,6 +238,26 @@ async fn tick(
         *no_game_ticks = 0;
     } else {
         *no_game_ticks = no_game_ticks.saturating_add(1);
+    }
+
+    // Hook never attaching while the player is in the game (anti-cheat,
+    // some launchers' wrappers): after ~30s, switch that game to window
+    // capture rather than keep recording nothing. Only in-game time counts:
+    // a minimized or alt-tabbed game doesn't present frames to hook.
+    match (&state.game, window_capture) {
+        (Some(game), false) if ENGINE.buffer_active() && crate::fullscreen::foreground_exe().as_deref() == Some(game.as_str()) => {
+            if ENGINE.info().game_hooked {
+                *unhooked_ticks = 0;
+            } else {
+                *unhooked_ticks += 1;
+                if *unhooked_ticks >= HOOK_GRACE_TICKS {
+                    *unhooked_ticks = 0;
+                    crate::obs::fall_back_to_window_capture(app, game, "Game capture couldn't attach to it.");
+                }
+            }
+        }
+        (None, _) | (_, true) => *unhooked_ticks = 0,
+        _ => {}
     }
 
     state.buffer_active = ENGINE.buffer_active();

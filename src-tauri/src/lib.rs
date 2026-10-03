@@ -1,6 +1,7 @@
 mod autoclip;
 mod backup;
 mod clips;
+mod elevation;
 mod engine;
 mod fullscreen;
 mod health;
@@ -268,6 +269,16 @@ fn spawn_dir_watcher(app: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // "Run with admin rights": a normal launch hands off to the elevated
+    // scheduled task and exits. Installed builds only (the task points at
+    // the installed exe).
+    #[cfg(not(debug_assertions))]
+    if elevation::hand_off_if_wanted() {
+        return;
+    }
+    // Login autostart passes --hidden; it survives the hand-off via a file.
+    let start_hidden = std::env::args().any(|a| a == "--hidden")
+        || elevation::handed_off_args().iter().any(|a| a == "--hidden");
     let app_start = std::time::Instant::now();
 
     tauri::Builder::default()
@@ -317,7 +328,7 @@ pub fn run() {
             // Login start goes straight to the tray — no window popup.
             Some(vec!["--hidden"]),
         ))
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::run(handle));
             tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));
@@ -390,7 +401,7 @@ pub fn run() {
 
             // Launched by autostart: stay in the tray, everything else
             // (OBS launch, buffer management) runs headless as usual.
-            if std::env::args().any(|a| a == "--hidden") {
+            if start_hidden {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
@@ -473,6 +484,9 @@ pub fn run() {
             setup::launch_obs,
             setup::list_running_apps,
             setup::obs_diagnostics,
+            elevation::set_run_elevated,
+            elevation::is_running_elevated,
+            elevation::restart_elevated,
             backup::backup_status,
             backup::backup_now,
             set_hotkeys,

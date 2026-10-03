@@ -139,6 +139,13 @@ pub struct Settings {
     /// Games captured with window capture (WGC) instead of the game hook.
     #[serde(default)]
     pub window_capture_games: Vec<String>,
+    /// RNNoise on the mic track.
+    #[serde(default = "default_true")]
+    pub mic_noise_suppression: bool,
+    /// Start ClipForge with admin rights (via a scheduled task, no UAC
+    /// prompt): GPU priority for capture, and anti-cheat games hook.
+    #[serde(default)]
+    pub run_elevated: bool,
     /// Voice-chat app whose audio gets its own recording track (Discord etc.).
     #[serde(default = "default_vc_exe")]
     pub vc_exe: String,
@@ -233,6 +240,8 @@ impl Default for Settings {
             game_exes: default_game_exes(),
             game_blacklist: Vec::new(),
             window_capture_games: Vec::new(),
+            mic_noise_suppression: true,
+            run_elevated: false,
             vc_exe: default_vc_exe(),
             auto_launch_obs: true,
             launch_at_login: true,
