@@ -120,17 +120,12 @@ fn default_game_exes() -> Vec<String> {
 fn default_true() -> bool {
     true
 }
-fn default_obs_path() -> String {
-    "C:/Program Files/obs-studio/bin/64bit/obs64.exe".into()
-}
 
+/// Settings from the OBS Studio era (websocket host/port/password, OBS path,
+/// auto-connect, auto-launch) are gone; serde ignores them in old files.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
-    pub host: String,
-    pub port: u16,
-    pub password: Option<String>,
     pub clips_dir: String,
-    pub auto_connect: bool,
     #[serde(default = "default_game_exes")]
     pub game_exes: Vec<String>,
     /// Apps excluded from detection and ClipForge's video capture sources.
@@ -149,15 +144,11 @@ pub struct Settings {
     /// Voice-chat app whose audio gets its own recording track (Discord etc.).
     #[serde(default = "default_vc_exe")]
     pub vc_exe: String,
-    #[serde(default = "default_true")]
-    pub auto_launch_obs: bool,
     /// Register the app to start (hidden, in the tray) at Windows login.
     #[serde(default = "default_true")]
     pub launch_at_login: bool,
     #[serde(default = "default_true")]
     pub auto_manage_buffer: bool,
-    #[serde(default = "default_obs_path")]
-    pub obs_path: String,
     #[serde(default = "default_hotkey_save")]
     pub hotkey_save: String,
     #[serde(default = "default_hotkey_short")]
@@ -232,21 +223,15 @@ fn default_short_secs() -> f64 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            host: "localhost".into(),
-            port: 4455,
-            password: None,
             clips_dir: DEFAULT_CLIPS_DIR.into(),
-            auto_connect: false,
             game_exes: default_game_exes(),
             game_blacklist: Vec::new(),
             window_capture_games: Vec::new(),
             mic_noise_suppression: true,
             run_elevated: false,
             vc_exe: default_vc_exe(),
-            auto_launch_obs: true,
             launch_at_login: true,
             auto_manage_buffer: true,
-            obs_path: default_obs_path(),
             hotkey_save: default_hotkey_save(),
             hotkey_short: default_hotkey_short(),
             short_clip_seconds: default_short_secs(),
@@ -523,15 +508,27 @@ pub fn load_settings_inner(app: &AppHandle) -> Settings {
             }
         }
     }
-    let settings = load_settings(app.clone()).unwrap_or_default();
+    let settings = match load_settings(app.clone()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            // Never fall back to defaults silently: the next save of any
+            // setting would write them over the user's whole config. Keep
+            // the last good settings, and set the unreadable file aside.
+            crate::logs::line(&format!("settings.json unreadable ({error}); keeping last good settings"));
+            if let Ok(path) = settings_path(app) {
+                let _ = std::fs::copy(&path, path.with_extension(format!("json.bad-{mtime}")));
+            }
+            let cached = SETTINGS_CACHE.lock().unwrap().as_ref().map(|(_, s)| s.clone());
+            return cached.unwrap_or_default();
+        }
+    };
     *SETTINGS_CACHE.lock().unwrap() = Some((mtime, settings.clone()));
     settings
 }
 
 /// Loads settings, creating and localizing them on the spot for a brand new
-/// user (no settings.json yet): detected OBS path, a real clips folder that
-/// actually exists on this machine, and the websocket password if OBS has
-/// already minted one. Without this, a new user's first frontend boot would
+/// user (no settings.json yet): a real clips folder that actually exists on
+/// this machine. Without this, a new user's first frontend boot would
 /// race the backend's own async localization and briefly see bogus defaults
 /// (e.g. a dev machine's leftover clips folder).
 #[tauri::command]
@@ -549,10 +546,11 @@ pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
 }
 
 /// Reset to defaults, then immediately re-run the same machine-specific
-/// detection first launch does (OBS path, clips folder, websocket password)
+/// detection first launch does (the clips folder)
 /// so the reset app is still fully set up, not just blanked.
 #[tauri::command]
 pub fn reset_settings(app: AppHandle) -> Result<Settings, String> {
+    crate::logs::line("settings reset to defaults (Reset button)");
     let mut settings = Settings::default();
     crate::setup::localize_settings(&app, &mut settings);
     save_settings(app, settings.clone())?;
@@ -588,7 +586,12 @@ pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), Strin
     // half-written (which would silently reset every setting on next boot).
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, raw).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    // The UI keeps its own copy and saves it whole; the backend also changes
+    // settings (auto-learned games, capture fallback). Broadcast every save
+    // so the UI never writes back a stale copy over the backend's change.
+    let _ = app.emit("settings-changed", &settings);
+    Ok(())
 }
 
 #[derive(Serialize, Clone)]

@@ -131,7 +131,8 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -
         if hooked && crate::clips::ffmpeg_available() {
             let (app, path) = (app.clone(), final_str.clone());
             tauri::async_runtime::spawn(async move {
-                if crate::clips::analyze_black(path).await.is_ok_and(|a| a.is_black) {
+                if crate::clips::analyze_black(path.clone()).await.is_ok_and(|a| a.is_black) {
+                    crate::logs::line(&format!("black clip from game hook: {path}"));
                     fall_back_to_window_capture(&app, &game, "Your last clip came out black.");
                 }
             });
@@ -154,6 +155,7 @@ pub fn fall_back_to_window_capture(app: &AppHandle, exe: &str, why: &str) {
         return;
     }
     settings.window_capture_games.push(exe.to_lowercase());
+    crate::logs::line(&format!("{exe}: falling back to window capture ({why})"));
     if crate::clips::save_settings(app.clone(), settings).is_err() {
         return;
     }

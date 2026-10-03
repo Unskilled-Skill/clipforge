@@ -12,3 +12,24 @@
   Pop $0
   DetailPrint "ffmpeg setup finished (exit code $0)."
 !macroend
+
+; POSTUNINSTALL: remove the capture engine (OBS runtime, ~180 MB) that the
+; app downloaded next to its exe on first run. Skipped for updates: the
+; updater runs this uninstaller too, and the runtime must survive it.
+!macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $UpdateMode <> 1
+    RMDir /r "$INSTDIR\data"
+    RMDir /r "$INSTDIR\obs-plugins"
+    RMDir /r "$INSTDIR\iconengines"
+    RMDir /r "$INSTDIR\platforms"
+    RMDir /r "$INSTDIR\styles"
+    RMDir /r "$INSTDIR\.libobs-bootstrap-cache"
+    Delete "$INSTDIR\*.dll"
+    Delete "$INSTDIR\obs-amf-test.exe"
+    Delete "$INSTDIR\obs-ffmpeg-mux.exe"
+    Delete "$INSTDIR\obs-nvenc-test.exe"
+    Delete "$INSTDIR\obs-qsv-test.exe"
+    RMDir "$INSTDIR\windows"
+    RMDir "$INSTDIR"
+  ${EndIf}
+!macroend

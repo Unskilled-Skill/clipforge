@@ -190,6 +190,11 @@ function App() {
   const [blackMap, setBlackMap] = useState<Record<string, boolean>>({});
   const [scanning, setScanning] = useState(false);
   const [sup, setSup] = useState<SupervisorState | null>(null);
+  // First-run capture-engine download: "Downloading… 42%" / "Unpacking… 80%".
+  const [engineProgress, setEngineProgress] = useState<{ stage: string; pct: number } | null>(null);
+  const engineProgressText = engineProgress
+    ? `${engineProgress.stage === "extract" ? "unpacking" : "downloading"} ${engineProgress.pct}%`
+    : null;
   const [showSettings, setShowSettings] = useState(false);
   // Thumbnail map hydrates from the last session's cache so cards paint
   // instantly on boot; the backend refresh replaces it when it lands.
@@ -392,22 +397,13 @@ function App() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [refreshClips]);
 
-  const connect = useCallback(async (s: Settings) => {
+  // Asks the capture engine for its state (the supervisor starts it). The
+  // argument is unused; callers predate the engine.
+  const connect = useCallback(async (_s?: Settings) => {
     setConnecting(true);
     setError(null);
     try {
-      const st = await invoke<ObsStatus>("obs_connect", {
-        host: s.host,
-        port: s.port,
-        password: s.password || null,
-      });
-      // The buffer is armed by the supervisor only while a game runs; arming
-      // it here at the desktop wasted RAM/GPU and failed with OBS's
-      // "InvalidResourceState" whenever the buffer wasn't available yet.
-      setStatus(st);
-      const saved: Settings = { ...s, auto_connect: true };
-      setSettings(saved);
-      await invoke("save_settings", { settings: saved });
+      setStatus(await invoke<ObsStatus>("obs_connect"));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -444,9 +440,7 @@ function App() {
       invoke<Record<string, ThumbInfo>>("gen_thumbnails", { dir: s.clips_dir })
         .then(setThumbs)
         .catch(() => {});
-      if (s.auto_connect && s.password) {
-        connect(s);
-      }
+      connect();
     })();
   }, [connect, refreshClips]);
 
@@ -465,6 +459,10 @@ function App() {
       ),
       listen("auto-clip-armed", () => showToast("Kill detected — clipping in a few seconds…")),
       listen("auto-clipped", () => showToast("Auto-clipped!")),
+      // Every settings save (UI or backend) arrives here, so the UI's copy
+      // stays current and never overwrites a backend change when it saves.
+      listen<Settings>("settings-changed", (e) => setSettings(e.payload)),
+      listen<{ stage: string; pct: number }>("engine-download-progress", (e) => setEngineProgress(e.payload)),
       // The game hook failed on a game and the backend switched it to
       // window capture: pick up the changed settings and say so.
       listen<string>("capture-fallback", async (e) => {
@@ -1717,9 +1715,15 @@ function App() {
           <div className="setup-bar">
             <Warning size={15} weight="fill" />
             <span>
-              Downloading the capture engine (one time, about 150 MB). Clips record as soon as
-              it's done.
+              Setting up the capture engine (one time, about 150 MB)
+              {engineProgressText ? ` — ${engineProgressText}` : "…"} Clips record as soon as it's
+              done.
             </span>
+            {engineProgress && (
+              <div className="engine-progress" role="progressbar" aria-valuenow={engineProgress.pct} aria-valuemin={0} aria-valuemax={100}>
+                <div className="engine-progress-fill" style={{ transform: `scaleX(${engineProgress.pct / 100})` }} />
+              </div>
+            )}
           </div>
         )}
         {sup?.engine_error && !sup.engine_downloading && (
@@ -2700,6 +2704,7 @@ function App() {
           installTool={installTool}
           engineError={sup?.engine_error ?? null}
           engineDownloading={sup?.engine_downloading ?? false}
+          engineProgress={engineProgressText}
           firstRun={!localStorage.getItem("clipforge_onboarded")}
           onClose={() => setShowOnboarding(false)}
           onFinish={finishOnboarding}

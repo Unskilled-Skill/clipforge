@@ -13,18 +13,15 @@ import { openUrl as realOpenUrl } from "@tauri-apps/plugin-opener";
 const inTauri = "__TAURI_INTERNALS__" in window;
 
 const mockSettings = {
-  host: "localhost",
-  port: 4455,
-  password: "hunter2",
   clips_dir: "D:/RECORDINGS/Clips",
-  auto_connect: true,
   game_exes: ["cs2.exe", "valorant-win64-shipping.exe", "rainbowsix.exe"],
   game_blacklist: [],
+  window_capture_games: [],
+  mic_noise_suppression: true,
+  run_elevated: false,
   vc_exe: "discord.exe",
-  auto_launch_obs: true,
   launch_at_login: true,
   auto_manage_buffer: true,
-  obs_path: "C:/Program Files/obs-studio/bin/64bit/obs64.exe",
   hotkey_save: "alt+f10",
   hotkey_short: "shift+alt+f10",
   short_clip_seconds: 30,
@@ -149,6 +146,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return null;
     case "set_run_elevated":
     case "restart_elevated":
+      return null;
+    case "open_logs":
       return null;
     case "is_running_elevated":
       return false;

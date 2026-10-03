@@ -27,7 +27,7 @@ import {
 } from "@phosphor-icons/react";
 
 /// RAM the replay buffer reserves, matching the backend's cap
-/// (setup::ensure_replay_buffer_config): bitrate + 25% + audio, min 512 MB.
+/// (setup::replay_ram_mb): bitrate + 25% + audio, min 512 MB.
 /// Auto bitrate is estimated at 20 Mbps (1080p60 AV1/HEVC).
 function bufferRamText(settings: Settings): string {
   const mbps = settings.bitrate_mbps > 0 ? settings.bitrate_mbps : 20;
@@ -602,7 +602,12 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
         ))}
       </ul>
       {fixError && <span className="field-hint" role="alert">{fixError}</span>}
-      <button className="btn-ghost" onClick={onTestSetup}>Test my setup</button>
+      <div className="set-row">
+        <button className="btn-ghost" onClick={onTestSetup}>Test my setup</button>
+        <button className="btn-ghost" onClick={() => invoke("open_logs").catch((e) => setFixError(String(e)))}>
+          Open logs
+        </button>
+      </div>
     </section>
   );
 }
@@ -1227,6 +1232,8 @@ export function OnboardingModal(props: {
   installTool: (label: string, wingetId: string) => Promise<boolean>;
   engineError: string | null;
   engineDownloading: boolean;
+  /** "downloading 42%" while the engine downloads, else null. */
+  engineProgress: string | null;
   /** First launch: no way out but through every step. */
   firstRun: boolean;
   onClose: () => void;
@@ -1234,7 +1241,7 @@ export function OnboardingModal(props: {
 }) {
   const {
     step: onboardStep, setStep: setOnboardStep, setup, status, settings, setSettings,
-    saveSettings, installing, installTool, engineError, engineDownloading, firstRun, onClose, onFinish,
+    saveSettings, installing, installTool, engineError, engineDownloading, engineProgress, firstRun, onClose, onFinish,
   } = props;
   // Setup gate: Next stays locked until the required software is in place,
   // unless an install actually failed. Then the user may continue and fix
@@ -1307,7 +1314,7 @@ export function OnboardingModal(props: {
                   ? "— ready"
                   : engineError && !engineDownloading
                     ? "— couldn't set up"
-                    : "— downloading (one time, about 150 MB)"}
+                    : `— ${engineProgress ?? "downloading"} (one time, about 150 MB)`}
               </span>
               {!engineReady && engineError && !engineDownloading && (
                 <button
@@ -1361,13 +1368,11 @@ export function OnboardingModal(props: {
           <section className="set-group">
             <p className="onboard-copy">
               Clip length controls how far back a save reaches — ClipForge keeps this much
-              footage buffered in RAM at all times.
+              footage buffered in RAM while a game runs.
             </p>
             <label className="set-col">
               <span className="field-label">
-                Clip length (seconds) — ~
-                {Math.round((settings.replay_seconds * 4.5) / 100) / 10} GB RAM at current
-                setting
+                Clip length (seconds) — about {bufferRamText(settings)} of RAM at this setting
               </span>
               <input
                 className="mono"

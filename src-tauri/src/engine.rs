@@ -213,13 +213,49 @@ pub fn runtime_dir() -> PathBuf {
 
 /// Download/verify the OBS runtime. Must finish before the first libobs call
 /// (obs.dll is delay-loaded). No-op when it's already in place.
-pub async fn bootstrap() -> Result<(), String> {
-    use libobs_bootstrapper::{ObsBootstrapper, ObsBootstrapperOptions};
+/// `progress` gets (stage, 0..=100) as it goes: "download", then "extract".
+pub async fn bootstrap(progress: impl Fn(&'static str, u32) + Send + Sync + 'static) -> Result<(), String> {
+    use libobs_bootstrapper::{status_handler::ObsBootstrapStatusHandler, ObsBootstrapper, ObsBootstrapperOptions};
     if runtime_dir().join("obs.dll").exists() {
         return Ok(());
     }
+
+    struct Progress<F> {
+        report: F,
+        last: Option<(&'static str, u32)>,
+    }
+    impl<F> std::fmt::Debug for Progress<F> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Progress")
+        }
+    }
+    impl<F: Fn(&'static str, u32) + Send + Sync> Progress<F> {
+        // Whole percents only: the bootstrapper reports far more often.
+        fn step(&mut self, stage: &'static str, fraction: f32) {
+            let pct = (fraction.clamp(0.0, 1.0) * 100.0) as u32;
+            if self.last != Some((stage, pct)) {
+                self.last = Some((stage, pct));
+                (self.report)(stage, pct);
+            }
+        }
+    }
+    impl<F: Fn(&'static str, u32) + Send + Sync> ObsBootstrapStatusHandler for Progress<F> {
+        type Error = std::convert::Infallible;
+        fn handle_downloading(&mut self, progress: f32, _message: String) -> Result<(), Self::Error> {
+            self.step("download", progress);
+            Ok(())
+        }
+        fn handle_extraction(&mut self, progress: f32, _message: String) -> Result<(), Self::Error> {
+            self.step("extract", progress);
+            Ok(())
+        }
+    }
+
     let options = ObsBootstrapperOptions::default().set_install_dir(runtime_dir());
-    ObsBootstrapper::bootstrap(&options).await.map(|_| ()).map_err(err)
+    ObsBootstrapper::bootstrap_with_handler(&options, Box::new(Progress { report: progress, last: None }))
+        .await
+        .map(|_| ())
+        .map_err(err)
 }
 
 impl Engine {
@@ -240,6 +276,7 @@ impl Engine {
         let mut ctx = StartupInfo::new()
             .set_video_info(video_info(video))
             .set_module_config_path(ObsPath::new(&config_dir.to_string_lossy()))
+            .set_logger(Box::new(crate::logs::EngineLogger))
             .start()
             .map_err(|e| format!("Capture engine failed to start: {e}"))?;
         let mut scene = ctx.scene("ClipForge", Some(0)).map_err(err)?;
@@ -307,7 +344,7 @@ impl Engine {
             return Ok(()); // still unresolved; try again next tick
         }
 
-        eprintln!("[ClipForge] capture target: {game:?} -> {target:?} (window capture: {window_capture})");
+        crate::logs::line(&format!("capture target: {game:?} -> {target:?} (window capture: {window_capture})"));
         let hook_target = if want_window.is_some() { None } else { target.as_deref() };
         inner
             .game_capture

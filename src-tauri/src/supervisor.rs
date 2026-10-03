@@ -122,7 +122,12 @@ async fn start_engine(app: &AppHandle, settings: &crate::clips::Settings, state:
     if !crate::engine::runtime_dir().join("obs.dll").exists() {
         state.engine_downloading = true;
         let _ = app.emit("supervisor-state", state.clone());
-        let result = crate::engine::bootstrap().await;
+        crate::logs::line("downloading the capture engine");
+        let progress_app = app.clone();
+        let result = crate::engine::bootstrap(move |stage, pct| {
+            let _ = progress_app.emit("engine-download-progress", serde_json::json!({ "stage": stage, "pct": pct }));
+        })
+        .await;
         state.engine_downloading = false;
         result.map_err(|e| format!("Couldn't download the capture engine: {e}"))?;
     }
@@ -161,7 +166,7 @@ async fn tick(
             close_legacy_obs(system);
             start_engine(app, &settings, &mut state).await
         } {
-            eprintln!("{error}");
+            crate::logs::line(&error);
             if let Ok(mut slot) = ENGINE.error.lock() {
                 *slot = Some(error.clone());
             }
@@ -228,7 +233,7 @@ async fn tick(
         .as_ref()
         .is_some_and(|g| settings.window_capture_games.iter().any(|w| w.eq_ignore_ascii_case(g)));
     if let Err(error) = crate::obs::blocking(move || ENGINE.set_game(game.as_deref(), window_capture)).await {
-        eprintln!("Could not retarget capture: {error}");
+        crate::logs::line(&format!("Could not retarget capture: {error}"));
         // Fail closed rather than record with a stale, possibly blocked target.
         let _ = crate::obs::blocking(|| ENGINE.stop_buffer()).await;
         state.buffer_active = ENGINE.buffer_active();

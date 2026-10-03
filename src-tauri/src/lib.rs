@@ -4,7 +4,9 @@ mod clips;
 mod elevation;
 mod engine;
 mod fullscreen;
+mod gpu;
 mod health;
+mod logs;
 mod obs;
 mod setup;
 mod supervisor;
@@ -277,6 +279,8 @@ pub fn run() {
         return;
     }
     // Login autostart passes --hidden; it survives the hand-off via a file.
+    logs::init();
+    gpu::prefer_high_performance();
     let start_hidden = std::env::args().any(|a| a == "--hidden")
         || elevation::handed_off_args().iter().any(|a| a == "--hidden");
     let app_start = std::time::Instant::now();
@@ -485,6 +489,7 @@ pub fn run() {
             setup::list_running_apps,
             setup::obs_diagnostics,
             elevation::set_run_elevated,
+            logs::open_logs,
             elevation::is_running_elevated,
             elevation::restart_elevated,
             backup::backup_status,

@@ -8,21 +8,15 @@ export interface ObsStatus {
 }
 
 export interface Settings {
-  host: string;
-  port: number;
-  password: string | null;
   clips_dir: string;
-  auto_connect: boolean;
   game_exes: string[];
   game_blacklist: string[];
   window_capture_games: string[];
   mic_noise_suppression: boolean;
   run_elevated: boolean;
   vc_exe: string;
-  auto_launch_obs: boolean;
   launch_at_login: boolean;
   auto_manage_buffer: boolean;
-  obs_path: string;
   hotkey_save: string;
   hotkey_short: string;
   short_clip_seconds: number;
