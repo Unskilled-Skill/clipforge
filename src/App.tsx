@@ -145,6 +145,36 @@ function gameColor(game: string) {
 // older clips used a 3-track (mix/desktop/mic) or 2-track layout. Guessing
 // from the count keeps the labels matching the real audio per track.
 type TrackMeta = { i: number; label: string; Icon: typeof SpeakerHigh };
+
+/// Tracks that contain each other's sound, so keeping both plays it twice.
+/// The mix (track 1) holds everything; desktop is all system sound, which
+/// includes the game and voice chat tracks (5-track layout).
+function trackOverlaps(count: number, track: number): number[] {
+  const all = Array.from({ length: count }, (_, i) => i);
+  if (track === 0) return all.filter((i) => i !== 0);
+  if (count >= 5) {
+    if (track === 3) return [0, 1, 2];
+    if (track === 1 || track === 2) return [0, 3];
+  }
+  return [0];
+}
+
+/// Check `track` and uncheck everything that would double its sound.
+function keepTrack(prev: Set<number>, track: number, count: number): Set<number> {
+  const next = new Set(prev);
+  next.add(track);
+  for (const o of trackOverlaps(count, track)) next.delete(o);
+  return next;
+}
+
+/// Drop broad tracks (mix, then desktop) that overlap a kept specific one.
+function withoutOverlaps(keep: Set<number>, count: number): Set<number> {
+  const next = new Set([...keep].filter((t) => t < Math.max(count, 1)));
+  if (next.size > 1) next.delete(0);
+  if (count >= 5 && next.has(3) && (next.has(1) || next.has(2))) next.delete(3);
+  return next.size ? next : new Set([0]);
+}
+
 function trackLabels(count: number): TrackMeta[] {
   if (count >= 5) {
     return [
@@ -838,7 +868,12 @@ function App() {
       .then((m) => setKillMarkers(m ?? []))
       .catch(() => {});
     invoke<number>("list_audio_tracks", { input: clip.path })
-      .then(setAudioTracks)
+      .then((count) => {
+        setAudioTracks(count);
+        // A remembered selection from before overlap handling may double
+        // sound (mix + game): keep the specific tracks, drop the broad ones.
+        setAudioKeep((prev) => withoutOverlaps(prev, count));
+      })
       .catch(() => {});
     invoke<{ track: number; waveform: string }[]>("gen_waveforms", { input: clip.path })
       .then(setTrackWaves)
@@ -2424,14 +2459,25 @@ function App() {
                     {trackLabels(audioTracks).map((t) => {
                       const on = audioKeep.has(t.i);
                       return (
-                        <label key={t.i} className={`mt-label ${on ? "on" : ""}`} title="Keep in export">
+                        <label
+                          key={t.i}
+                          className={`mt-label ${on ? "on" : ""}`}
+                          title={
+                            t.i === 0
+                              ? "Keep in export. The mix already contains every other track."
+                              : audioTracks >= 5 && t.i === 3
+                                ? "Keep in export. Desktop already contains game and voice chat."
+                                : "Keep in export"
+                          }
+                        >
                           <input
                             type="checkbox"
                             checked={on}
                             onChange={(e) =>
                               setAudioKeep((prev) => {
+                                if (e.target.checked) return keepTrack(prev, t.i, audioTracks);
                                 const next = new Set(prev);
-                                e.target.checked ? next.add(t.i) : next.delete(t.i);
+                                next.delete(t.i);
                                 return next;
                               })
                             }

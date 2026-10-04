@@ -279,6 +279,27 @@ impl Settings {
 }
 
 #[cfg(test)]
+mod overlap_tests {
+    use super::drop_overlapping_tracks;
+
+    fn tracks(keep: &[u32], count: u32) -> Vec<u32> {
+        let mut k: Vec<(u32, f32)> = keep.iter().map(|t| (*t, 1.0)).collect();
+        drop_overlapping_tracks(&mut k, count);
+        k.into_iter().map(|(t, _)| t).collect()
+    }
+
+    #[test]
+    fn mix_and_desktop_never_double_a_kept_track() {
+        assert_eq!(tracks(&[0], 5), [0]);
+        assert_eq!(tracks(&[0, 1], 5), [1]);
+        assert_eq!(tracks(&[1, 3, 4], 5), [1, 4]);
+        assert_eq!(tracks(&[3, 4], 5), [3, 4]);
+        assert_eq!(tracks(&[1, 2, 4], 5), [1, 2, 4]);
+        assert_eq!(tracks(&[0, 1], 3), [1]);
+    }
+}
+
+#[cfg(test)]
 mod blacklist_tests {
     use super::*;
 
@@ -992,6 +1013,18 @@ pub fn list_audio_tracks(input: String) -> Result<u32, String> {
     Ok(audio_stream_count(&ffmpeg, &input))
 }
 
+/// Tracks contain each other's sound: the mix (0) holds everything, and in
+/// the 5-track layout desktop (3) holds game (1) and voice chat (2). Keeping
+/// both would play that sound twice, so keep the specific tracks.
+fn drop_overlapping_tracks(keep: &mut Vec<(u32, f32)>, count: u32) {
+    if keep.len() > 1 {
+        keep.retain(|(t, _)| *t != 0);
+    }
+    if count >= 5 && keep.iter().any(|(t, _)| *t == 1 || *t == 2) {
+        keep.retain(|(t, _)| *t != 3);
+    }
+}
+
 #[tauri::command]
 pub async fn export_discord(
     app: AppHandle,
@@ -1047,6 +1080,7 @@ pub async fn export_discord(
         .collect();
     keep.sort_by_key(|(t, _)| *t);
     keep.dedup_by_key(|(t, _)| *t);
+    drop_overlapping_tracks(&mut keep, count);
     if keep.is_empty() && count > 0 {
         keep.push((0, 1.0));
     }
