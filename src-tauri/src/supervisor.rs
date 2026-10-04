@@ -14,6 +14,16 @@ use crate::engine::ENGINE;
 /// silently eat clips forever after a restart.
 pub static BUFFER_PAUSED: AtomicBool = AtomicBool::new(false);
 
+/// Latest state, for a window that opens (or reloads) after it was emitted:
+/// `supervisor-state` only fires on changes, so a late listener would
+/// otherwise show REC without knowing which game it records.
+static LAST_STATE: std::sync::Mutex<Option<SupervisorState>> = std::sync::Mutex::new(None);
+
+#[tauri::command]
+pub fn supervisor_state() -> Option<SupervisorState> {
+    LAST_STATE.lock().ok().and_then(|s| s.clone())
+}
+
 /// In-game ticks (3s each) the hook gets before falling back to window capture.
 const HOOK_GRACE_TICKS: u32 = 10;
 
@@ -87,6 +97,9 @@ pub async fn run(app: AppHandle) {
         // buffer down, so uploads never compete with online play.
         if state.game.is_none() && !state.buffer_active {
             crate::backup::maybe_run(&app, false);
+        }
+        if let Ok(mut last) = LAST_STATE.lock() {
+            *last = Some(state.clone());
         }
         if state != last_state {
             let _ = app.emit("supervisor-state", state.clone());

@@ -118,6 +118,10 @@ fn source(scene: &mut ObsSceneRef, id: &str, name: &str, json: serde_json::Value
     Ok(add_item(scene, id, name, json)?.inner_source().clone())
 }
 
+fn output_active(replay: &ObsReplayBufferOutputRef) -> bool {
+    replay.is_active().unwrap_or(false)
+}
+
 /// Enable/disable a filter (raw libobs: the wrapper has no setter).
 fn set_enabled(filter: &ObsFilterRef, enabled: bool) -> Result<(), String> {
     let ptr = filter.__native_handle();
@@ -410,7 +414,7 @@ impl Engine {
         if same {
             return Ok(true);
         }
-        if inner.active {
+        if inner.replay.as_ref().is_some_and(output_active) {
             return Ok(false);
         }
         inner.replay = None;
@@ -427,25 +431,59 @@ impl Engine {
         let mut guard = self.inner.lock().map_err(err)?;
         let inner = guard.as_mut().ok_or("capture engine not running")?;
         let replay = inner.replay.as_ref().ok_or("replay buffer not configured")?;
-        if !inner.active {
-            replay.start().map_err(|e| format!("Couldn't start the replay buffer: {e}"))?;
-            inner.active = true;
+        if !output_active(replay) {
+            replay.start().map_err(|e| {
+                crate::logs::line(&format!("replay buffer failed to start: {e}"));
+                format!("Couldn't start the replay buffer: {e}")
+            })?;
+            crate::logs::line(&format!("replay buffer started (game: {:?})", inner.game));
         }
+        inner.active = true;
         Ok(())
     }
 
+    /// Stop the buffer. Never hangs: if libobs doesn't confirm within 10s
+    /// (a save still flushing, a stuck encoder), the output is force-stopped.
     pub fn stop_buffer(&self) -> Result<(), String> {
         let mut guard = self.inner.lock().map_err(err)?;
         let Some(inner) = guard.as_mut() else { return Ok(()) };
-        if let (true, Some(replay)) = (inner.active, inner.replay.as_ref()) {
-            replay.stop().map_err(err)?;
-        }
         inner.active = false;
+        let Some(replay) = inner.replay.as_ref() else { return Ok(()) };
+        if !output_active(replay) {
+            return Ok(());
+        }
+        let ptr = replay.__native_handle();
+        let runtime = replay.runtime().clone();
+        let p = ptr.clone();
+        runtime
+            .run_with_obs_result(move || unsafe { libobs_wrapper::sys::obs_output_stop(p.raw_ptr_unchecked()) })
+            .map_err(err)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while output_active(replay) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if output_active(replay) {
+            crate::logs::line("replay buffer didn't stop in 10s; forcing it");
+            runtime
+                .run_with_obs_result(move || unsafe { libobs_wrapper::sys::obs_output_force_stop(ptr.raw_ptr_unchecked()) })
+                .map_err(err)?;
+        }
+        crate::logs::line("replay buffer stopped");
         Ok(())
     }
 
+    /// Whether the buffer is really recording, asked of libobs rather than
+    /// remembered: an output can stop on its own (encoder error), and a
+    /// stale flag showed REC while nothing was recording.
     pub fn buffer_active(&self) -> bool {
-        self.inner.lock().ok().and_then(|g| g.as_ref().map(|i| i.active)).unwrap_or(false)
+        let Ok(mut guard) = self.inner.lock() else { return false };
+        let Some(inner) = guard.as_mut() else { return false };
+        let live = inner.replay.as_ref().is_some_and(output_active);
+        if inner.active && !live {
+            crate::logs::line("replay buffer stopped on its own");
+        }
+        inner.active = live;
+        live
     }
 
     /// Flush the buffer to disk; blocks until the file is written.
@@ -455,7 +493,7 @@ impl Engine {
         let replay = {
             let guard = self.inner.lock().map_err(err)?;
             let inner = guard.as_ref().ok_or("capture engine not running")?;
-            if !inner.active {
+            if !inner.replay.as_ref().is_some_and(output_active) {
                 return Err("Replay buffer isn't recording — make sure a game is detected.".into());
             }
             inner.replay.clone().ok_or("replay buffer not configured")?
@@ -501,7 +539,7 @@ impl Engine {
             version: inner.ctx.get_version().ok(),
             output: inner.output.clone(),
             video: Some(inner.video),
-            active: inner.active,
+            active: inner.replay.as_ref().is_some_and(output_active),
             game_hooked,
         }
     }

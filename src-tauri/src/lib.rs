@@ -490,6 +490,7 @@ pub fn run() {
             setup::obs_diagnostics,
             elevation::set_run_elevated,
             logs::open_logs,
+            supervisor::supervisor_state,
             elevation::is_running_elevated,
             elevation::restart_elevated,
             backup::backup_status,

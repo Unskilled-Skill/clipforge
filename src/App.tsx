@@ -444,6 +444,13 @@ function App() {
     })();
   }, [connect, refreshClips]);
 
+  const applySup = useCallback((s: SupervisorState) => {
+    setSup(s);
+    setBufferPaused(s.paused);
+    setStatus((st) => ({ ...st, connected: s.connected, replay_buffer_active: s.buffer_active }));
+    if (s.connected) setError(null);
+  }, []);
+
   useEffect(() => {
     const unlisteners = [
       // Refresh comes from the dir-watcher's clips-changed event — a second
@@ -480,21 +487,17 @@ function App() {
       listen("obs-disconnected", () => {
         setStatus({ connected: false, replay_buffer_active: false, obs_version: null });
       }),
-      listen<SupervisorState>("supervisor-state", (e) => {
-        setSup(e.payload);
-        setBufferPaused(e.payload.paused);
-        setStatus((s) => ({
-          ...s,
-          connected: e.payload.connected,
-          replay_buffer_active: e.payload.buffer_active,
-        }));
-        if (e.payload.connected) setError(null);
-      }),
+      listen<SupervisorState>("supervisor-state", (e) => applySup(e.payload)),
     ];
+    // State changes are only broadcast when they happen; one that fired
+    // before this window was listening (app start, reload) is fetched here.
+    invoke<SupervisorState | null>("supervisor_state")
+      .then((s) => s && applySup(s))
+      .catch(() => {});
     return () => {
       unlisteners.forEach((p) => p.then((un) => un()));
     };
-  }, [refreshClips]);
+  }, [refreshClips, applySup]);
 
   useEffect(() => {
     if (!showSettings) return;
@@ -1628,6 +1631,13 @@ function App() {
               <GameController size={15} color="#ff8c42" weight="fill" />
               <span className="game-name">{sup.game}</span>
               <span className="game-running">running</span>
+            </div>
+          )}
+          {!sup?.game && status.replay_buffer_active && !bufferPaused && (
+            <div className="game-row">
+              <GameController size={15} color="#767a85" weight="fill" />
+              <span className="game-name">Game closed</span>
+              <span className="game-running">stopping shortly</span>
             </div>
           )}
           <div className="status-divider" />
