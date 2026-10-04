@@ -1,6 +1,6 @@
 [package]
 name = "clipforge"
-version = "0.1.31"
+version = "0.1.32"
 description = "Game clipping with an embedded OBS engine"
 license = "GPL-3.0-or-later"
 authors = ["you"]
