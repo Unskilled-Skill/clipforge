@@ -378,6 +378,9 @@ function App() {
   // while this engine is active (multi-track clip + track API available).
   const trackAudioRefs = useRef<Record<number, HTMLAudioElement | null>>({});
   const perTrackOk = useRef(false);
+  // Track elements already soloed to their track. Until then an element
+  // would play the full mix (its default track), so it stays silent.
+  const configuredTracks = useRef<Set<number>>(new Set());
   const settingsRef = useRef<Settings | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   settingsRef.current = settings;
@@ -544,26 +547,47 @@ function App() {
   }, [audioKeep, selected]);
 
   // Solo one hidden <audio> element to a single track. Once any element
-  // manages this, the per-track mixer owns playback audio: the master video
-  // is muted and each track's slider drives its own element's volume.
+  // manages this, the per-track mixer owns playback audio: the video's own
+  // audio tracks are switched off, and each track's slider drives its own
+  // element's volume.
   function configTrackAudio(el: HTMLAudioElement, track: number) {
     const list = (el as unknown as {
       audioTracks?: { length: number; [i: number]: { enabled: boolean } };
     }).audioTracks;
     if (!list || list.length <= track) return;
     for (let k = 0; k < list.length; k++) list[k].enabled = k === track;
+    configuredTracks.current.add(track);
     perTrackOk.current = true;
-    if (videoRef.current) videoRef.current.muted = true;
+    silenceVideoAudio();
     applyTrackVolumes();
+  }
+
+  // The mixer plays the sound; the video plays none. Disabling its audio
+  // tracks (rather than muting it) leaves its volume/mute controls usable:
+  // they drive the mixer through applyTrackVolumes instead of adding a
+  // second copy of the sound on top of it.
+  function silenceVideoAudio() {
+    const list = (videoRef.current as unknown as {
+      audioTracks?: { length: number; [i: number]: { enabled: boolean } };
+    } | null)?.audioTracks;
+    if (list) for (let k = 0; k < list.length; k++) list[k].enabled = false;
+    else if (videoRef.current) videoRef.current.muted = true;
   }
 
   function applyTrackVolumes() {
     if (!perTrackOk.current) return;
+    const v = videoRef.current;
+    // The video's own controls act as the master volume and mute.
+    // (Without the audio-track API the video was muted by us, so its mute
+    // state says nothing about the user's wish: play at full volume.)
+    const hasTrackApi = !!v && "audioTracks" in v;
+    const master = !v || !hasTrackApi ? 1 : v.muted ? 0 : v.volume;
     for (const key of Object.keys(trackAudioRefs.current)) {
       const i = Number(key);
       const el = trackAudioRefs.current[i];
       if (!el) continue;
-      el.volume = audioKeep.has(i) ? Math.max(0, Math.min(1, trackGain[i] ?? 1)) : 0;
+      const audible = configuredTracks.current.has(i) && audioKeep.has(i);
+      el.volume = audible ? Math.max(0, Math.min(1, trackGain[i] ?? 1)) * master : 0;
     }
   }
 
@@ -608,8 +632,12 @@ function App() {
     // together, resume together, and nudge any element that drifts >0.2s.
     const syncAudios = () => {
       if (!perTrackOk.current) return;
-      for (const el of Object.values(trackAudioRefs.current)) {
+      for (const [key, el] of Object.entries(trackAudioRefs.current)) {
         if (!el) continue;
+        if (!configuredTracks.current.has(Number(key))) {
+          if (!el.paused) el.pause();
+          continue;
+        }
         if (v.paused) {
           if (!el.paused) el.pause();
         } else if (el.paused) {
@@ -861,6 +889,7 @@ function App() {
     setAudioTracks(1);
     setTrackWaves([]);
     perTrackOk.current = false;
+    configuredTracks.current = new Set();
     trackAudioRefs.current = {};
     setRenaming(false);
     setKillMarkers([]);
@@ -889,6 +918,11 @@ function App() {
   // (enabled via additionalBrowserArgs); WebView2 may only play the first
   // enabled track, so preview is a guide — export does the real mix.
   function syncPlaybackAudio() {
+    // The per-track mixer plays the audio; the video must stay silent.
+    if (perTrackOk.current) {
+      silenceVideoAudio();
+      return;
+    }
     const list = (videoRef.current as unknown as { audioTracks?: { length: number; [i: number]: { enabled: boolean } } })
       ?.audioTracks;
     if (!list) return;
@@ -2309,6 +2343,8 @@ function App() {
                 src={convertFileSrc(selected.path)}
                 controls
                 autoPlay
+                // Its volume/mute controls are the mixer's master.
+                onVolumeChange={() => applyTrackVolumes()}
                 onLoadedMetadata={(e) => {
                   const d = e.currentTarget.duration;
                   setDuration(d);
