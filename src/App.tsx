@@ -671,7 +671,7 @@ function App() {
   useEffect(() => {
     if (!selected || duration <= 0 || trimEnd <= 0) return;
     const path = selected.path;
-    const isFull = trimStart <= 0 && trimEnd >= Math.floor(duration);
+    const isFull = trimStart <= 0 && trimEnd >= Math.floor(duration * 10) / 10;
     setTrimRanges((prev) => {
       if (isFull) {
         if (!(path in prev)) return prev;
@@ -1181,7 +1181,13 @@ function App() {
     if (!selected) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      // Dropdowns (export size, audio) use the arrow keys themselves.
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+      )
+        return;
       const video = videoRef.current;
       if (!video) return;
       switch (e.key) {
@@ -2278,7 +2284,9 @@ function App() {
                     setTrimStart(Math.max(0, saved[0]));
                     setTrimEnd(Math.min(saved[1], d));
                   } else {
-                    setTrimEnd(Math.floor(d));
+                    // Tenth-second precision like the handles; whole
+                    // seconds cut up to a second off every full export.
+                    setTrimEnd(Math.floor(d * 10) / 10);
                   }
                   syncPlaybackAudio();
                 }}

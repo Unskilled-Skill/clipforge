@@ -165,7 +165,9 @@ fn record_kill() {
 /// The replay buffer always ends "now", so a kill K seconds ago sits at
 /// `duration - K`. Works for hotkey saves too — any kill-tracked game
 /// gets markers, not just auto-clipped saves.
-pub fn write_kill_markers(clip_path: &str) {
+/// `saved_at` is when the save was requested: the clip's last frame. Later
+/// processing (renaming, short-clip trim) must not shift the markers.
+pub fn write_kill_markers(clip_path: &str, saved_at: Instant) {
     let kills: Vec<Instant> = KILL_TIMES.lock().unwrap().clone();
     if kills.is_empty() {
         return;
@@ -173,10 +175,9 @@ pub fn write_kill_markers(clip_path: &str) {
     let Ok(duration) = crate::clips::probe_clip_duration(clip_path) else {
         return;
     };
-    let now = Instant::now();
     let markers: Vec<f64> = kills
         .iter()
-        .map(|t| duration - now.duration_since(*t).as_secs_f64())
+        .map(|t| duration - saved_at.saturating_duration_since(*t).as_secs_f64())
         .filter(|s| *s >= 0.0 && *s <= duration)
         .collect();
     if !markers.is_empty() {

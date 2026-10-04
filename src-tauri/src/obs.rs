@@ -70,10 +70,24 @@ fn play(sound: &'static [u8]) {
     }
 }
 
+/// `path`, or `name (2).ext`, `name (3).ext`… if it's taken (two saves in
+/// the same second share a timestamp).
+fn unique_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (2..)
+        .map(|n| path.with_file_name(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or(path)
+}
+
 /// Rename a fresh clip to carry the game name, feedback via chime + toast.
 /// If the short-clip hotkey triggered this save, keep only the tail.
 /// Returns the clip's final path.
-async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -> String {
+async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool, saved_at: std::time::Instant) -> String {
     if short {
         let secs = crate::clips::load_settings_inner(app).short_clip_seconds;
         let _ = crate::clips::shorten_clip(&path.to_string_lossy(), secs).await;
@@ -93,7 +107,7 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -
                 pretty_game(game),
                 file_name.to_string_lossy().replacen("Replay ", "", 1)
             );
-            let target = path.with_file_name(new_name);
+            let target = unique_path(path.with_file_name(new_name));
             match std::fs::rename(&path, &target) {
                 Ok(()) => target,
                 Err(_) => path,
@@ -118,7 +132,7 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool) -
     let final_str = final_path.to_string_lossy().replace('\\', "/");
     // Annotate the clip with recent kill positions (timeline markers).
     // The buffer ends at save time, so this works for hotkey saves too.
-    crate::autoclip::write_kill_markers(&final_str);
+    crate::autoclip::write_kill_markers(&final_str, saved_at);
 
     let _ = app.emit("clip-saved", ClipSaved { path: final_str.clone() });
 
@@ -264,20 +278,30 @@ async fn save_replay_path(app: &AppHandle, short: bool) -> Result<String, String
     let _guard = SAVE_GATE
         .try_lock()
         .map_err(|_| "A clip is still saving. Wait for it to finish, then try again.")?;
-    *LAST_SAVE.lock().unwrap() = Some(std::time::Instant::now());
+    let saved_at = std::time::Instant::now();
+    *LAST_SAVE.lock().unwrap() = Some(saved_at);
     if !ENGINE.is_running() {
         return Err("The capture engine isn't running yet. Give it a few seconds, then try again.".into());
     }
     if !ENGINE.buffer_active() {
-        // Nothing to flush. Arm it now so the next save works, and say so.
+        // Nothing recorded to save. Say why, in terms the player can act on.
+        if crate::supervisor::BUFFER_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Recording is paused. Resume it (click PAUSED in the sidebar), then save again.".into());
+        }
+        let game = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
+        if game.is_none() {
+            return Err(
+                "No game detected, so nothing is recording. Start a game, or add it in Settings → Games watched."
+                    .into(),
+            );
+        }
+        // A game runs but the buffer isn't up (it just started, or "Auto
+        // buffer" is off): start it so the next save works.
         let _ = blocking(|| ENGINE.start_buffer()).await;
-        return Err(
-            "Replay buffer wasn't recording yet — just started it. Play for a few seconds, then save again."
-                .into(),
-        );
+        return Err("Recording just started. Play for a few seconds, then save again.".into());
     }
     let path = blocking(|| ENGINE.save()).await?;
-    Ok(on_clip_saved(app, path, short).await)
+    Ok(on_clip_saved(app, path, short, saved_at).await)
 }
 
 #[tauri::command]
@@ -354,6 +378,17 @@ pub async fn test_capture_source(name: String) -> Result<CaptureTest, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unique_path_skips_taken_names() {
+        let dir = std::env::temp_dir().join(format!("cf-unique-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = dir.join("Valheim 2026-10-04 12-00-00.mp4");
+        assert_eq!(unique_path(clip.clone()), clip);
+        std::fs::write(&clip, b"").unwrap();
+        assert_eq!(unique_path(clip.clone()), dir.join("Valheim 2026-10-04 12-00-00 (2).mp4"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn friendly_game_names() {

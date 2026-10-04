@@ -1015,9 +1015,19 @@ pub async fn export_discord(
     }
 
     const AUDIO_KBPS: f64 = 96.0;
+    /// Below this the picture turns to mush; better to say "trim it".
+    const MIN_VIDEO_KBPS: f64 = 200.0;
     // 6% container overhead margin
     let total_kbits = target_mb * 8192.0 * 0.94;
-    let video_kbps = (total_kbits / duration - AUDIO_KBPS).max(200.0);
+    let count = audio_stream_count(&ffmpeg, &input);
+    let audio_kbps = if count > 0 { AUDIO_KBPS } else { 0.0 };
+    let video_kbps = total_kbits / duration - audio_kbps;
+    if video_kbps < MIN_VIDEO_KBPS {
+        let max_secs = (total_kbits / (MIN_VIDEO_KBPS + audio_kbps)).floor();
+        return Err(format!(
+            "{duration:.0}s is too long to fit {target_mb:.0} MB. Trim it to {max_secs:.0}s or less, or pick a bigger size."
+        ));
+    }
 
     let input_path = PathBuf::from(&input);
     let stem = input_path
@@ -1026,17 +1036,9 @@ pub async fn export_discord(
         .to_string_lossy();
     let output = input_path.with_file_name(format!("{stem}_discord.mp4"));
 
-    // Cap height at 720p when the bitrate is starved, else keep 1080p.
-    let scale = if video_kbps < 2500.0 {
-        "scale=-2:720"
-    } else {
-        "scale=-2:1080"
-    };
-
     // Tracks the user wants kept, each with its export gain (OBS layout:
     // 0=mix, 1=game, 2=vc, 3=desktop, 4=mic). Clamp to what the file actually
     // has — old clips are single-track — dedupe, fall back to the full mix.
-    let count = audio_stream_count(&ffmpeg, &input);
     let mut keep: Vec<(u32, f32)> = audio_tracks
         .unwrap_or_default()
         .into_iter()
@@ -1045,68 +1047,67 @@ pub async fn export_discord(
         .collect();
     keep.sort_by_key(|(t, _)| *t);
     keep.dedup_by_key(|(t, _)| *t);
-    if keep.is_empty() {
+    if keep.is_empty() && count > 0 {
         keep.push((0, 1.0));
     }
 
     // One filter graph does both the video scale and the audio: each kept
     // track gets its gain applied, then multiple get summed with amix
     // (normalize=0 keeps the chosen levels instead of re-normalizing).
-    let audio_filter = if keep.len() == 1 {
-        let (t, g) = keep[0];
-        format!("[0:a:{t}]volume={g:.2}[aout]")
-    } else {
-        let mut chains = String::new();
-        for (idx, (t, g)) in keep.iter().enumerate() {
-            chains.push_str(&format!("[0:a:{t}]volume={g:.2}[ga{idx}];"));
+    let audio_filter = match keep.len() {
+        0 => String::new(),
+        1 => format!(";[0:a:{}]volume={:.2}[aout]", keep[0].0, keep[0].1),
+        n => {
+            let mut chains = String::new();
+            for (idx, (t, g)) in keep.iter().enumerate() {
+                chains.push_str(&format!(";[0:a:{t}]volume={g:.2}[ga{idx}]"));
+            }
+            let labels: String = (0..n).map(|i| format!("[ga{i}]")).collect();
+            format!("{chains};{labels}amix=inputs={n}:normalize=0[aout]")
         }
-        let labels: String = (0..keep.len()).map(|i| format!("[ga{i}]")).collect();
-        format!("{chains}{labels}amix=inputs={}:normalize=0[aout]", keep.len())
     };
-    let filter_complex = format!("[0:v:0]{scale}[vout];{audio_filter}");
+    let encoder = best_h264_encoder(&ffmpeg);
+    let target_bytes = (target_mb * 1024.0 * 1024.0) as u64;
 
-    let mut cmd = ffmpeg_cmd(&ffmpeg);
-    cmd.args([
-        "-hide_banner",
-        "-y",
-        "-nostats",
-        "-progress",
-        "pipe:1",
-        "-ss",
-        &format!("{start:.2}"),
-        "-to",
-        &format!("{end:.2}"),
-        "-i",
-        &input,
-        "-filter_complex",
-        &filter_complex,
-        "-map",
-        "[vout]",
-        "-map",
-        "[aout]",
-        "-c:v",
-        &best_h264_encoder(&ffmpeg),
-        "-b:v",
-        &format!("{video_kbps:.0}k"),
-        "-maxrate",
-        &format!("{:.0}k", video_kbps * 1.2),
-        "-c:a",
-        "aac",
-        "-b:a",
-        &format!("{AUDIO_KBPS:.0}k"),
-        "-ac",
-        "2",
-        "-movflags",
-        "+faststart",
-    ])
-    .arg(&output);
+    let encode = {
+        let (ffmpeg, input, output, app) = (ffmpeg.clone(), input.clone(), output.clone(), app.clone());
+        move |video_kbps: f64| -> Result<u64, String> {
+            // Cap height at 720p when the bitrate is starved, else keep 1080p.
+            let scale = if video_kbps < 2500.0 { "scale=-2:720" } else { "scale=-2:1080" };
+            let mut cmd = ffmpeg_cmd(&ffmpeg);
+            cmd.args(["-hide_banner", "-y", "-nostats", "-progress", "pipe:1"])
+                .args(["-ss", &format!("{start:.2}"), "-to", &format!("{end:.2}"), "-i", &input])
+                .args(["-filter_complex", &format!("[0:v:0]{scale}[vout]{audio_filter}"), "-map", "[vout]"]);
+            if !audio_filter.is_empty() {
+                cmd.args(["-map", "[aout]", "-c:a", "aac", "-b:a", &format!("{AUDIO_KBPS:.0}k"), "-ac", "2"]);
+            }
+            cmd.args(["-c:v", &encoder, "-b:v", &format!("{video_kbps:.0}k")])
+                .args(["-maxrate", &format!("{:.0}k", video_kbps * 1.2), "-bufsize", &format!("{:.0}k", video_kbps * 2.0)])
+                .args(["-movflags", "+faststart"])
+                .arg(&output);
+            run_ffmpeg_with_progress(&app, cmd, duration, "export")?;
+            std::fs::metadata(&output).map(|m| m.len()).map_err(|e| e.to_string())
+        }
+    };
 
-    let app2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        run_ffmpeg_with_progress(&app2, cmd, duration, "export")
+    // Hardware encoders don't hold a bitrate exactly; a file over the limit
+    // is one Discord rejects. Re-encode once, scaled down by the overshoot.
+    let out_bytes = tauri::async_runtime::spawn_blocking(move || {
+        let size = encode(video_kbps)?;
+        if size <= target_bytes {
+            return Ok(size);
+        }
+        let retry = (video_kbps * target_bytes as f64 / size as f64 * 0.93).max(MIN_VIDEO_KBPS);
+        encode(retry)
     })
     .await
     .map_err(|e| e.to_string())??;
+    if out_bytes > target_bytes {
+        return Err(format!(
+            "The export came out at {:.1} MB, over {target_mb:.0} MB. Trim it shorter or pick a bigger size.",
+            out_bytes as f64 / 1_048_576.0
+        ));
+    }
     let out = output.to_string_lossy().replace('\\', "/");
     // Straight to Ctrl+V in Discord.
     let _ = copy_file_to_clipboard(&out);
