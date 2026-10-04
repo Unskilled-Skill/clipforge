@@ -149,6 +149,14 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return null;
     case "open_logs":
       return null;
+    case "list_share_links":
+      return [{ host: "catbox", url: "https://files.catbox.moe/abc123.mp4", start: 0, end: 30, at: 0 }];
+    case "share_catbox":
+      return "https://files.catbox.moe/abc123.mp4";
+    case "share_streamable":
+    case "save_share_link":
+    case "copy_link":
+      return null;
     case "is_running_elevated":
       return false;
     case "apply_obs_config":

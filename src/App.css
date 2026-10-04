@@ -2294,3 +2294,13 @@ button.hotkey-rows:focus-visible { outline: 2px solid #4c6ef5; outline-offset: 2
   transform-origin: left;
   transition: transform 0.3s ease-out;
 }
+
+/* Share as link (editor export panel). */
+.share-card { gap: 8px; }
+.share-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.share-buttons .btn-trim { flex: 1 1 0; justify-content: center; }
+.share-paste input { flex: 1 1 auto; min-width: 0; }
+.share-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.share-links li { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.share-host { color: #a3a7b1; text-transform: capitalize; flex: 0 0 auto; }
+.share-url { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #eceef3; }

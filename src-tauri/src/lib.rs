@@ -9,6 +9,7 @@ mod health;
 mod logs;
 mod obs;
 mod setup;
+mod share;
 mod supervisor;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -490,6 +491,11 @@ pub fn run() {
             setup::obs_diagnostics,
             elevation::set_run_elevated,
             logs::open_logs,
+            share::share_catbox,
+            share::share_streamable,
+            share::list_share_links,
+            share::save_share_link,
+            share::copy_link,
             supervisor::supervisor_state,
             elevation::is_running_elevated,
             elevation::restart_elevated,

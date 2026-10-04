@@ -36,7 +36,8 @@ regex = "1.13.0"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-dialog = "2"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls", "multipart", "stream"] }
+futures-util = "0.3"
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 # Embedded OBS engine (GPL). Pinned: the API is pre-1.0 and changes often.
 libobs-wrapper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }

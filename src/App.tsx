@@ -10,8 +10,10 @@ import {
   Camera,
   CheckCircle,
   Circle,
+  ArrowSquareOut,
   Copy,
   Crosshair,
+  LinkSimple,
   DiscordLogo,
   Gif,
   FilmSlate,
@@ -144,6 +146,8 @@ function gameColor(game: string) {
 // many tracks the clip has: new clips record the full 5-track split, while
 // older clips used a 3-track (mix/desktop/mic) or 2-track layout. Guessing
 // from the count keeps the labels matching the real audio per track.
+type ShareLink = { host: string; url: string; start: number; end: number; at: number };
+
 type TrackMeta = { i: number; label: string; Icon: typeof SpeakerHigh };
 
 /// Tracks that contain each other's sound, so keeping both plays it twice.
@@ -299,6 +303,14 @@ function App() {
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [diskFree, setDiskFree] = useState<number | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
+  // Which job the percentage belongs to: "export", "share", "upload", …
+  const [exportLabel, setExportLabel] = useState<string | null>(null);
+  // Share-as-link: the running job, this clip's saved links, and the
+  // Streamable link field shown after the file is prepared.
+  const [sharing, setSharing] = useState<"catbox" | "streamable" | null>(null);
+  const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
+  const [streamableReady, setStreamableReady] = useState(false);
+  const [streamableUrl, setStreamableUrl] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "largest" | "longest" | "name">(
     "newest"
   );
@@ -494,9 +506,10 @@ function App() {
       }),
       listen<string>("clip-error", (e) => setError(e.payload)),
       listen("clips-changed", () => refreshClips()),
-      listen<{ label: string; pct: number }>("export-progress", (e) =>
-        setExportPct(e.payload.pct)
-      ),
+      listen<{ label: string; pct: number }>("export-progress", (e) => {
+        setExportLabel(e.payload.label);
+        setExportPct(e.payload.pct);
+      }),
       listen("auto-clip-armed", () => showToast("Kill detected — clipping in a few seconds…")),
       listen("auto-clipped", () => showToast("Auto-clipped!")),
       // Every settings save (UI or backend) arrives here, so the UI's copy
@@ -1511,6 +1524,78 @@ function App() {
     }
   }
 
+  // Load the links already made for the open clip.
+  useEffect(() => {
+    setStreamableReady(false);
+    setStreamableUrl("");
+    if (!selected) {
+      setShareLinks([]);
+      return;
+    }
+    invoke<ShareLink[]>("list_share_links", { input: selected.path })
+      .then(setShareLinks)
+      .catch(() => setShareLinks([]));
+  }, [selected]);
+
+  function shareArgs() {
+    return {
+      input: selected!.path,
+      start: trimStart,
+      end: trimEnd,
+      audioTracks: [...audioKeep].sort((a, b) => a - b).map((t) => [t, trackGain[t] ?? 1]),
+    };
+  }
+
+  async function shareCatbox() {
+    if (!selected) return;
+    setSharing("catbox");
+    setError(null);
+    try {
+      await invoke<string>("share_catbox", shareArgs());
+      setShareLinks(await invoke<ShareLink[]>("list_share_links", { input: selected.path }));
+      showToast("Link copied — paste it anywhere, it plays in Discord");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSharing(null);
+      setExportPct(null);
+    }
+  }
+
+  async function shareStreamable() {
+    if (!selected) return;
+    setSharing("streamable");
+    setError(null);
+    try {
+      await invoke<string>("share_streamable", shareArgs());
+      setStreamableReady(true);
+      showToast("Drag the highlighted file onto streamable.com");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSharing(null);
+      setExportPct(null);
+    }
+  }
+
+  async function saveStreamableLink() {
+    if (!selected) return;
+    try {
+      await invoke("save_share_link", {
+        input: selected.path,
+        host: "streamable",
+        url: streamableUrl,
+        start: trimStart,
+        end: trimEnd,
+      });
+      setShareLinks(await invoke<ShareLink[]>("list_share_links", { input: selected.path }));
+      setStreamableReady(false);
+      setStreamableUrl("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function exportDiscord() {
     if (!selected) return;
     setExporting(true);
@@ -2407,12 +2492,83 @@ function App() {
                     </span>
                   </div>
                 )}
-                <button className="btn-discord wide" onClick={exportDiscord} disabled={exporting}>
+                <button className="btn-discord wide" onClick={exportDiscord} disabled={exporting || sharing !== null}>
                   <DiscordLogo size={17} weight="fill" />
                   {exporting
-                    ? `exporting… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                    ? `exporting… ${exportPct != null && exportLabel === "export" ? Math.round(exportPct) + "%" : ""}`
                     : "Export and copy"}
                 </button>
+              </section>
+              <section className="export-card share-card">
+                <h2 className="export-title">Share as link</h2>
+                <span className="field-hint">
+                  An HD copy of your selection. Anyone with the link can watch. catbox links don't
+                  expire; free Streamable links last 90 days.
+                </span>
+                <div className="share-buttons">
+                  <button className="btn-trim" onClick={shareCatbox} disabled={sharing !== null || exporting}>
+                    <LinkSimple size={16} />
+                    {sharing === "catbox"
+                      ? exportLabel === "upload"
+                        ? `uploading… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                        : `making HD copy… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                      : "catbox.moe link"}
+                  </button>
+                  <button
+                    className="btn-trim"
+                    title="Prepares the file and opens streamable.com — drag the file in there"
+                    onClick={shareStreamable}
+                    disabled={sharing !== null || exporting}
+                  >
+                    <ArrowSquareOut size={16} />
+                    {sharing === "streamable"
+                      ? `making HD copy… ${exportPct != null ? Math.round(exportPct) + "%" : ""}`
+                      : "Streamable"}
+                  </button>
+                </div>
+                {streamableReady && (
+                  <form
+                    className="set-row share-paste"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void saveStreamableLink();
+                    }}
+                  >
+                    <input
+                      className="mono"
+                      placeholder="Paste the Streamable link to keep it here"
+                      value={streamableUrl}
+                      onChange={(e) => setStreamableUrl(e.target.value)}
+                    />
+                    <button className="btn-ghost" type="submit" disabled={!streamableUrl.trim()}>
+                      Save
+                    </button>
+                  </form>
+                )}
+                {shareLinks.length > 0 && (
+                  <ul className="share-links">
+                    {shareLinks.slice(0, 4).map((l) => (
+                      <li key={l.url}>
+                        <span className="share-host">{l.host}</span>
+                        <span className="mono share-url" title={l.url}>
+                          {l.url.replace(/^https:\/\//, "")}
+                        </span>
+                        <button
+                          className="btn-ghost"
+                          title="Copy link"
+                          aria-label={`Copy ${l.host} link`}
+                          onClick={() =>
+                            invoke("copy_link", { url: l.url })
+                              .then(() => showToast("Link copied"))
+                              .catch((e) => setError(String(e)))
+                          }
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </section>
               <div className="export-tools">
                 <button className="btn-trim" onClick={doTrim} disabled={trimming || trimEnd <= trimStart}>

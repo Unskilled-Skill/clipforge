@@ -1035,6 +1035,31 @@ pub async fn export_discord(
     // (track index, gain) pairs — gain 1.0 = unchanged, 0.5 = half, 2.0 = double.
     audio_tracks: Option<Vec<(u32, f32)>>,
 ) -> Result<String, String> {
+    let input_path = PathBuf::from(&input);
+    let stem = input_path.file_stem().ok_or("bad input path")?.to_string_lossy().into_owned();
+    let output = input_path.with_file_name(format!("{stem}_discord.mp4"));
+    let out = encode_selection(&app, &input, start, end, audio_tracks, target_mb, None, output, "export").await?;
+    // Straight to Ctrl+V in Discord.
+    let _ = copy_file_to_clipboard(&out);
+    Ok(out)
+}
+
+/// Re-encode `start..end` of a clip to H.264 + AAC that fits `target_mb`,
+/// with the chosen audio tracks mixed. `max_video_kbps` caps the bitrate
+/// when the size budget is generous (share copies). Returns the output path.
+#[allow(clippy::too_many_arguments)]
+pub async fn encode_selection(
+    app: &AppHandle,
+    input: &str,
+    start: f64,
+    end: f64,
+    audio_tracks: Option<Vec<(u32, f32)>>,
+    target_mb: f64,
+    max_video_kbps: Option<f64>,
+    output: PathBuf,
+    label: &'static str,
+) -> Result<String, String> {
+    let input = input.to_string();
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let full = clip_duration(&ffmpeg, &input)?;
     let (start, end) = if end > start {
@@ -1055,19 +1080,13 @@ pub async fn export_discord(
     let count = audio_stream_count(&ffmpeg, &input);
     let audio_kbps = if count > 0 { AUDIO_KBPS } else { 0.0 };
     let video_kbps = total_kbits / duration - audio_kbps;
+    let video_kbps = max_video_kbps.map_or(video_kbps, |cap| video_kbps.min(cap));
     if video_kbps < MIN_VIDEO_KBPS {
         let max_secs = (total_kbits / (MIN_VIDEO_KBPS + audio_kbps)).floor();
         return Err(format!(
             "{duration:.0}s is too long to fit {target_mb:.0} MB. Trim it to {max_secs:.0}s or less, or pick a bigger size."
         ));
     }
-
-    let input_path = PathBuf::from(&input);
-    let stem = input_path
-        .file_stem()
-        .ok_or("bad input path")?
-        .to_string_lossy();
-    let output = input_path.with_file_name(format!("{stem}_discord.mp4"));
 
     // Tracks the user wants kept, each with its export gain (OBS layout:
     // 0=mix, 1=game, 2=vc, 3=desktop, 4=mic). Clamp to what the file actually
@@ -1119,7 +1138,7 @@ pub async fn export_discord(
                 .args(["-maxrate", &format!("{:.0}k", video_kbps * 1.2), "-bufsize", &format!("{:.0}k", video_kbps * 2.0)])
                 .args(["-movflags", "+faststart"])
                 .arg(&output);
-            run_ffmpeg_with_progress(&app, cmd, duration, "export")?;
+            run_ffmpeg_with_progress(&app, cmd, duration, label)?;
             std::fs::metadata(&output).map(|m| m.len()).map_err(|e| e.to_string())
         }
     };
@@ -1142,10 +1161,7 @@ pub async fn export_discord(
             out_bytes as f64 / 1_048_576.0
         ));
     }
-    let out = output.to_string_lossy().replace('\\', "/");
-    // Straight to Ctrl+V in Discord.
-    let _ = copy_file_to_clipboard(&out);
-    Ok(out)
+    Ok(output.to_string_lossy().replace('\\', "/"))
 }
 
 /// Render an audio waveform strip for the timeline, cached next to thumbs.
