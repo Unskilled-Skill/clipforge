@@ -1096,7 +1096,12 @@ function App() {
     const endDist = Math.abs(t - trimEnd);
     const grabRange = duration * 0.04;
     if (Math.min(startDist, endDist) < grabRange) {
+      // Grabbing a trim handle: pause and show the frame under it while
+      // dragging; playback resumes from the handle on release.
       dragging.current = startDist <= endDist ? "start" : "end";
+      setPreviewing(false);
+      videoRef.current?.pause();
+      scrubTo(dragging.current === "start" ? trimStart : trimEnd);
     } else {
       // Scrub: pause (editor convention), seek to the pointer, follow the drag.
       beginScrub();
@@ -1109,16 +1114,29 @@ function App() {
     if (!dragging.current) return;
     const t = timeAt(e.clientX);
     if (dragging.current === "start") {
-      setTrimStart(Math.min(Math.round(t * 10) / 10, trimEnd - 0.5));
+      const next = Math.min(Math.round(t * 10) / 10, trimEnd - 0.5);
+      setTrimStart(next);
+      scrubTo(next);
     } else if (dragging.current === "end") {
-      setTrimEnd(Math.max(Math.round(t * 10) / 10, trimStart + 0.5));
+      const next = Math.max(Math.round(t * 10) / 10, trimStart + 0.5);
+      setTrimEnd(next);
+      scrubTo(next);
     } else {
       scrubTo(t);
     }
   }
 
   function onTimelineUp() {
+    const handle = dragging.current;
     dragging.current = null;
+    const video = videoRef.current;
+    if (!video || (handle !== "start" && handle !== "end")) return;
+    scrubTarget.current = null;
+    // Play the selection from the handle just moved. For the end handle,
+    // start a couple of seconds before it so the cut point is audible.
+    video.currentTime = handle === "start" ? trimStart : Math.max(trimStart, trimEnd - 2);
+    setPreviewing(true);
+    video.play().catch(() => {});
   }
 
   function beginScrub() {
