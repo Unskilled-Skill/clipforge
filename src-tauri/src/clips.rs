@@ -162,12 +162,19 @@ pub struct Settings {
     /// Drive folder). Empty = backups off. See `backup.rs`.
     #[serde(default)]
     pub backup_dir: String,
+    /// catbox.moe account userhash: uploads go to that account (needed
+    /// when catbox refuses anonymous uploads). Empty = anonymous.
+    #[serde(default)]
+    pub catbox_userhash: String,
     /// Off by default — only useful for CS2/LoL or log-trigger setups.
     #[serde(default)]
     pub auto_clip: bool,
     /// Seconds to wait after the last kill before saving (multikill window).
     #[serde(default = "default_auto_clip_delay")]
     pub auto_clip_delay_s: f64,
+    /// Accept kill events from the Overwolf companion app (needs Overwolf).
+    #[serde(default)]
+    pub overwolf_events: bool,
     /// Replay buffer length — how far back a clip reaches.
     #[serde(default = "default_replay_seconds")]
     pub replay_seconds: f64,
@@ -237,8 +244,10 @@ impl Default for Settings {
             short_clip_seconds: default_short_secs(),
             max_storage_gb: default_max_storage_gb(),
             backup_dir: String::new(),
+            catbox_userhash: String::new(),
             auto_clip: false,
             auto_clip_delay_s: default_auto_clip_delay(),
+            overwolf_events: false,
             replay_seconds: default_replay_seconds(),
             video_fps: default_fps(),
             video_height: 0,

@@ -1,0 +1,41 @@
+{
+  "manifest_version": 1,
+  "type": "WebApp",
+  "meta": {
+    "name": "ClipForge Events",
+    "author": "Unskilled-Skill",
+    "version": "0.1.0",
+    "minimum-overwolf-version": "0.170.0",
+    "description": "Sends your in-game kills to ClipForge so it can auto-clip them.",
+    "icon": "icons/icon.png",
+    "icon_gray": "icons/icon_gray.png",
+    "launcher_icon": "icons/launcher.ico"
+  },
+  "permissions": ["GameInfo"],
+  "data": {
+    "start_window": "background",
+    "windows": {
+      "background": {
+        "file": "background.html",
+        "is_background_page": true
+      }
+    },
+    "game_targeting": {
+      "type": "dedicated",
+      "game_ids": [21640, 21216, 21566, 10826, 10844, 10798, 24890]
+    },
+    "game_events": [21640, 21216, 21566, 10826, 10844, 10798, 24890],
+    "launch_events": [
+      {
+        "event": "GameLaunch",
+        "event_data": {
+          "game_ids": [21640, 21216, 21566, 10826, 10844, 10798, 24890]
+        },
+        "start_minimized": true
+      }
+    ],
+    "externally_connectable": {
+      "matches": ["http://127.0.0.1:3888"]
+    }
+  }
+}

@@ -27,8 +27,10 @@ const mockSettings = {
   short_clip_seconds: 30,
   max_storage_gb: 100,
   backup_dir: "F:/My Drive/Media/Clips",
+  catbox_userhash: "",
   auto_clip: false,
   auto_clip_delay_s: 8,
+  overwolf_events: false,
   replay_seconds: 180,
   video_fps: 60,
   video_height: 0,
@@ -105,6 +107,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return "D:/RECORDINGS/Clips/mock-out.mp4";
     case "rename_clip":
       return `D:/RECORDINGS/Clips/${(_args as { newName: string }).newName}.mp4`;
+    case "overwolf_status":
+      return 3;
     case "setup_status":
       return { obs_installed: true, ffmpeg_installed: true };
     case "obs_diagnostics":

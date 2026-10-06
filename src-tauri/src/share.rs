@@ -3,7 +3,8 @@
 //! Both hosts get a high-quality H.264 copy of the editor's selection (same
 //! trim and audio tracks as a Discord export, but sized for quality, not for
 //! a 10 MB cap), which plays everywhere, including inline in Discord.
-//! - catbox.moe: uploaded here, link copied. Anonymous, no expiry, 200 MB max.
+//! - catbox.moe: uploaded here, link copied. No expiry, 200 MB max. Goes to
+//!   the user's catbox account when a userhash is set, else anonymous.
 //! - Streamable: its API no longer accepts uploads, so the copy is prepared,
 //!   streamable.com opens and the file is highlighted in Explorer to drag in.
 //!   (Free uploads there are deleted after 90 days.)
@@ -156,9 +157,13 @@ async fn upload_catbox(app: &AppHandle, file: &std::path::Path) -> Result<String
         .file_name(name)
         .mime_str("video/mp4")
         .map_err(|e| e.to_string())?;
-    let form = reqwest::multipart::Form::new()
-        .text("reqtype", "fileupload")
-        .part("fileToUpload", part);
+    let mut form = reqwest::multipart::Form::new().text("reqtype", "fileupload");
+    let userhash = crate::clips::load_settings_inner(app).catbox_userhash.trim().to_string();
+    let anonymous = userhash.is_empty();
+    if !anonymous {
+        form = form.text("userhash", userhash);
+    }
+    let form = form.part("fileToUpload", part);
 
     let client = reqwest::Client::builder()
         .user_agent(concat!("ClipForge/", env!("CARGO_PKG_VERSION")))
@@ -177,9 +182,15 @@ async fn upload_catbox(app: &AppHandle, file: &std::path::Path) -> Result<String
     if status.is_success() && url.starts_with("https://") {
         Ok(url.to_string())
     } else {
+        let reason = if url.is_empty() { "no response" } else { url };
+        crate::logs::line(&format!("catbox upload refused ({status}): {reason}"));
         Err(format!(
-            "catbox.moe didn't accept the upload ({status}): {}",
-            if url.is_empty() { "no response" } else { url }
+            "catbox.moe didn't accept the upload ({status}): {reason}{}",
+            if anonymous {
+                ". If catbox wants you logged in, add your userhash in Settings → Storage."
+            } else {
+                ". Check the catbox userhash in Settings → Storage."
+            }
         ))
     }
 }

@@ -412,6 +412,32 @@ function BackupSettings(props: { settings: Settings; saveSettings: (s: Settings)
   );
 }
 
+function CatboxSettings(props: { settings: Settings; saveSettings: (s: Settings) => Promise<void> }) {
+  const { settings, saveSettings } = props;
+  const [draft, setDraft] = useState(settings.catbox_userhash);
+  useEffect(() => setDraft(settings.catbox_userhash), [settings.catbox_userhash]);
+  return (
+    <label className="set-col">
+      <span className="field-label">catbox.moe userhash</span>
+      <input
+        className="mono"
+        type="password"
+        autoComplete="off"
+        placeholder="Empty = upload without an account"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft.trim() !== settings.catbox_userhash) saveSettings({ ...settings, catbox_userhash: draft.trim() });
+        }}
+      />
+      <span className="field-hint">
+        Shared links go to your catbox account. Find the userhash on catbox.moe → Manage account
+        while logged in.
+      </span>
+    </label>
+  );
+}
+
 /// `action` names a one-click fix the Health panel can run for this row.
 type Check = { label: string; value: string; ok: boolean; fix?: string; action?: "install-ffmpeg" | "restart-engine" };
 
@@ -653,6 +679,15 @@ export function SettingsPage(props: {
   const [elevateError, setElevateError] = useState<string | null>(null);
   const [blacklistBusy, setBlacklistBusy] = useState(false);
   const [blacklistError, setBlacklistError] = useState<string | null>(null);
+  // Seconds since the Overwolf companion app checked in; null = never.
+  const [overwolfSeen, setOverwolfSeen] = useState<number | null>(null);
+  useEffect(() => {
+    if (!settings.overwolf_events) return;
+    const poll = () => invoke<number | null>("overwolf_status").then(setOverwolfSeen).catch(() => {});
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [settings.overwolf_events]);
   async function updateBlacklist(next: Settings) {
     setBlacklistBusy(true);
     setBlacklistError(null);
@@ -888,8 +923,8 @@ export function SettingsPage(props: {
             <div className="toggle-text">
               <span className="toggle-title">Auto-clip kills</span>
               <span className="toggle-desc">
-                CS2 and League only (official event APIs). Saves a clip a few seconds
-                after your kill — multikills land in one clip. Other games: hotkey.
+                CS2 and League built in, more games with Overwolf below. Saves a clip a
+                few seconds after your kill — multikills land in one clip. Other games: hotkey.
               </span>
             </div>
             <button
@@ -898,6 +933,28 @@ export function SettingsPage(props: {
               aria-checked={settings.auto_clip}
               aria-label="Auto-clip kills"
               onClick={() => saveSettings({ ...settings, auto_clip: !settings.auto_clip })}
+            >
+              <span className="knob" />
+            </button>
+          </div>
+          <div className="toggle-card">
+            <div className="toggle-text">
+              <span className="toggle-title">Overwolf game events</span>
+              <span className="toggle-desc">
+                Valorant, Fortnite, Apex, Siege, Overwatch, Rocket League and Marvel Rivals.
+                Needs Overwolf and the ClipForge Overwolf app. ClipForge still does the recording.
+                {settings.overwolf_events &&
+                  (overwolfSeen !== null && overwolfSeen < 180
+                    ? " Connected."
+                    : " Not connected. Open Overwolf.")}
+              </span>
+            </div>
+            <button
+              className={`switch ${settings.overwolf_events ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.overwolf_events}
+              aria-label="Overwolf game events"
+              onClick={() => saveSettings({ ...settings, overwolf_events: !settings.overwolf_events })}
             >
               <span className="knob" />
             </button>
@@ -1211,6 +1268,7 @@ export function SettingsPage(props: {
             </span>
           </label>
           <BackupSettings settings={settings} saveSettings={saveSettings} />
+          <CatboxSettings settings={settings} saveSettings={saveSettings} />
         </section>
 
       </div>

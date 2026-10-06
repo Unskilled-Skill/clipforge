@@ -3,6 +3,9 @@
 //! CS2 pushes kill events to us over Game State Integration (the game
 //! POSTs JSON to a localhost port — no polling at all). League is polled
 //! via its official local live-client API, only while it is running.
+//! Overwolf-supported games (Valorant, Fortnite, Apex, ...) arrive through
+//! the companion Overwolf app in `/overwolf`, which POSTs its game events
+//! to the same localhost port.
 //! A kill arms a short countdown; further kills extend it, so a multikill
 //! ends up in one clip that includes the whole sequence.
 
@@ -146,6 +149,8 @@ static CS2_KILLS: AtomicI64 = AtomicI64::new(-1);
 /// Highest LoL event id already processed.
 static LOL_LAST_EVENT: AtomicI64 = AtomicI64::new(-1);
 static GSI_CONFIG_DONE: AtomicBool = AtomicBool::new(false);
+/// Unix seconds of the last request from the Overwolf companion app (0 = never).
+static OVERWOLF_LAST_SEEN: AtomicI64 = AtomicI64::new(0);
 
 /// Instants of recent detected kills, kept so a saved clip can be annotated
 /// with where in its timeline each kill sits (timeline kill markers).
@@ -301,7 +306,11 @@ async fn gsi_listener(app: AppHandle) {
             let Ok(json) = serde_json::from_slice::<serde_json::Value>(&buf[body_start..]) else {
                 return;
             };
-            handle_cs2_payload(&app, &json);
+            if buf.starts_with(b"POST /overwolf") {
+                handle_overwolf_payload(&app, &json);
+            } else {
+                handle_cs2_payload(&app, &json);
+            }
         });
     }
 }
@@ -333,6 +342,37 @@ fn handle_cs2_payload(app: &AppHandle, json: &serde_json::Value) {
         let delay = crate::clips::load_settings_inner(app).auto_clip_delay_s;
         schedule_clip(app, delay);
     }
+}
+
+/// A message from the Overwolf companion app: `{"type":"hello"}` on start
+/// and game launch, `{"type":"highlight","game":21640,"event":"kill"}` when
+/// the local player scores a kill/knock/goal. The app already filters to
+/// the local player's highlight events, so every one becomes a clip.
+fn handle_overwolf_payload(app: &AppHandle, json: &serde_json::Value) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    OVERWOLF_LAST_SEEN.store(now, Ordering::Relaxed);
+
+    let settings = crate::clips::load_settings_inner(app);
+    if settings.overwolf_events && json["type"] == "highlight" {
+        schedule_clip(app, settings.auto_clip_delay_s);
+    }
+}
+
+/// Seconds since the Overwolf companion app last checked in (None = never).
+#[tauri::command]
+pub fn overwolf_status() -> Option<i64> {
+    let last = OVERWOLF_LAST_SEEN.load(Ordering::Relaxed);
+    if last == 0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(last);
+    Some((now - last).max(0))
 }
 
 /// Poll League's local live-client API for ChampionKill events by us.

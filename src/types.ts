@@ -22,8 +22,10 @@ export interface Settings {
   short_clip_seconds: number;
   max_storage_gb: number;
   backup_dir: string;
+  catbox_userhash: string;
   auto_clip: boolean;
   auto_clip_delay_s: number;
+  overwolf_events: boolean;
   replay_seconds: number;
   video_fps: number;
   video_height: number;

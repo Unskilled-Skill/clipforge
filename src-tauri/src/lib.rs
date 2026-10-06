@@ -450,6 +450,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             obs::obs_connect,
             obs::obs_status,
+            autoclip::overwolf_status,
             obs::start_replay_buffer,
             obs::save_replay_cmd,
             obs::save_setup_replay,
