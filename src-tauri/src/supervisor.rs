@@ -30,6 +30,10 @@ const HOOK_GRACE_TICKS: u32 = 10;
 /// Set by the "Retry" buttons: skip the wait after a failed engine start.
 pub static RETRY_ENGINE_NOW: AtomicBool = AtomicBool::new(false);
 
+/// The running engine was started while adapter 0 was an integrated GPU.
+static STARTED_ON_IGPU: AtomicBool = AtomicBool::new(false);
+static IGPU_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 #[derive(Debug, PartialEq)]
 enum BufferAction { Keep, Start, Stop }
 
@@ -145,6 +149,13 @@ async fn start_engine(app: &AppHandle, settings: &crate::clips::Settings, state:
         result.map_err(|e| format!("Couldn't download the capture engine: {e}"))?;
     }
     let settings = settings.clone();
+    // libobs picks its GPU once, here. Started at login before the dGPU
+    // driver is up, it lands on the iGPU (QuickSync, cross-adapter capture).
+    let discrete = crate::gpu::primary_is_discrete();
+    STARTED_ON_IGPU.store(!discrete, Ordering::Relaxed);
+    if !discrete {
+        crate::logs::line("capture engine starting on an integrated GPU");
+    }
     crate::obs::blocking(move || {
         let video = crate::engine::video_config(settings.video_fps, settings.video_height);
         ENGINE.ensure_started(video, &settings.vc_exe)?;
@@ -193,6 +204,17 @@ async fn tick(
     }
     state.obs_running = true;
     state.connected = true;
+
+    // 1b. Engine came up on the iGPU but a discrete GPU is there now: libobs
+    // can't switch adapters live, so relaunch onto it. Only fires if adapter
+    // 0 really is the dGPU now, so a user's power-saving preference can't loop.
+    if STARTED_ON_IGPU.load(Ordering::Relaxed) {
+        // Every ~30s; enumerating adapters every tick is wasteful.
+        if IGPU_TICKS.fetch_add(1, Ordering::Relaxed) % 10 == 9 && crate::gpu::primary_is_discrete() {
+            crate::logs::line("discrete GPU appeared; restarting onto it");
+            app.restart();
+        }
+    }
 
     // 2. Settings changed while recording land once the buffer is down.
     if crate::setup::RELOAD_PENDING.load(Ordering::Relaxed) && !ENGINE.buffer_active() {

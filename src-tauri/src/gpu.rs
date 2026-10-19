@@ -27,6 +27,20 @@ fn hardware_adapters() -> usize {
     }
 }
 
+/// Whether DXGI adapter 0 (the one libobs renders and encodes on) is a
+/// discrete card. Judged by dedicated VRAM: iGPUs report ~128 MB, any real
+/// dGPU (Intel Arc included) several GB. A fresh factory each call, so a
+/// card whose driver came up after we started is seen.
+pub fn primary_is_discrete() -> bool {
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else { return false };
+        let Ok(adapter) = factory.EnumAdapters1(0) else { return false };
+        adapter.GetDesc1().is_ok_and(|d| {
+            d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 && d.DedicatedVideoMemory >= 1 << 30
+        })
+    }
+}
+
 fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
     use std::os::windows::process::CommandExt;
     std::process::Command::new("reg")
