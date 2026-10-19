@@ -1,7 +1,7 @@
 {
   "name": "clipforge",
   "private": true,
-  "version": "0.1.34",
+  "version": "0.1.35",
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
