@@ -119,10 +119,9 @@ fn pick_encoder(pref: &str, available: &[String]) -> Option<String> {
         "av1" => find(&["av1"]),
         "hevc" => find(&["hevc", "265"]),
         "h264" => find(&["264", "avc"]).or_else(|| Some("obs_x264".into())),
-        // auto: best codec this GPU offers
-        _ => find(&["av1"])
-            .or_else(|| find(&["hevc", "265"]))
-            .or_else(|| find(&["264", "avc"])),
+        // auto: AV1 if this GPU has it, else H.264. HEVC is skipped: the
+        // WebView preview often can't decode it (black frame, audio-only bar).
+        _ => find(&["av1"]).or_else(|| find(&["264", "avc"])),
     }
 }
 
@@ -326,7 +325,7 @@ mod tests {
         assert_eq!(pick_encoder("h264", &ids).as_deref(), Some("h264_texture_amf"));
         let intel_only: Vec<String> = ["obs_qsv11_v2", "obs_qsv11_hevc", "obs_x264"].map(String::from).into();
         assert_eq!(pick_encoder("h264", &intel_only).as_deref(), Some("obs_qsv11_v2"));
-        assert_eq!(pick_encoder("auto", &intel_only).as_deref(), Some("obs_qsv11_hevc"));
+        assert_eq!(pick_encoder("auto", &intel_only).as_deref(), Some("obs_qsv11_v2"));
     }
 
     #[test]

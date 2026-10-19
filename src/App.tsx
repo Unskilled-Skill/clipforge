@@ -242,6 +242,7 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
+  const [noVideo, setNoVideo] = useState(false);
   const [gameFilter, setGameFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [hkSave, setHkSave] = useState("");
@@ -2430,9 +2431,12 @@ function App() {
                 autoPlay
                 // Its volume/mute controls are the mixer's master.
                 onVolumeChange={() => applyTrackVolumes()}
+                onLoadStart={() => setNoVideo(false)}
                 onLoadedMetadata={(e) => {
                   const d = e.currentTarget.duration;
                   setDuration(d);
+                  // A video track the WebView can't decode loads as audio-only.
+                  setNoVideo(e.currentTarget.videoWidth === 0);
                   // Restore the clip's last trim so montage prep survives
                   // closing and re-opening the editor.
                   const saved = trimRanges[selected.path];
@@ -2447,6 +2451,15 @@ function App() {
                   syncPlaybackAudio();
                 }}
               />
+              {noVideo && (
+                <div className="player-nodecode">
+                  <strong>Can't preview this clip's video</strong>
+                  <span>
+                    It was recorded in a codec this player can't decode (usually HEVC). Exports and
+                    the file itself are fine.
+                  </span>
+                </div>
+              )}
               {audioTracks > 1 &&
                 trackLabels(audioTracks).map((t) => (
                   <audio
