@@ -93,11 +93,17 @@ pub fn hand_off_if_wanted() -> bool {
     }
     // Start the task a moment after we exit: the elevated instance would
     // otherwise find us still running and quit as a duplicate instance.
-    let started = hidden("cmd")
-        .args(["/c", &format!("ping -n 2 127.0.0.1 >nul & schtasks /run /tn \"{TASK}\"")])
+    run_task_after(2).is_ok()
+}
+
+/// `schtasks /run` the admin task after ~`delay_s` seconds, detached.
+/// Passed raw: Rust's argument quoting escapes the task name's quotes as
+/// `\"`, which cmd doesn't understand, so the task never started.
+fn run_task_after(delay_s: u32) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    hidden("cmd")
+        .raw_arg(format!("/c ping -n {delay_s} 127.0.0.1 >nul & schtasks /run /tn \"{TASK}\""))
         .spawn()
-        .is_ok();
-    started
 }
 
 /// Arguments of the launch that handed off to the task (e.g. `--hidden`
@@ -271,10 +277,7 @@ pub fn restart_elevated(app: tauri::AppHandle) -> Result<(), String> {
     if !task_exists() {
         return Err("The admin task is missing. Turn the setting off and on again.".into());
     }
-    hidden("cmd")
-        .args(["/c", &format!("ping -n 3 127.0.0.1 >nul & schtasks /run /tn \"{TASK}\"")])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    run_task_after(3).map_err(|e| e.to_string())?;
     app.exit(0);
     Ok(())
 }

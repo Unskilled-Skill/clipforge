@@ -515,10 +515,11 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 static STOPPED: AtomicBool = AtomicBool::new(false);
                 if !STOPPED.swap(true, Ordering::Relaxed) {
-                    let _ = tauri::async_runtime::block_on(tokio::time::timeout(
-                        std::time::Duration::from_secs(15),
-                        obs::stop_buffer_for_exit(),
-                    ));
+                    // The timeout must be built inside the runtime: tokio
+                    // timers panic when created outside one.
+                    let _ = tauri::async_runtime::block_on(async {
+                        tokio::time::timeout(std::time::Duration::from_secs(15), obs::stop_buffer_for_exit()).await
+                    });
                 }
             }
         });
