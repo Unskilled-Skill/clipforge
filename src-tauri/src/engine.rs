@@ -61,7 +61,7 @@ pub struct VideoConfig {
 struct Inner {
     ctx: ObsContext,
     scene: ObsSceneRef,
-    game_capture: ObsSourceRef,
+    game_capture: ObsSceneItemRef<ObsSourceRef>,
     /// `window_capture` fallback for games the hook can't capture.
     window_capture: Option<(String, ObsSourceRef)>,
     /// Window id the capture currently targets (None = idle).
@@ -288,7 +288,10 @@ impl Engine {
             .map_err(|e| format!("Capture engine failed to start: {e}"))?;
         let mut scene = ctx.scene("ClipForge", Some(0)).map_err(err)?;
 
-        let game_capture = source(&mut scene, "game_capture", "AutoGame", game_capture_settings(None))?;
+        let game_capture = add_item(&mut scene, "game_capture", "AutoGame", game_capture_settings(None))?;
+        // Hidden until it has a game to hook: an active hook aimed at nothing
+        // logs "could not open process" every 2s.
+        game_capture.set_visible(false).map_err(err)?;
         // Desktop audio: mix + desktop track. Mic: mix + mic track.
         let desktop = source(&mut scene, "wasapi_output_capture", "Desktop", serde_json::json!({ "device_id": "default" }))?;
         set_mixers(&desktop, MIX | DESKTOP)?;
@@ -355,8 +358,10 @@ impl Engine {
         let hook_target = if want_window.is_some() { None } else { target.as_deref() };
         inner
             .game_capture
+            .inner_source()
             .update_settings(data(&inner.scene, game_capture_settings(hook_target))?)
             .map_err(err)?;
+        inner.game_capture.set_visible(hook_target.is_some()).map_err(err)?;
         if !same_game {
             if let Some(g) = game {
                 inner
@@ -531,7 +536,7 @@ impl Engine {
             .window_capture
             .as_ref()
             .map(|(_, s)| s.clone())
-            .unwrap_or_else(|| inner.game_capture.clone());
+            .unwrap_or_else(|| inner.game_capture.inner_source().clone());
         let ptr = hook.__native_handle();
         let game_hooked = inner.game.is_some()
             && hook

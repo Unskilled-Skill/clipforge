@@ -666,6 +666,52 @@ pub fn ffmpeg_available() -> bool {
     find_ffmpeg().is_some()
 }
 
+/// Quality-targeted (not fixed bitrate) settings, spelled per encoder.
+fn h264_quality_args(encoder: &str) -> &'static [&'static str] {
+    match encoder {
+        "h264_nvenc" => &["-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"],
+        "h264_qsv" => &["-preset", "veryfast", "-global_quality", "21"],
+        "h264_amf" => &["-quality", "balanced", "-rc", "cqp", "-qp_i", "21", "-qp_p", "23"],
+        _ => &["-preset", "veryfast", "-crf", "21"],
+    }
+}
+
+/// Re-encode a clip's video to H.264 in place so the in-app player can
+/// show it (HEVC recordings often load audio-only in the WebView). Every
+/// audio track is copied untouched; the file keeps its date so the library
+/// order doesn't change.
+#[tauri::command]
+pub async fn convert_for_preview(path: String) -> Result<(), String> {
+    blocking(move || {
+        let ffmpeg = find_ffmpeg().ok_or("ffmpeg is missing")?;
+        let src = PathBuf::from(&path);
+        let modified = std::fs::metadata(&src).and_then(|m| m.modified()).ok();
+        let tmp = src.with_extension("converting.mp4");
+        let encoder = best_h264_encoder(&ffmpeg);
+        let out = ffmpeg_cmd(&ffmpeg)
+            .args(["-hide_banner", "-y", "-i"])
+            .arg(&src)
+            .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", &encoder])
+            .args(h264_quality_args(&encoder))
+            .args(["-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart"])
+            .arg(&tmp)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            let _ = std::fs::remove_file(&tmp);
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("conversion failed: {}", err.lines().last().unwrap_or("")));
+        }
+        std::fs::rename(&tmp, &src).map_err(|e| e.to_string())?;
+        if let (Some(t), Ok(f)) = (modified, std::fs::File::options().write(true).open(&src)) {
+            let _ = f.set_modified(t);
+        }
+        crate::logs::line(&format!("converted for preview ({encoder}): {path}"));
+        Ok(())
+    })
+    .await
+}
+
 /// Best available H264 encoder for this machine, probed once with a real
 /// test encode: NVIDIA -> AMD -> Intel -> CPU fallback.
 fn best_h264_encoder(ffmpeg: &PathBuf) -> String {
@@ -1393,12 +1439,7 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<S
     // CPU x264 on a long montage. Quality-targeted (not fixed bitrate) so
     // output size tracks the content; each encoder spells that differently.
     let encoder = best_h264_encoder(&ffmpeg);
-    let quality_args: &[&str] = match encoder.as_str() {
-        "h264_nvenc" => &["-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"],
-        "h264_qsv" => &["-preset", "veryfast", "-global_quality", "21"],
-        "h264_amf" => &["-quality", "balanced", "-rc", "cqp", "-qp_i", "21", "-qp_p", "23"],
-        _ => &["-preset", "veryfast", "-crf", "21"],
-    };
+    let quality_args = h264_quality_args(&encoder);
     cmd.args([
         "-filter_complex",
         &filter,

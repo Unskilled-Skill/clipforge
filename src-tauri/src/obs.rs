@@ -116,6 +116,7 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool, s
         _ => path,
     };
 
+    crate::logs::line(&format!("clip saved: {}", final_path.display()));
     play(SAVED_SOUND);
     let _ = app
         .notification()
@@ -166,6 +167,12 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool, s
 pub fn fall_back_to_window_capture(app: &AppHandle, exe: &str, why: &str) {
     let mut settings = crate::clips::load_settings_inner(app);
     if settings.window_capture_games.iter().any(|g| g.eq_ignore_ascii_case(exe)) {
+        return;
+    }
+    // A game running as admin blocks every capture method alike; switching
+    // wouldn't help, and the supervisor already says to run as admin.
+    if crate::elevation::game_out_of_reach(exe) {
+        crate::logs::line(&format!("{exe}: not switching capture method ({why}); the game runs as admin"));
         return;
     }
     settings.window_capture_games.push(exe.to_lowercase());
@@ -364,15 +371,30 @@ pub async fn list_game_capture_sources(app: AppHandle) -> Result<Vec<GameSource>
 #[derive(Serialize)]
 pub struct CaptureTest {
     pub capturing: bool,
+    /// Why it isn't: "not_running" (another game, or none, is being
+    /// captured) or "admin" (the game runs as admin, ClipForge doesn't).
+    pub reason: Option<&'static str>,
 }
 
-/// Whether the capture source currently has a picture (the hook attached,
-/// or the window was found). Whether it's the game rather than black is
-/// still confirmed by eye or a test clip.
+/// Whether `name`'s game ("Capture: <exe>") currently has a picture (the
+/// hook attached, or the window was found). Whether it's the game rather
+/// than black is still confirmed by eye or a test clip.
 #[tauri::command]
-pub async fn test_capture_source(name: String) -> Result<CaptureTest, String> {
-    let _ = name;
-    Ok(CaptureTest { capturing: ENGINE.info().game_hooked })
+pub async fn test_capture_source(app: AppHandle, name: String) -> Result<CaptureTest, String> {
+    let exe = name.strip_prefix("Capture: ").unwrap_or(&name).trim().to_string();
+    let current = app.state::<CurrentGame>().0.lock().ok().and_then(|g| g.clone());
+    if !current.is_some_and(|g| g.eq_ignore_ascii_case(&exe)) {
+        return Ok(CaptureTest { capturing: false, reason: Some("not_running") });
+    }
+    if blocking({
+        let exe = exe.clone();
+        move || Ok(crate::elevation::game_out_of_reach(&exe))
+    })
+    .await?
+    {
+        return Ok(CaptureTest { capturing: false, reason: Some("admin") });
+    }
+    Ok(CaptureTest { capturing: ENGINE.info().game_hooked, reason: None })
 }
 
 #[cfg(test)]

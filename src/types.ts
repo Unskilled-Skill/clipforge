@@ -107,3 +107,11 @@ export interface RunningApp {
   exe: string;
   title: string;
 }
+
+export type CaptureTest = { capturing: boolean; reason?: "not_running" | "admin" | null };
+
+export function captureTestLabel(t: CaptureTest): string {
+  if (t.reason === "not_running") return " — start this game, then test";
+  if (t.reason === "admin") return " — game runs as admin: turn on Run with admin rights";
+  return t.capturing ? " — capturing ✓" : " — not capturing ✗";
+}

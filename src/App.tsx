@@ -40,6 +40,7 @@ import {
 } from "@phosphor-icons/react";
 import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
 import type {
+  CaptureTest,
   ClipInfo,
   ObsStatus,
   RunningApp,
@@ -243,6 +244,9 @@ function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [noVideo, setNoVideo] = useState(false);
+  // Bumped after a clip is re-encoded in place, to remount the player.
+  const [playerReload, setPlayerReload] = useState(0);
+  const [converting, setConverting] = useState(false);
   const [gameFilter, setGameFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [hkSave, setHkSave] = useState("");
@@ -370,7 +374,7 @@ function App() {
   const [gameSources, setGameSources] = useState<{ exe: string; kind: string }[]>([]);
   const [sourceBusy, setSourceBusy] = useState<string | null>(null);
   const [sourceTest, setSourceTest] = useState<
-    Record<string, { capturing: boolean } | "error">
+    Record<string, CaptureTest | "error">
   >({});
   const [kindChoice, setKindChoice] = useState<Record<string, string>>({});
   const [showAppPicker, setShowAppPicker] = useState(false);
@@ -823,7 +827,7 @@ function App() {
   async function testGameSource(exe: string) {
     setSourceBusy(exe);
     try {
-      const result = await invoke<{ capturing: boolean }>("test_capture_source", {
+      const result = await invoke<CaptureTest>("test_capture_source", {
         name: `Capture: ${exe}`,
       });
       setSourceTest((s) => ({ ...s, [exe]: result }));
@@ -2446,7 +2450,7 @@ function App() {
             <div className="player-wrap">
               <video
                 ref={videoRef}
-                key={selected.path}
+                key={`${selected.path}#${playerReload}`}
                 src={convertFileSrc(selected.path)}
                 controls
                 autoPlay
@@ -2476,9 +2480,26 @@ function App() {
                 <div className="player-nodecode">
                   <strong>Can't preview this clip's video</strong>
                   <span>
-                    It was recorded in a codec this player can't decode (usually HEVC). Exports and
-                    the file itself are fine.
+                    It was recorded in a codec this player can't decode (usually HEVC). Converting
+                    re-encodes it to H.264 (all audio tracks kept); the file plays everywhere after.
                   </span>
+                  <button
+                    className="setup-btn"
+                    disabled={converting}
+                    onClick={async () => {
+                      setConverting(true);
+                      try {
+                        await invoke("convert_for_preview", { path: selected.path });
+                        setPlayerReload((n) => n + 1);
+                      } catch (error) {
+                        setToast(String(error));
+                      } finally {
+                        setConverting(false);
+                      }
+                    }}
+                  >
+                    {converting ? "Converting…" : "Convert for preview"}
+                  </button>
                 </div>
               )}
               {audioTracks > 1 &&

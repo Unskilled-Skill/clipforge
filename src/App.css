@@ -1027,6 +1027,10 @@ select:focus,
   font-size: 13px;
   pointer-events: none;
 }
+.player-nodecode button {
+  margin-top: 8px;
+  pointer-events: auto;
+}
 .player-nodecode strong {
   color: #e6e8ee;
   font-size: 15px;

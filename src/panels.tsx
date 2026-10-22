@@ -6,7 +6,8 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { confirmDialog, invoke, listen, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
 import { blacklistApp, isDiscordApp } from "./app-blacklist";
-import type { BackupStatus, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
+import type { BackupStatus, CaptureTest, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
+import { captureTestLabel } from "./types";
 import {
   ArrowCounterClockwise,
   ArrowLeft,
@@ -653,7 +654,7 @@ export function SettingsPage(props: {
   applyHotkeys: (save: string, short: string) => Promise<void>;
   gameSources: GameSource[];
   sourceBusy: string | null;
-  sourceTest: Record<string, { capturing: boolean } | "error">;
+  sourceTest: Record<string, CaptureTest | "error">;
   kindChoice: Record<string, string>;
   setKindChoice: Dispatch<SetStateAction<Record<string, string>>>;
   addGameSource: (exe: string, kind: string) => Promise<void>;
@@ -1122,7 +1123,7 @@ export function SettingsPage(props: {
                     ? `dedicated ${source.kind === "window_capture" ? "window capture" : "game capture"}`
                     : "universal capture only"}
                   {test === "error" && " — test failed"}
-                  {test && test !== "error" && (test.capturing ? " — capturing ✓" : " — not active ✗")}
+                  {test && test !== "error" && captureTestLabel(test)}
                 </span>
                 <select
                   className="audio-select"

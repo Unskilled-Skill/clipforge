@@ -310,14 +310,18 @@ pub fn run() {
                         return;
                     }
                     let now_ms = app_start.elapsed().as_millis() as u64;
+                    let kind = if is_short { "short save" } else { "save" };
                     if !should_accept_press(now_ms) {
+                        logs::line(&format!("hotkey: {kind} ignored (cooldown)"));
                         return;
                     }
+                    logs::line(&format!("hotkey: {kind}"));
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
                         match obs::save_replay(&app, is_short).await {
                             Ok(()) => {}
                             Err(e) => {
+                                logs::line(&format!("save failed: {e}"));
                                 obs::notify_failure(&app, "Clip not saved", &e);
                                 let _ = app.emit("clip-error", e);
                             }
@@ -387,6 +391,7 @@ pub fn run() {
                     .unwrap_or_else(|_| parse_hotkeys("alt+f10", "shift+alt+f10").unwrap());
             app.manage(Hotkeys(Mutex::new((save, short))));
             if let Err(e) = register_hotkeys(app.handle(), save, short) {
+                logs::line(&format!("hotkeys not registered: {e}"));
                 obs::notify_failure(
                     app.handle(),
                     "ClipForge hotkey not active",
@@ -468,6 +473,7 @@ pub fn run() {
             clips::trim_clip,
             clips::delete_clip,
             clips::analyze_black,
+            clips::convert_for_preview,
             clips::gen_thumbnails,
             clips::export_discord,
             clips::load_favorites,

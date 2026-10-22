@@ -55,6 +55,25 @@ pub fn process_elevated(pid: u32) -> bool {
     }
 }
 
+/// Whether `exe` runs as admin while ClipForge doesn't: Windows then keeps
+/// capture and hotkeys from reaching it, whatever the capture method.
+pub fn game_out_of_reach(exe: &str) -> bool {
+    if is_elevated() {
+        return false;
+    }
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    system
+        .processes()
+        .values()
+        .filter(|p| p.name().to_string_lossy().eq_ignore_ascii_case(exe))
+        .any(|p| process_elevated(p.pid().as_u32()))
+}
+
 fn hidden(program: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
     let mut cmd = std::process::Command::new(program);
