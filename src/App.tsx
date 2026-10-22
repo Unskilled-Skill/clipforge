@@ -1935,6 +1935,27 @@ function App() {
           </div>
         )}
 
+        {sup?.game_elevated && (
+          <div className="setup-bar">
+            <Warning size={15} weight="fill" />
+            <span>
+              {sup.game} runs as admin, so ClipForge can't record it or hear your save hotkey.
+            </span>
+            <button
+              className="setup-btn"
+              onClick={async () => {
+                try {
+                  await invoke("set_run_elevated", { enabled: true });
+                  await invoke("restart_elevated");
+                } catch (error) {
+                  setToast(String(error));
+                }
+              }}
+            >
+              Run ClipForge as admin
+            </button>
+          </div>
+        )}
         {sup?.render_lag && (
           <div className="setup-bar">
             <Warning size={15} weight="fill" />

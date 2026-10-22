@@ -30,6 +30,9 @@ const HOOK_GRACE_TICKS: u32 = 10;
 /// Set by the "Retry" buttons: skip the wait after a failed engine start.
 pub static RETRY_ENGINE_NOW: AtomicBool = AtomicBool::new(false);
 
+/// PID of the admin game last warned about, so the toast shows once per run.
+static WARNED_ELEVATED_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// The running engine was started while adapter 0 was an integrated GPU.
 static STARTED_ON_IGPU: AtomicBool = AtomicBool::new(false);
 static IGPU_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -69,6 +72,9 @@ pub struct SupervisorState {
     pub render_lag: bool,
     /// The encoder is dropping frames while the buffer records.
     pub encoder_lag: bool,
+    /// The game runs as admin and ClipForge doesn't: capture and hotkeys
+    /// can't reach it.
+    pub game_elevated: bool,
 }
 
 /// Background state machine, one tick every 3s:
@@ -260,6 +266,30 @@ async fn tick(
         .map(|g| g.to_lowercase())
         .find(|g| running.contains(g) && !settings.capture_blocked(g))
         .or_else(|| session_games.iter().next().cloned()));
+
+    // A game running as admin is out of reach of a non-elevated ClipForge:
+    // black clips and a dead save hotkey. Say so, once per game run.
+    if let Some(g) = state.game.as_ref().filter(|_| !crate::elevation::is_elevated()) {
+        let elevated_pid = system
+            .processes()
+            .values()
+            .filter(|p| p.name().to_string_lossy().eq_ignore_ascii_case(g))
+            .map(|p| p.pid().as_u32())
+            .find(|&pid| crate::elevation::process_elevated(pid));
+        if let Some(pid) = elevated_pid {
+            state.game_elevated = true;
+            if WARNED_ELEVATED_PID.swap(pid, Ordering::Relaxed) != pid {
+                crate::logs::line(&format!("{g} runs as admin; ClipForge doesn't"));
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("Game runs as admin")
+                    .body("ClipForge can't record it or hear your save hotkey. Turn on Settings → Run with admin rights.")
+                    .show();
+            }
+        }
+    }
 
     // Aim the capture at the game (or idle it). Blocked apps never reach
     // here: `state.game` is already filtered.

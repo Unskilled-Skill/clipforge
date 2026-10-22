@@ -26,6 +26,35 @@ pub fn is_elevated() -> bool {
     unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() }
 }
 
+/// Whether process `pid` runs elevated (admin). A game launched as admin
+/// shuts a non-elevated ClipForge out: Windows denies the hook its process
+/// access, and global hotkeys don't fire while the game has focus.
+pub fn process_elevated(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let mut token = HANDLE::default();
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let ok = OpenProcessToken(process, TOKEN_QUERY, &mut token).is_ok()
+            && GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut elevation as *mut _ as *mut _),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut len,
+            )
+            .is_ok();
+        if !token.is_invalid() {
+            let _ = CloseHandle(token);
+        }
+        let _ = CloseHandle(process);
+        ok && elevation.TokenIsElevated != 0
+    }
+}
+
 fn hidden(program: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
     let mut cmd = std::process::Command::new(program);

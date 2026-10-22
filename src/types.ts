@@ -45,6 +45,7 @@ export interface SupervisorState {
   engine_error: string | null;
   render_lag: boolean;
   encoder_lag: boolean;
+  game_elevated: boolean;
 }
 
 export interface Diagnostics {
