@@ -163,6 +163,9 @@ fn window_id(exe: &str) -> String {
             ours.sort_by_key(|w| !w.is_game);
             ours.into_iter().next().map(|w| w.obs_id)
         })
+        // The helper skips windows whose process it can't open with VM_READ,
+        // which anti-cheat (Vanguard) denies.
+        .or_else(|| crate::fullscreen::obs_window_id(exe))
         .unwrap_or_else(|| format!("::{exe}"))
 }
 

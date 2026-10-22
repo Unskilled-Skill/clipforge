@@ -7,12 +7,12 @@ use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
-use windows::Win32::System::ProcessStatus::GetModuleBaseNameW;
+use windows::core::PWSTR;
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowTextW,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW,
     GetWindowThreadProcessId, IsWindowVisible,
 };
 
@@ -146,18 +146,79 @@ pub fn foreground_exe() -> Option<String> {
 }
 
 fn window_exe(hwnd: HWND) -> Option<String> {
-    unsafe {
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 {
-            return None;
-        }
-        let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid).ok()?;
-        let mut buf = [0u16; 260];
-        let len = GetModuleBaseNameW(handle, None, &mut buf) as usize;
-        let _ = CloseHandle(handle);
-        (len > 0).then(|| String::from_utf16_lossy(&buf[..len]).to_lowercase())
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    let path = exe_path(pid)?;
+    Some(path.rsplit('\\').next()?.to_lowercase())
+}
+
+/// Full exe path of `pid`. Uses limited-query access only: anti-cheat
+/// (Vanguard) denies the VM_READ handle GetModuleBaseName needs, which made
+/// Valorant's window invisible to us.
+fn exe_path(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
     }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+        let _ = CloseHandle(handle);
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+/// OBS window id ("title:class:exe", with '#' and ':' escaped) of `exe`'s
+/// main window: the largest visible titled one. Fallback for when the
+/// window helper can't open the process (anti-cheat).
+pub fn obs_window_id(exe: &str) -> Option<String> {
+    struct Search<'a> {
+        exe: &'a str,
+        best: Option<(i64, String)>,
+    }
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let s = &mut *(lparam.0 as *mut Search);
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            let mut title = [0u16; 512];
+            let tlen = GetWindowTextW(hwnd, &mut title) as usize;
+            if tlen == 0 {
+                return BOOL(1);
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            let Some(path) = exe_path(pid) else { return BOOL(1) };
+            let name = path.rsplit('\\').next().unwrap_or_default();
+            if !name.eq_ignore_ascii_case(s.exe) {
+                return BOOL(1);
+            }
+            let mut r = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut r);
+            let area = (r.right - r.left) as i64 * (r.bottom - r.top) as i64;
+            if s.best.as_ref().is_some_and(|(a, _)| *a >= area) {
+                return BOOL(1);
+            }
+            let mut class = [0u16; 256];
+            let clen = GetClassNameW(hwnd, &mut class) as usize;
+            let enc = |v: &str| v.replace('#', "#22").replace(':', "#3A");
+            let id = format!(
+                "{}:{}:{}",
+                enc(&String::from_utf16_lossy(&title[..tlen])),
+                enc(&String::from_utf16_lossy(&class[..clen])),
+                enc(name)
+            );
+            s.best = Some((area, id));
+            BOOL(1)
+        }
+    }
+    let mut s = Search { exe, best: None };
+    unsafe {
+        let _ = EnumWindows(Some(visit), LPARAM(&mut s as *mut _ as isize));
+    }
+    s.best.map(|(_, id)| id)
 }
 
 struct AppList {
