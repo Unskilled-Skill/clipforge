@@ -344,6 +344,65 @@ mod capture {
     }
 }
 
+// ---- Rounds -------------------------------------------------------------
+
+/// Lines Valorant's own log writes when a round (or the match) is over.
+/// `OnRoundEnded` lands as the next buy phase starts, so exit kills in the
+/// post-round still count toward the round that just ended.
+fn has_round_end(text: &str) -> bool {
+    text.contains("OnRoundEnded for round") || text.contains("LogShooterGameState: Match Ended")
+}
+
+/// Kills this round, reset by round-end lines in ShooterGame.log.
+#[derive(Default)]
+struct Round {
+    kills: u32,
+    first: Option<Instant>,
+    /// Log read position; None until the log is found.
+    offset: Option<u64>,
+}
+
+impl Round {
+    fn log_path() -> Option<std::path::PathBuf> {
+        let local = std::env::var("LOCALAPPDATA").ok()?;
+        Some(std::path::Path::new(&local).join("VALORANT/Saved/Logs/ShooterGame.log"))
+    }
+
+    /// Whether a round ended since the last call. Starts at the end of the
+    /// log: earlier rounds are history.
+    fn poll_log(&mut self) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let Some(path) = Self::log_path() else { return false };
+        let Ok(size) = std::fs::metadata(&path).map(|m| m.len()) else {
+            self.offset = None;
+            return false;
+        };
+        let from = match self.offset {
+            None => {
+                self.offset = Some(size);
+                return false;
+            }
+            Some(o) if o > size => 0, // new game session, fresh log
+            Some(o) => o,
+        };
+        if from == size {
+            return false;
+        }
+        let mut text = String::new();
+        if let Ok(mut file) = std::fs::File::open(&path) {
+            if file.seek(SeekFrom::Start(from)).is_ok() {
+                let _ = file.take(4 << 20).read_to_string(&mut text);
+            }
+        }
+        self.offset = Some(size);
+        has_round_end(&text)
+    }
+
+    fn log_found(&self) -> bool {
+        self.offset.is_some()
+    }
+}
+
 // ---- Loop -------------------------------------------------------------
 
 /// Where the banner region sits for the focused Valorant window: monitor,
@@ -383,26 +442,44 @@ fn banner_region(cap_bounds: impl FnOnce(windows::Win32::Graphics::Gdi::HMONITOR
 }
 
 /// While Valorant is focused and auto-clip is on, watch for kill banners
-/// and feed each kill into the auto-clip event window.
+/// and count kills per round. With "every kill" each kill feeds the
+/// auto-clip event window; with a minimum of N kills, a round that reaches
+/// N is saved as one clip when it ends.
 pub fn run(app: AppHandle) {
     std::thread::spawn(move || {
         let mut capture: Option<capture::Capture> = None;
         let mut tracker = Tracker::default();
+        let mut round = Round::default();
         let mut enabled = false;
+        let mut min_kills = 1;
         let mut checked = Instant::now() - Duration::from_secs(10);
+        let mut log_checked = Instant::now();
         loop {
             std::thread::sleep(Duration::from_millis(1000 / FPS));
             // Settings live on disk; re-read every couple of seconds.
             if checked.elapsed() > Duration::from_secs(2) {
                 checked = Instant::now();
                 let game = app.state::<crate::obs::CurrentGame>().0.lock().ok().and_then(|g| g.clone());
-                enabled = crate::clips::load_settings_inner(&app).auto_clip
-                    && game.is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
+                let settings = crate::clips::load_settings_inner(&app);
+                enabled = settings.auto_clip && game.is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
+                min_kills = settings.auto_clip_min_kills.max(1);
             }
             if !enabled {
                 capture = None;
                 tracker = Tracker::default();
+                round = Round::default();
                 continue;
+            }
+            // Rounds end while alt-tabbed too, so the log is read first.
+            if log_checked.elapsed() > Duration::from_secs(1) {
+                log_checked = Instant::now();
+                if round.poll_log() {
+                    if let Some(first) = round.first.filter(|_| min_kills > 1 && round.kills >= min_kills) {
+                        crate::autoclip::save_round(&app, first, round.kills);
+                    }
+                    round.kills = 0;
+                    round.first = None;
+                }
             }
             let region = banner_region(|monitor| {
                 if capture.as_ref().is_none_or(|c| c.monitor != monitor) {
@@ -426,9 +503,23 @@ pub fn run(app: AppHandle) {
             let gray = to_gray(&bgra);
             let (score, cx, cy, r) = analyse(&gray, side as usize, s);
             let arcs = if score >= ON { arc_pixels(&bgra, side as usize, cx, cy, r, s) } else { 0 };
-            if tracker.update(score, arcs, s, Instant::now()) {
-                crate::logs::line(&format!("auto-clip: valorant kill (screen, ring {score:.2})"));
-                crate::autoclip::schedule(&app);
+            let now = Instant::now();
+            if tracker.update(score, arcs, s, now) {
+                round.kills += 1;
+                round.first.get_or_insert(now);
+                crate::logs::line(&format!(
+                    "auto-clip: valorant kill {} this round (screen, ring {score:.2})",
+                    round.kills
+                ));
+                if min_kills == 1 {
+                    crate::autoclip::schedule_counted(&app, round.kills, 1);
+                } else if round.log_found() {
+                    crate::autoclip::record_kill(); // timeline marker; the round decides the clip
+                } else {
+                    // No log, so no round boundaries: fall back to kills
+                    // close together, filtered by the same minimum.
+                    crate::autoclip::schedule_counted(&app, round.kills, min_kills);
+                }
             }
         }
     });
@@ -522,6 +613,13 @@ mod tests {
             println!("{label}: score {found:.2}");
             println!("{label}: {per:?} per frame, {:.2}% of one core at {FPS} fps", per.as_secs_f64() * FPS as f64 * 100.0);
         }
+    }
+
+    #[test]
+    fn round_end_lines() {
+        assert!(has_round_end("[2026.10.24-17.52.54:989][537]LogShooterGameState: Warning: AShooterGameState::OnRoundEnded for round '0'"));
+        assert!(has_round_end("[2026.10.24-18.30.00:000][  1]LogShooterGameState: Match Ended: Completion State: 'Completed'"));
+        assert!(!has_round_end("[2026.10.24-17.52.55:205][576]LogShooterGameState: Warning: Gameplay started at local time 0.039062"));
     }
 
     #[test]

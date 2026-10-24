@@ -159,6 +159,12 @@ struct Pending {
     first: Instant,
     /// When the clip is saved (slides forward on each event).
     deadline: Instant,
+    /// Kills in this window from a source that counts them (Valorant).
+    kills: u32,
+    /// The round's kill total at the newest of those kills.
+    round_kills: u32,
+    /// Fewer counted kills than this and the window is dropped unsaved.
+    min_kills: u32,
 }
 
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
@@ -178,7 +184,7 @@ static OVERWOLF_LAST_SEEN: AtomicI64 = AtomicI64::new(0);
 static KILL_TIMES: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
 const KILL_RETENTION: Duration = Duration::from_secs(960); // > max replay_seconds
 
-fn record_kill() {
+pub fn record_kill() {
     let mut kills = KILL_TIMES.lock().unwrap();
     let now = Instant::now();
     kills.retain(|t| now.duration_since(*t) < KILL_RETENTION);
@@ -211,22 +217,64 @@ pub fn write_kill_markers(clip_path: &str, saved_at: Instant) {
 }
 
 fn schedule_clip(app: &AppHandle, delay_s: f64) {
+    open_window(app, delay_s, None);
+}
+
+/// `counted`: (round kill total, minimum window kills) from a source that
+/// counts kills; None for sources that only say "something happened".
+fn open_window(app: &AppHandle, delay_s: f64, counted: Option<(u32, u32)>) {
     record_kill();
     let now = Instant::now();
     let deadline = now + Duration::from_secs_f64(delay_s.max(2.0));
     let mut pending = PENDING.lock().unwrap();
-    match pending.as_mut() {
-        Some(p) => p.deadline = deadline,
-        None => {
-            *pending = Some(Pending { first: now, deadline });
-            let _ = app.emit("auto-clip-armed", ());
-        }
+    let p = pending.get_or_insert_with(|| {
+        let _ = app.emit("auto-clip-armed", ());
+        Pending { first: now, deadline, kills: 0, round_kills: 0, min_kills: 1 }
+    });
+    p.deadline = deadline;
+    if let Some((round_kills, min_kills)) = counted {
+        p.kills += 1;
+        p.round_kills = p.round_kills.max(round_kills);
+        p.min_kills = min_kills;
     }
 }
 
 /// Open or extend the event window for a highlight from any source.
 pub fn schedule(app: &AppHandle) {
     schedule_clip(app, crate::clips::load_settings_inner(app).auto_clip_delay_s);
+}
+
+/// A kill from a source that knows the round's kill total (Valorant).
+/// The window is saved only if it holds at least `min_kills` kills.
+pub fn schedule_counted(app: &AppHandle, round_kills: u32, min_kills: u32) {
+    let delay = crate::clips::load_settings_inner(app).auto_clip_delay_s;
+    open_window(app, delay, Some((round_kills, min_kills)));
+}
+
+/// Filename tag for a multikill: "ACE" once the round reaches 5 kills,
+/// else "2K".."4K" for kills in the clip; none for a single kill.
+pub fn kill_label(kills: u32, round_kills: u32) -> Option<String> {
+    if round_kills >= 5 {
+        Some("ACE".into())
+    } else if kills >= 2 {
+        Some(format!("{kills}K"))
+    } else {
+        None
+    }
+}
+
+/// Save one clip covering a whole round's kills, from `PRE_ROLL` before the
+/// first (round mode: "only rounds with N+ kills" is known at round end).
+pub fn save_round(app: &AppHandle, first_kill: Instant, kills: u32) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let keep = window_length(first_kill, Instant::now());
+        let label = kill_label(kills, kills);
+        crate::logs::line(&format!("auto-clip: round with {kills} kills, saving last {keep:.0}s"));
+        if crate::obs::save_replay_keep(&app, keep, label.as_deref()).await.is_ok() {
+            let _ = app.emit("auto-clipped", ());
+        }
+    });
 }
 
 /// Seconds an auto clip saved now keeps: back to `PRE_ROLL` before the
@@ -265,15 +313,20 @@ pub async fn run(app: AppHandle) {
             match pending.as_ref() {
                 Some(p) if now >= p.deadline => {
                     let keep = window_length(p.first, now);
+                    let worth = p.kills >= p.min_kills;
+                    let label = kill_label(p.kills, p.round_kills);
                     *pending = None;
-                    Some(keep)
+                    if !worth {
+                        crate::logs::line("auto-clip: skipped, fewer kills than the minimum");
+                    }
+                    worth.then_some((keep, label))
                 }
                 _ => None,
             }
         };
-        if let Some(keep) = due {
+        if let Some((keep, label)) = due {
             crate::logs::line(&format!("auto-clip: saving last {keep:.0}s"));
-            if crate::obs::save_replay_keep(&app, keep).await.is_ok() {
+            if crate::obs::save_replay_keep(&app, keep, label.as_deref()).await.is_ok() {
                 let _ = app.emit("auto-clipped", ());
             }
         }
@@ -627,6 +680,14 @@ mod tests {
         let spectating = json!({"auth": {"token": GSI_TOKEN}, "player": {"team2": {"player0": {"kills": 5}}}});
         assert!(!dota_new_kill(&spectating, &last));
         assert!(gsi_config(&["player", "hero"]).contains("  \"hero\" \"1\"\n"));
+    }
+
+    #[test]
+    fn multikill_labels() {
+        assert_eq!(kill_label(1, 1), None);
+        assert_eq!(kill_label(1, 3), None, "a lone 3rd kill isn't a 3K clip");
+        assert_eq!(kill_label(3, 3).as_deref(), Some("3K"));
+        assert_eq!(kill_label(2, 5).as_deref(), Some("ACE"));
     }
 
     #[test]

@@ -174,6 +174,10 @@ pub struct Settings {
     /// Seconds to wait after the last kill before saving (multikill window).
     #[serde(default = "default_auto_clip_delay")]
     pub auto_clip_delay_s: f64,
+    /// Valorant: only auto-clip rounds with at least this many kills (1 =
+    /// every kill). Games that don't report a kill count ignore it.
+    #[serde(default = "default_min_kills")]
+    pub auto_clip_min_kills: u32,
     /// Accept kill events from the Overwolf companion app (needs Overwolf).
     #[serde(default)]
     pub overwolf_events: bool,
@@ -206,6 +210,10 @@ fn default_bitrate() -> f64 {
 }
 fn default_encoder() -> String {
     "auto".into()
+}
+
+fn default_min_kills() -> u32 {
+    1
 }
 
 fn default_auto_clip_delay() -> f64 {
@@ -249,6 +257,7 @@ impl Default for Settings {
             catbox_userhash: String::new(),
             auto_clip: false,
             auto_clip_delay_s: default_auto_clip_delay(),
+            auto_clip_min_kills: default_min_kills(),
             overwolf_events: false,
             replay_seconds: default_replay_seconds(),
             video_fps: default_fps(),

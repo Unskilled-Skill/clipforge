@@ -30,6 +30,7 @@ const mockSettings = {
   catbox_userhash: "",
   auto_clip: false,
   auto_clip_delay_s: 8,
+  auto_clip_min_kills: 1,
   overwolf_events: false,
   replay_seconds: 180,
   video_fps: 60,

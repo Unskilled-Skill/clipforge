@@ -86,8 +86,15 @@ fn unique_path(path: std::path::PathBuf) -> std::path::PathBuf {
 
 /// Rename a fresh clip to carry the game name, feedback via chime + toast.
 /// `keep_last` (short-clip hotkey, auto-clip event window) keeps only the
-/// tail. Returns the clip's final path.
-async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, keep_last: Option<f64>, saved_at: std::time::Instant) -> String {
+/// tail; `label` ("3K", "ACE") goes after the game name. Returns the clip's
+/// final path.
+async fn on_clip_saved(
+    app: &AppHandle,
+    path: std::path::PathBuf,
+    keep_last: Option<f64>,
+    label: Option<&str>,
+    saved_at: std::time::Instant,
+) -> String {
     if let Some(secs) = keep_last {
         let _ = crate::clips::shorten_clip(&path.to_string_lossy(), secs).await;
     }
@@ -102,8 +109,9 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, keep_last: Opt
     let final_path = match (&game, path.file_name()) {
         (Some(game), Some(file_name)) => {
             let new_name = format!(
-                "{} {}",
+                "{}{} {}",
                 pretty_game(game),
+                label.map(|l| format!(" {l}")).unwrap_or_default(),
                 file_name.to_string_lossy().replacen("Replay ", "", 1)
             );
             let target = unique_path(path.with_file_name(new_name));
@@ -296,19 +304,20 @@ pub async fn stop_buffer_for_exit() {
 /// seconds (short-clip hotkey).
 pub async fn save_replay(app: &AppHandle, short: bool) -> Result<(), String> {
     let keep_last = short.then(|| crate::clips::load_settings_inner(app).short_clip_seconds);
-    save_replay_path(app, keep_last).await.map(|_| ())
+    save_replay_path(app, keep_last, None).await.map(|_| ())
 }
 
-/// Save, then keep only the last `keep_last` seconds (auto-clip windows).
-pub async fn save_replay_keep(app: &AppHandle, keep_last: f64) -> Result<(), String> {
-    save_replay_path(app, Some(keep_last)).await.map(|_| ())
+/// Save, then keep only the last `keep_last` seconds (auto-clip windows),
+/// naming the clip with `label` ("3K", "ACE") if given.
+pub async fn save_replay_keep(app: &AppHandle, keep_last: f64, label: Option<&str>) -> Result<(), String> {
+    save_replay_path(app, Some(keep_last), label).await.map(|_| ())
 }
 
 /// Below this the save itself can fail half-written (a 3-minute 1440p
 /// replay is several hundred MB), so refuse up front with a clear reason.
 const MIN_FREE_BYTES: u64 = 1 << 30;
 
-async fn save_replay_path(app: &AppHandle, keep_last: Option<f64>) -> Result<String, String> {
+async fn save_replay_path(app: &AppHandle, keep_last: Option<f64>, label: Option<&str>) -> Result<String, String> {
     let _guard = SAVE_GATE
         .try_lock()
         .map_err(|_| "A clip is still saving. Wait for it to finish, then try again.")?;
@@ -339,12 +348,12 @@ async fn save_replay_path(app: &AppHandle, keep_last: Option<f64>) -> Result<Str
         return Err("Your clips drive is almost full (under 1 GB free). Free up space or move the clips folder in Settings.".into());
     }
     let path = blocking(|| ENGINE.save()).await?;
-    Ok(on_clip_saved(app, path, keep_last, saved_at).await)
+    Ok(on_clip_saved(app, path, keep_last, label, saved_at).await)
 }
 
 #[tauri::command]
 pub async fn save_setup_replay(app: AppHandle) -> Result<String, String> {
-    save_replay_path(&app, None).await
+    save_replay_path(&app, None, None).await
 }
 
 #[tauri::command]

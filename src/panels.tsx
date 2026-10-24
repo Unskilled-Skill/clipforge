@@ -940,6 +940,26 @@ export function SettingsPage(props: {
               <span className="knob" />
             </button>
           </div>
+          {settings.auto_clip && (
+            <label className="set-col">
+              <span className="field-label">Valorant: clip</span>
+              <select
+                className="audio-select wide"
+                value={settings.auto_clip_min_kills}
+                onChange={(e) => saveSettings({ ...settings, auto_clip_min_kills: Number(e.target.value) })}
+              >
+                <option value={1}>Every kill</option>
+                <option value={2}>Rounds with 2+ kills</option>
+                <option value={3}>Rounds with 3+ kills</option>
+                <option value={4}>Rounds with 4+ kills</option>
+                <option value={5}>Aces only</option>
+              </select>
+              <span className="field-hint">
+                Multikill clips are named 2K, 3K, 4K or ACE. With a minimum, the whole round is saved
+                as one clip when it ends.
+              </span>
+            </label>
+          )}
           <div className="toggle-card">
             <div className="toggle-text">
               <span className="toggle-title">Overwolf game events</span>
