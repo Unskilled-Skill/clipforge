@@ -140,16 +140,34 @@ async fn on_clip_saved(app: &AppHandle, path: std::path::PathBuf, short: bool, s
     // A black clip from the game hook means the hook attached but isn't
     // seeing the game (some anti-cheat/overlay setups). Window capture
     // works there, so switch that game over for every clip after this one.
+    // A black window-capture clip has no further method to fall back to:
+    // just say so, so it isn't discovered matches later.
     if let Some(game) = game.clone() {
         let settings = crate::clips::load_settings_inner(app);
         let hooked = !settings.window_capture_games.iter().any(|g| g.eq_ignore_ascii_case(&game));
-        if hooked && crate::clips::ffmpeg_available() {
+        if crate::clips::ffmpeg_available() {
             let (app, path) = (app.clone(), final_str.clone());
             tauri::async_runtime::spawn(async move {
-                if crate::clips::analyze_black(path.clone()).await.is_ok_and(|a| a.is_black) {
+                if !crate::clips::analyze_black(path.clone()).await.is_ok_and(|a| a.is_black) {
+                    return;
+                }
+                if hooked {
                     crate::logs::line(&format!("black clip from game hook: {path}"));
                     fall_back_to_window_capture(&app, &game, "Your last clip came out black.");
+                    return;
                 }
+                crate::logs::line(&format!("black clip from window capture: {path}"));
+                // An admin game is already warned about by the supervisor.
+                let g = game.clone();
+                if blocking(move || Ok(crate::elevation::game_out_of_reach(&g))).await.unwrap_or(false) {
+                    return;
+                }
+                notify_failure(
+                    &app,
+                    &format!("{} clip came out black", pretty_game(&game)),
+                    "Window capture couldn't see the game. Switch the game to borderless or windowed \
+                     mode, or try Game Capture in Settings → Games watched.",
+                );
             });
         }
     }

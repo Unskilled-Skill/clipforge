@@ -41,6 +41,21 @@ pub fn primary_is_discrete() -> bool {
     }
 }
 
+/// Whether any hardware adapter is an NVIDIA card (PCI vendor 0x10DE).
+pub fn has_nvidia() -> bool {
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else { return true };
+        let mut i = 0;
+        while let Ok(adapter) = factory.EnumAdapters1(i) {
+            i += 1;
+            if adapter.GetDesc1().is_ok_and(|d| d.VendorId == 0x10DE) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
     use std::os::windows::process::CommandExt;
     std::process::Command::new("reg")

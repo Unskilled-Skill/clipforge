@@ -203,6 +203,9 @@ pub fn obs_window_id(exe: &str) -> Option<String> {
             }
             let mut class = [0u16; 256];
             let clen = GetClassNameW(hwnd, &mut class) as usize;
+            if crate::engine::is_console(Some(&String::from_utf16_lossy(&class[..clen]))) {
+                return BOOL(1);
+            }
             let enc = |v: &str| v.replace('#', "#22").replace(':', "#3A");
             let id = format!(
                 "{}:{}:{}",

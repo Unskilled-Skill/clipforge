@@ -157,16 +157,34 @@ fn window_id(exe: &str) -> String {
     get_all_windows(WindowSearchMode::IncludeMinimized)
         .ok()
         .and_then(|windows| {
-            let mut ours: Vec<_> = windows.into_iter().filter(|w| matches(&w.full_exe)).collect();
-            // A game can own several windows (launcher splash, console);
-            // the one libobs flags as a game is the one to hook.
-            ours.sort_by_key(|w| !w.is_game);
+            // A game can own several windows. A console (BepInEx-modded
+            // Valheim opens one before the game window) is never the one to
+            // capture: skip it, so the target stays unresolved and is retried
+            // until the real window exists.
+            let mut ours: Vec<_> = windows
+                .into_iter()
+                .filter(|w| matches(&w.full_exe) && !is_console(w.class.as_deref()))
+                .collect();
+            // Then the one libobs flags as a game, then the largest.
+            ours.sort_by_key(|w| (!w.is_game, std::cmp::Reverse(window_area(w.handle))));
             ours.into_iter().next().map(|w| w.obs_id)
         })
         // The helper skips windows whose process it can't open with VM_READ,
         // which anti-cheat (Vanguard) denies.
         .or_else(|| crate::fullscreen::obs_window_id(exe))
         .unwrap_or_else(|| format!("::{exe}"))
+}
+
+pub fn is_console(class: Option<&str>) -> bool {
+    matches!(class, Some("ConsoleWindowClass" | "CASCADIA_HOSTING_WINDOW_CLASS"))
+}
+
+fn window_area(hwnd: windows::Win32::Foundation::HWND) -> i64 {
+    let mut r = windows::Win32::Foundation::RECT::default();
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut r);
+    }
+    (r.right - r.left) as i64 * (r.bottom - r.top) as i64
 }
 
 fn resolved(window: &str) -> bool {
@@ -211,6 +229,39 @@ fn video_info(v: VideoConfig) -> libobs_wrapper::data::video::ObsVideoInfo {
 
 /// Folder the OBS runtime lives in: next to our exe (the per-user install
 /// dir is writable, so first-run download and updates need no elevation).
+/// OBS plugins ClipForge never uses. libobs loads every DLL in the plugin
+/// folder at startup; these only fail (no AJA card, CoreAudio absent) or
+/// probe hardware nobody records from (webcams, VLC).
+const UNUSED_PLUGINS: &[&str] = &["aja.dll", "vlc-video.dll", "win-dshow.dll", "coreaudio-encoder.dll"];
+/// NVIDIA-only plugins, parked only while no NVIDIA card is present.
+const NVIDIA_PLUGINS: &[&str] = &["obs-nvenc.dll", "nv-filters.dll"];
+
+/// Move unneeded plugin DLLs out of libobs' plugin folder (the installer
+/// puts them back on every update, so this runs at each start). NVIDIA
+/// plugins come back if an NVIDIA card appears.
+fn park_unused_plugins() {
+    let plugins = runtime_dir().join("obs-plugins").join("64bit");
+    let parked = runtime_dir().join("obs-plugins").join("unused");
+    let nvidia = crate::gpu::has_nvidia();
+    let _ = std::fs::create_dir_all(&parked);
+    for name in UNUSED_PLUGINS.iter().chain(if nvidia { &[][..] } else { NVIDIA_PLUGINS }) {
+        let src = plugins.join(name);
+        if src.exists() {
+            let dst = parked.join(name);
+            let _ = std::fs::remove_file(&dst);
+            let _ = std::fs::rename(&src, &dst);
+        }
+    }
+    if nvidia {
+        for name in NVIDIA_PLUGINS {
+            let (src, dst) = (parked.join(name), plugins.join(name));
+            if src.exists() && !dst.exists() {
+                let _ = std::fs::rename(&src, &dst);
+            }
+        }
+    }
+}
+
 pub fn runtime_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -280,6 +331,7 @@ impl Engine {
             .map(|a| PathBuf::from(a).join("com.roche.clipforge").join("obs"))
             .unwrap_or_else(|_| runtime_dir().join("obs-config"));
         let _ = std::fs::create_dir_all(&config_dir);
+        park_unused_plugins();
         let mut ctx = StartupInfo::new()
             .set_video_info(video_info(video))
             .set_module_config_path(ObsPath::new(&config_dir.to_string_lossy()))

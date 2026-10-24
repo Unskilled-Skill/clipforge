@@ -59,6 +59,12 @@ fn should_accept_press(now_ms: u64) -> bool {
     true
 }
 
+/// Windows is logging off, restarting or shutting down.
+fn session_ending() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SHUTTINGDOWN};
+    unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+}
+
 fn normalize_hotkey(raw: &str) -> String {
     raw.split('+')
         .map(|part| part.trim().to_lowercase())
@@ -515,18 +521,34 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, event| {
-            // Any way out (tray Quit, updater restart) stops the replay
-            // buffer and shuts the capture engine down cleanly.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                static STOPPED: AtomicBool = AtomicBool::new(false);
+        .run(|app, event| {
+            // Any way out (tray Quit, updater restart, Windows shutdown)
+            // stops the replay buffer and shuts the capture engine down
+            // cleanly. Windows shutdown skips ExitRequested: tao turns the
+            // first WM_ENDSESSION straight into Exit.
+            static STOPPED: AtomicBool = AtomicBool::new(false);
+            let stop_engine = |secs: u64| {
                 if !STOPPED.swap(true, Ordering::Relaxed) {
                     // The timeout must be built inside the runtime: tokio
                     // timers panic when created outside one.
                     let _ = tauri::async_runtime::block_on(async {
-                        tokio::time::timeout(std::time::Duration::from_secs(15), obs::stop_buffer_for_exit()).await
+                        tokio::time::timeout(std::time::Duration::from_secs(secs), obs::stop_buffer_for_exit()).await
                     });
                 }
+            };
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => stop_engine(15),
+                tauri::RunEvent::Exit if session_ending() => {
+                    // Windows allows ~5s here. Exit right after cleanup: the
+                    // next window's WM_ENDSESSION would hit tao's destroyed
+                    // event loop and panic ("cannot move state from Destroyed").
+                    stop_engine(4);
+                    app.cleanup_before_exit();
+                    logs::line("Windows is shutting down; exited cleanly");
+                    std::process::exit(0);
+                }
+                tauri::RunEvent::Exit => stop_engine(15),
+                _ => {}
             }
         });
 }
