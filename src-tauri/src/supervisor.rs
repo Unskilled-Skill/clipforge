@@ -353,9 +353,13 @@ async fn tick(
             }
         },
         BufferAction::Start => {
-            match crate::obs::blocking(|| ENGINE.start_buffer()).await {
+            match crate::obs::blocking(crate::setup::start_buffer).await {
                 Ok(()) => state.buffer_active = true,
                 Err(error) => state.engine_error = Some(error),
+            }
+            if let Some(msg) = crate::setup::FALLBACK_NOTICE.lock().unwrap().take() {
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app.notification().builder().title("Switched video encoder").body(msg).show();
             }
         },
         BufferAction::Keep => {},

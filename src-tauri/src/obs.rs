@@ -281,7 +281,7 @@ pub async fn apply_obs_config(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn start_replay_buffer() -> Result<(), String> {
-    blocking(|| ENGINE.start_buffer()).await
+    blocking(crate::setup::start_buffer).await
 }
 
 /// When the last replay save was requested. The supervisor won't stop the
@@ -340,7 +340,7 @@ async fn save_replay_path(app: &AppHandle, keep_last: Option<f64>, label: Option
         }
         // A game runs but the buffer isn't up (it just started, or "Auto
         // buffer" is off): start it so the next save works.
-        let _ = blocking(|| ENGINE.start_buffer()).await;
+        let _ = blocking(crate::setup::start_buffer).await;
         return Err("Recording just started. Play for a few seconds, then save again.".into());
     }
     let clips_dir = crate::clips::load_settings_inner(app).clips_dir;

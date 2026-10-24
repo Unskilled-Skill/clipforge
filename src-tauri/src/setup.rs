@@ -97,11 +97,12 @@ fn winget_install_blocking(id: String) -> Result<(), String> {
 }
 
 
-/// Map a codec preference to this machine's best hardware encoder id.
-/// Vendor order matters on laptops/desktops with an Intel iGPU next to a
-/// discrete card: the dGPU's encoder (NVENC, then AMF) beats QuickSync, which
-/// OBS also logs as "app not on intel GPU, fall back to old qsv encoder".
-fn pick_encoder(pref: &str, available: &[String]) -> Option<String> {
+/// The encoders to try for a codec preference, best first, ending with CPU
+/// x264 (always works). Vendor order matters on laptops/desktops with an
+/// Intel iGPU next to a discrete card: the dGPU's encoder (NVENC, then AMF)
+/// beats QuickSync, which OBS also logs as "app not on intel GPU, fall back
+/// to old qsv encoder".
+fn encoder_chain(pref: &str, available: &[String]) -> Vec<String> {
     // QuickSync's H.264 id ("obs_qsv11_v2") has no codec in its name.
     let is_codec = |id: &str, codec: &[&str]| {
         codec.iter().any(|c| id.contains(c))
@@ -115,13 +116,113 @@ fn pick_encoder(pref: &str, available: &[String]) -> Option<String> {
                 .cloned()
         })
     };
-    match pref {
-        "av1" => find(&["av1"]),
-        "hevc" => find(&["hevc", "265"]),
-        "h264" => find(&["264", "avc"]).or_else(|| Some("obs_x264".into())),
-        // auto: AV1 if this GPU has it, else H.264. HEVC is skipped: the
-        // WebView preview often can't decode it (black frame, audio-only bar).
-        _ => find(&["av1"]).or_else(|| find(&["264", "avc"])),
+    let (av1, hevc, h264) = (find(&["av1"]), find(&["hevc", "265"]), find(&["264", "avc"]));
+    let order = match pref {
+        "av1" => vec![av1, hevc, h264],
+        "hevc" => vec![hevc, h264],
+        "h264" => vec![h264],
+        // auto: AV1, then H.264. HEVC only before falling to the CPU: the
+        // WebView preview often can't decode it (black frame, audio-only
+        // bar), but a hardware encoder beats x264 eating game frames.
+        _ => vec![av1, h264, hevc],
+    };
+    let mut chain: Vec<String> = order.into_iter().flatten().collect();
+    chain.push(X264.into());
+    chain
+}
+
+const X264: &str = "obs_x264";
+
+/// First encoder in the preference's chain that hasn't failed.
+fn pick_encoder_avoiding(pref: &str, available: &[String], failed: &[String]) -> String {
+    encoder_chain(pref, available)
+        .into_iter()
+        .find(|e| !failed.contains(e))
+        .unwrap_or_else(|| X264.into())
+}
+
+/// The encoder this machine should use, ignoring this session's failures.
+fn pick_encoder(pref: &str, available: &[String]) -> Option<String> {
+    Some(pick_encoder_avoiding(pref, available, &[]))
+}
+
+/// Encoders that failed to start this session (driver trouble, a codec the
+/// GPU can't do at this resolution). Skipped until ClipForge restarts, in
+/// case a driver update fixes them.
+static FAILED_ENCODERS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Set when recording fell back to another encoder; the supervisor tells
+/// the user once.
+pub static FALLBACK_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Settings of the last `apply_all`, to rebuild the output after a failure.
+static LAST_SETTINGS: std::sync::Mutex<Option<crate::clips::Settings>> = std::sync::Mutex::new(None);
+
+/// Record that `encoder` failed with `error`. False when there's nothing
+/// left to fall back to (x264 failing is a real error).
+fn give_up_on(encoder: &str, error: &str) -> bool {
+    if encoder == X264 {
+        return false;
+    }
+    let mut failed = FAILED_ENCODERS.lock().unwrap();
+    if failed.iter().any(|e| e == encoder) {
+        return false;
+    }
+    failed.push(encoder.to_string());
+    crate::logs::line(&format!("encoder {encoder} failed ({error}); trying the next one"));
+    true
+}
+
+fn friendly_encoder(id: &str) -> String {
+    let codec = if id.contains("av1") {
+        "AV1"
+    } else if id.contains("hevc") || id.contains("265") {
+        "HEVC"
+    } else {
+        "H.264"
+    };
+    let vendor = if id.contains("nvenc") {
+        "NVIDIA "
+    } else if id.contains("amf") {
+        "AMD "
+    } else if id.contains("qsv") {
+        "Intel "
+    } else {
+        ""
+    };
+    if id == X264 { "CPU (x264)".into() } else { format!("{vendor}{codec}") }
+}
+
+/// Start the replay buffer, falling back down the encoder chain (AV1 ->
+/// HEVC -> H.264 -> CPU x264) when the configured encoder won't start, so a
+/// driver problem costs quality instead of every clip. Blocking.
+pub fn start_buffer() -> Result<(), String> {
+    let mut first_failed: Option<String> = None;
+    loop {
+        let error = match ENGINE.start_buffer() {
+            Ok(()) => {
+                if let Some(failed) = first_failed {
+                    let now = ENGINE.info().output.map(|o| o.encoder).unwrap_or_default();
+                    let msg = format!(
+                        "{} encoding wouldn't start, so ClipForge is recording with {} instead.",
+                        friendly_encoder(&failed),
+                        friendly_encoder(&now)
+                    );
+                    crate::logs::line(&format!("encoder fallback: {failed} -> {now}"));
+                    *FALLBACK_NOTICE.lock().unwrap() = Some(msg);
+                }
+                return Ok(());
+            }
+            Err(e) => e,
+        };
+        let encoder = ENGINE.info().output.map(|o| o.encoder).unwrap_or_default();
+        let settings = LAST_SETTINGS.lock().unwrap().clone();
+        // Only a start that libobs itself refused is the encoder's fault;
+        // "engine not running" and the like aren't.
+        let encoder_failed = error.starts_with("Couldn't start the replay buffer");
+        let Some(settings) = settings.filter(|_| encoder_failed && give_up_on(&encoder, &error)) else {
+            return Err(error);
+        };
+        first_failed.get_or_insert(encoder);
+        apply_all(&settings)?;
     }
 }
 
@@ -192,7 +293,8 @@ fn replay_ram_mb(seconds: f64, bitrate_mbps: f64) -> i64 {
 /// The engine config ClipForge's settings ask for on this machine.
 pub fn desired_config(settings: &crate::clips::Settings, encoders: &[String]) -> (OutputConfig, crate::engine::VideoConfig) {
     let video = crate::engine::video_config(settings.video_fps, settings.video_height);
-    let encoder = pick_encoder(&settings.encoder_pref, encoders).unwrap_or_else(|| "obs_x264".into());
+    let failed = FAILED_ENCODERS.lock().unwrap().clone();
+    let encoder = pick_encoder_avoiding(&settings.encoder_pref, encoders, &failed);
     let bitrate_mbps = target_bitrate_mbps(settings, video.out.1, video.fps, &encoder);
     let seconds = settings.replay_seconds.clamp(15.0, 900.0);
     let output = OutputConfig {
@@ -217,8 +319,19 @@ pub fn apply_all(settings: &crate::clips::Settings) -> Result<(), String> {
         return Ok(());
     }
     let _ = std::fs::create_dir_all(&settings.clips_dir);
-    let (output, video) = desired_config(settings, &ENGINE.video_encoders());
-    let applied = ENGINE.configure(output, video)?;
+    *LAST_SETTINGS.lock().unwrap() = Some(settings.clone());
+    let encoders = ENGINE.video_encoders();
+    // An encoder libobs can't even create falls back right here; one that
+    // fails only when recording starts is handled by `start_buffer`.
+    let applied = loop {
+        let (output, video) = desired_config(settings, &encoders);
+        let encoder = output.encoder.clone();
+        match ENGINE.configure(output, video) {
+            Ok(applied) => break applied,
+            Err(e) if e.starts_with("Encoder ") && give_up_on(&encoder, &e) => continue,
+            Err(e) => return Err(e),
+        }
+    };
     RELOAD_PENDING.store(!applied, Ordering::Relaxed);
     ENGINE.set_vc_exe(&settings.vc_exe)?;
     ENGINE.set_mic_noise_suppression(settings.mic_noise_suppression)?;
@@ -326,6 +439,24 @@ mod tests {
         let intel_only: Vec<String> = ["obs_qsv11_v2", "obs_qsv11_hevc", "obs_x264"].map(String::from).into();
         assert_eq!(pick_encoder("h264", &intel_only).as_deref(), Some("obs_qsv11_v2"));
         assert_eq!(pick_encoder("auto", &intel_only).as_deref(), Some("obs_qsv11_v2"));
+    }
+
+    #[test]
+    fn falls_back_down_the_encoder_chain() {
+        let ids = amd_intel();
+        assert_eq!(
+            encoder_chain("av1", &ids),
+            ["av1_texture_amf", "h265_texture_amf", "h264_texture_amf", "obs_x264"]
+        );
+        assert_eq!(
+            encoder_chain("auto", &ids),
+            ["av1_texture_amf", "h264_texture_amf", "h265_texture_amf", "obs_x264"]
+        );
+        let failed = ["av1_texture_amf".to_string()];
+        assert_eq!(pick_encoder_avoiding("av1", &ids, &failed), "h265_texture_amf");
+        let all_hw: Vec<String> = encoder_chain("av1", &ids).into_iter().filter(|e| e != X264).collect();
+        assert_eq!(pick_encoder_avoiding("av1", &ids, &all_hw), X264);
+        assert!(!give_up_on(X264, "boom"), "nothing below the CPU encoder");
     }
 
     #[test]
