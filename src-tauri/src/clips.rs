@@ -111,6 +111,8 @@ fn default_game_exes() -> Vec<String> {
         "gta5.exe",
         "rocketleague.exe",
         "deadlock.exe",
+        "dota2.exe",
+        "valheim.exe",
     ]
     .into_iter()
     .map(String::from)

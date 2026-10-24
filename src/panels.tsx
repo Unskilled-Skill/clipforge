@@ -924,8 +924,9 @@ export function SettingsPage(props: {
             <div className="toggle-text">
               <span className="toggle-title">Auto-clip kills</span>
               <span className="toggle-desc">
-                CS2 and League built in, more games with Overwolf below. Saves a clip a
-                few seconds after your kill — multikills land in one clip. Other games: hotkey.
+                Built in: CS2, Dota 2, League, Rocket League (goals, saves, demos), Arena
+                Breakout and Valheim (boss kills); more with Overwolf below. Kills close together
+                land in one clip. Games read their setup at launch, so restart one already running.
               </span>
             </div>
             <button
@@ -942,7 +943,7 @@ export function SettingsPage(props: {
             <div className="toggle-text">
               <span className="toggle-title">Overwolf game events</span>
               <span className="toggle-desc">
-                Valorant, Fortnite, Apex, Siege, Overwatch, Rocket League and Marvel Rivals.
+                Valorant, Fortnite, Apex, Siege, Overwatch and Marvel Rivals.
                 Needs Overwolf and the ClipForge Overwolf app. ClipForge still does the recording.
                 {settings.overwolf_events &&
                   (overwolfSeen !== null && overwolfSeen < 180

@@ -1,4 +1,5 @@
 mod autoclip;
+mod gamesources;
 mod backup;
 mod clips;
 mod elevation;

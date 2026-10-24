@@ -90,11 +90,11 @@ static LOG_TAIL: Mutex<Option<LogTail>> = Mutex::new(None);
 
 /// Check the active game's log for new matching lines.
 fn poll_log_trigger(app: &AppHandle, game: &str, delay_s: f64) {
-    let triggers = load_triggers(app);
-    let Some(trigger) = triggers
-        .iter()
+    let trigger = load_triggers(app)
+        .into_iter()
         .find(|t| t.game_exe.to_lowercase() == game)
-    else {
+        .or_else(|| crate::gamesources::builtin_log_trigger(game));
+    let Some(trigger) = trigger else {
         *LOG_TAIL.lock().unwrap() = None;
         return;
     };
@@ -164,6 +164,8 @@ struct Pending {
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 /// `round_kills` from our own player's last CS2 GSI payload (-1 = unknown).
 static CS2_ROUND_KILLS: AtomicI64 = AtomicI64::new(-1);
+/// `player.kills` from the last Dota 2 GSI payload (-1 = unknown).
+static DOTA_KILLS: AtomicI64 = AtomicI64::new(-1);
 /// Highest LoL event id already processed.
 static LOL_LAST_EVENT: AtomicI64 = AtomicI64::new(-1);
 static GSI_CONFIG_DONE: AtomicBool = AtomicBool::new(false);
@@ -222,6 +224,11 @@ fn schedule_clip(app: &AppHandle, delay_s: f64) {
     }
 }
 
+/// Open or extend the event window for a highlight from any source.
+pub fn schedule(app: &AppHandle) {
+    schedule_clip(app, crate::clips::load_settings_inner(app).auto_clip_delay_s);
+}
+
 /// Seconds an auto clip saved now keeps: back to `PRE_ROLL` before the
 /// window's first event, capped at `MAX_AUTO_CLIP`.
 fn window_length(first: Instant, now: Instant) -> f64 {
@@ -230,9 +237,10 @@ fn window_length(first: Instant, now: Instant) -> f64 {
 
 pub async fn run(app: AppHandle) {
     tauri::async_runtime::spawn(gsi_listener(app.clone()));
-    // CS2 reads GSI configs only at launch, so write ours before the game
-    // starts, not when it's detected (too late for that session).
-    if install_cs2_gsi_config() {
+    tauri::async_runtime::spawn(crate::gamesources::rocket_league(app.clone()));
+    // CS2 and Dota read GSI configs only at launch, so write ours before
+    // the game starts, not when it's detected (too late for that session).
+    if install_gsi_configs() {
         GSI_CONFIG_DONE.store(true, Ordering::Relaxed);
     }
 
@@ -279,7 +287,7 @@ pub async fn run(app: AppHandle) {
             .unwrap_or_default();
 
         if game.contains("cs2") && !GSI_CONFIG_DONE.load(Ordering::Relaxed) {
-            if install_cs2_gsi_config() {
+            if install_gsi_configs() {
                 GSI_CONFIG_DONE.store(true, Ordering::Relaxed);
             }
         }
@@ -355,6 +363,8 @@ async fn gsi_listener(app: AppHandle) {
                 handle_overwolf_payload(&app, &json);
             } else if buf.starts_with(b"POST /api/v1/event/invoke") {
                 handle_event_invoke(&app, &json);
+            } else if json["provider"]["appid"] == DOTA_APPID {
+                handle_dota_payload(&app, &json);
             } else {
                 handle_cs2_payload(&app, &json);
             }
@@ -414,6 +424,28 @@ fn handle_cs2_payload(app: &AppHandle, json: &serde_json::Value) {
         crate::logs::line(&format!("auto-clip: cs2 kill (round headshots {hs})"));
         let delay = crate::clips::load_settings_inner(app).auto_clip_delay_s;
         schedule_clip(app, delay);
+    }
+}
+
+const DOTA_APPID: i64 = 570;
+
+/// Whether this Dota 2 payload carries a new kill by us. While spectating,
+/// `player` holds every player keyed by team, so `player.kills` is absent.
+fn dota_new_kill(json: &serde_json::Value, last_kills: &AtomicI64) -> bool {
+    if json["auth"]["token"] != GSI_TOKEN {
+        return false;
+    }
+    let Some(kills) = json["player"]["kills"].as_i64() else {
+        return false;
+    };
+    let last = last_kills.swap(kills, Ordering::Relaxed);
+    last >= 0 && kills > last
+}
+
+fn handle_dota_payload(app: &AppHandle, json: &serde_json::Value) {
+    if dota_new_kill(json, &DOTA_KILLS) {
+        crate::logs::line("auto-clip: dota 2 kill");
+        schedule(app);
     }
 }
 
@@ -500,10 +532,13 @@ async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64) {
             continue;
         }
         newest = newest.max(id);
-        // Skip the backlog on first poll of a match.
-        if last >= 0
-            && event["EventName"] == "ChampionKill"
-            && event["KillerName"].as_str() == Some(me.as_str())
+        // Skip the backlog on first poll of a match. Objectives we last-hit
+        // count too (Medal clips these as well).
+        let highlight = matches!(
+            event["EventName"].as_str(),
+            Some("ChampionKill" | "DragonKill" | "BaronKill" | "HeraldKill" | "HordeKill")
+        );
+        if last >= 0 && highlight && event["KillerName"].as_str() == Some(me.as_str())
         {
             kill = true;
         }
@@ -514,44 +549,44 @@ async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64) {
     }
 }
 
-/// Drop ClipForge's GSI config into the CS2 cfg folder so the game knows
-/// where to send events. Searches all Steam library folders.
-fn install_cs2_gsi_config() -> bool {
-    let mut roots = vec![
-        "C:/Program Files (x86)/Steam".to_string(),
-        "C:/Program Files/Steam".to_string(),
-    ];
-    // Additional library folders from the main install.
-    for root in roots.clone() {
-        let vdf = std::path::Path::new(&root).join("steamapps/libraryfolders.vdf");
-        if let Ok(raw) = std::fs::read_to_string(vdf) {
-            for line in raw.lines() {
-                let line = line.trim();
-                if line.starts_with("\"path\"") {
-                    if let Some(path) = line.split('"').nth(3) {
-                        roots.push(path.replace("\\\\", "/"));
-                    }
-                }
-            }
-        }
-    }
+/// GSI config telling a Valve game to POST `data` sections to us.
+fn gsi_config(data: &[&str]) -> String {
+    let data: String = data.iter().map(|k| format!("  \"{k}\" \"1\"\n")).collect();
+    format!(
+        "\"ClipForge GSI\"\n{{\n \"uri\" \"http://127.0.0.1:{GSI_PORT}\"\n \
+         \"timeout\" \"1.0\"\n \"buffer\" \"0.1\"\n \"throttle\" \"0.1\"\n \
+         \"heartbeat\" \"30.0\"\n \"auth\"\n {{\n  \"token\" \"{GSI_TOKEN}\"\n }}\n \
+         \"data\"\n {{\n{data} }}\n}}\n"
+    )
+}
 
-    for root in roots {
-        let cfg_dir = std::path::Path::new(&root)
-            .join("steamapps/common/Counter-Strike Global Offensive/game/csgo/cfg");
-        if cfg_dir.exists() {
-            let cfg = format!(
-                "\"ClipForge GSI\"\n{{\n \"uri\" \"http://127.0.0.1:{GSI_PORT}\"\n \
-                 \"timeout\" \"1.0\"\n \"buffer\" \"0.1\"\n \"throttle\" \"0.1\"\n \
-                 \"heartbeat\" \"30.0\"\n \"auth\"\n {{\n  \"token\" \"{GSI_TOKEN}\"\n }}\n \
-                 \"data\"\n {{\n  \"provider\" \"1\"\n  \"map\" \"1\"\n  \"round\" \"1\"\n  \
-                 \"player_id\" \"1\"\n  \"player_state\" \"1\"\n }}\n}}\n"
-            );
-            return std::fs::write(cfg_dir.join("gamestate_integration_clipforge.cfg"), cfg)
-                .is_ok();
+/// Drop ClipForge's GSI config into CS2's and Dota 2's cfg folders so the
+/// games know where to send events. True if at least one was written.
+fn install_gsi_configs() -> bool {
+    let games: [(&str, &str, &[&str]); 2] = [
+        (
+            "Counter-Strike Global Offensive",
+            "game/csgo/cfg",
+            &["provider", "map", "round", "player_id", "player_state"],
+        ),
+        (
+            "dota 2 beta",
+            "game/dota/cfg/gamestate_integration",
+            &["provider", "map", "player", "hero"],
+        ),
+    ];
+    let mut any = false;
+    for (folder, cfg_sub, data) in games {
+        let Some(dir) = crate::gamesources::steam_game_dir(folder) else {
+            continue;
+        };
+        let cfg_dir = dir.join(cfg_sub);
+        let file = cfg_dir.join("gamestate_integration_clipforge.cfg");
+        if std::fs::create_dir_all(&cfg_dir).and_then(|_| std::fs::write(file, gsi_config(data))).is_ok() {
+            any = true;
         }
     }
-    false
+    any
 }
 
 #[cfg(test)]
@@ -580,6 +615,18 @@ mod tests {
         let mut foreign = payload(2, "me", "live");
         foreign["auth"]["token"] = json!("other");
         assert!(!cs2_new_kill(&foreign, &last), "another app's GSI config");
+    }
+
+    #[test]
+    fn dota_kill_counts_own_kills_only() {
+        let last = AtomicI64::new(-1);
+        let own = |kills: i64| json!({"auth": {"token": GSI_TOKEN}, "provider": {"appid": 570}, "player": {"kills": kills}});
+        assert!(!dota_new_kill(&own(0), &last));
+        assert!(dota_new_kill(&own(1), &last));
+        assert!(!dota_new_kill(&own(1), &last));
+        let spectating = json!({"auth": {"token": GSI_TOKEN}, "player": {"team2": {"player0": {"kills": 5}}}});
+        assert!(!dota_new_kill(&spectating, &last));
+        assert!(gsi_config(&["player", "hero"]).contains("  \"hero\" \"1\"\n"));
     }
 
     #[test]
