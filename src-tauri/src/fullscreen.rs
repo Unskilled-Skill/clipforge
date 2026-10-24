@@ -60,7 +60,44 @@ const BLOCKLIST: &[&str] = &[
     // Wallpaper engines render a permanent fullscreen window.
     "wallpaper64.exe",
     "wallpaper32.exe",
+    // Shell hosts (Start, search, touch keyboard) and Medal's own recorder,
+    // from Medal's window filter.
+    "applicationframehost.exe",
+    "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe",
+    "searchui.exe",
+    "searchapp.exe",
+    "textinputhost.exe",
+    "medal.exe",
+    "medalencoder.exe",
 ];
+
+/// Window classes that are shell, IME or helper windows, never a game's
+/// main window, even when one covers the monitor (Medal's class filter).
+const CLASS_BLOCKLIST: &[&str] = &[
+    "Windows.UI.Core.CoreWindow",
+    "Touch Tooltip Window",
+    "ShellTabWindowClass",
+    "MSTaskSwWClass",
+    "MSTaskListWClass",
+    "ToolbarWindow32",
+    "UIRibbonCommandBarDock",
+    "UIRibbonWorkPane",
+    "Static",
+    "Chrome_RenderWidgetHostHWND",
+    "Button",
+    "IME",
+    "MSCTFIME UI",
+    "__wglDummyWindowFodder",
+    "Progman",
+    "WorkerW",
+];
+
+fn class_name(hwnd: HWND) -> String {
+    let mut class = [0u16; 256];
+    let len = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
+    String::from_utf16_lossy(&class[..len])
+}
 
 #[cfg(test)]
 mod tests {
@@ -128,6 +165,10 @@ pub fn fullscreen_game() -> Option<String> {
             return None;
         }
 
+        let class = class_name(hwnd);
+        if CLASS_BLOCKLIST.contains(&class.as_str()) || crate::engine::is_console(Some(&class)) {
+            return None;
+        }
         let name = window_exe(hwnd)?;
         if BLOCKLIST.contains(&name.as_str()) {
             return None;

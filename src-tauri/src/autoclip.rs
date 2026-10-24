@@ -6,8 +6,12 @@
 //! Overwolf-supported games (Valorant, Fortnite, Apex, ...) arrive through
 //! the companion Overwolf app in `/overwolf`, which POSTs its game events
 //! to the same localhost port.
-//! A kill arms a short countdown; further kills extend it, so a multikill
-//! ends up in one clip that includes the whole sequence.
+//! Other tools can trigger clips through a Medal-compatible endpoint,
+//! `POST /api/v1/event/invoke`, on the same port.
+//! A kill opens an event window; further kills extend it, so a multikill
+//! ends up in one clip. Like Medal's event system, the saved clip covers
+//! the first kill minus `PRE_ROLL` through the last kill plus the window,
+//! capped at `MAX_AUTO_CLIP`, not the whole replay buffer.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
@@ -141,11 +145,25 @@ fn poll_log_trigger(app: &AppHandle, game: &str, delay_s: f64) {
 }
 
 const GSI_PORT: u16 = 3888;
+/// Sent back by CS2 with every payload; anything else on the port is ignored.
+const GSI_TOKEN: &str = "clipforge-gsi-v1";
 
-/// When the pending clip should be saved (slides forward on each kill).
-static PENDING: Mutex<Option<Instant>> = Mutex::new(None);
-/// Kill counter from the last CS2 GSI payload (-1 = unknown/new match).
-static CS2_KILLS: AtomicI64 = AtomicI64::new(-1);
+/// Seconds kept before the first event of a window (the play leading up).
+const PRE_ROLL: f64 = 10.0;
+/// Longest auto clip; a window that runs longer keeps its newest part.
+const MAX_AUTO_CLIP: f64 = 120.0;
+
+/// An open event window.
+struct Pending {
+    /// First event in the window: the clip starts `PRE_ROLL` before it.
+    first: Instant,
+    /// When the clip is saved (slides forward on each event).
+    deadline: Instant,
+}
+
+static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+/// `round_kills` from our own player's last CS2 GSI payload (-1 = unknown).
+static CS2_ROUND_KILLS: AtomicI64 = AtomicI64::new(-1);
 /// Highest LoL event id already processed.
 static LOL_LAST_EVENT: AtomicI64 = AtomicI64::new(-1);
 static GSI_CONFIG_DONE: AtomicBool = AtomicBool::new(false);
@@ -192,16 +210,31 @@ pub fn write_kill_markers(clip_path: &str, saved_at: Instant) {
 
 fn schedule_clip(app: &AppHandle, delay_s: f64) {
     record_kill();
+    let now = Instant::now();
+    let deadline = now + Duration::from_secs_f64(delay_s.max(2.0));
     let mut pending = PENDING.lock().unwrap();
-    let already = pending.is_some();
-    *pending = Some(Instant::now() + Duration::from_secs_f64(delay_s.max(2.0)));
-    if !already {
-        let _ = app.emit("auto-clip-armed", ());
+    match pending.as_mut() {
+        Some(p) => p.deadline = deadline,
+        None => {
+            *pending = Some(Pending { first: now, deadline });
+            let _ = app.emit("auto-clip-armed", ());
+        }
     }
+}
+
+/// Seconds an auto clip saved now keeps: back to `PRE_ROLL` before the
+/// window's first event, capped at `MAX_AUTO_CLIP`.
+fn window_length(first: Instant, now: Instant) -> f64 {
+    (now.saturating_duration_since(first).as_secs_f64() + PRE_ROLL).min(MAX_AUTO_CLIP)
 }
 
 pub async fn run(app: AppHandle) {
     tauri::async_runtime::spawn(gsi_listener(app.clone()));
+    // CS2 reads GSI configs only at launch, so write ours before the game
+    // starts, not when it's detected (too late for that session).
+    if install_cs2_gsi_config() {
+        GSI_CONFIG_DONE.store(true, Ordering::Relaxed);
+    }
 
     let lol_client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true) // Riot's local API uses a self-signed cert
@@ -220,16 +253,19 @@ pub async fn run(app: AppHandle) {
         // Fire the pending clip once its window has passed.
         let due = {
             let mut pending = PENDING.lock().unwrap();
-            match *pending {
-                Some(deadline) if Instant::now() >= deadline => {
+            let now = Instant::now();
+            match pending.as_ref() {
+                Some(p) if now >= p.deadline => {
+                    let keep = window_length(p.first, now);
                     *pending = None;
-                    true
+                    Some(keep)
                 }
-                _ => false,
+                _ => None,
             }
         };
-        if due {
-            if crate::obs::save_replay(&app, false).await.is_ok() {
+        if let Some(keep) = due {
+            crate::logs::line(&format!("auto-clip: saving last {keep:.0}s"));
+            if crate::obs::save_replay_keep(&app, keep).await.is_ok() {
                 let _ = app.emit("auto-clipped", ());
             }
         }
@@ -296,6 +332,15 @@ async fn gsi_listener(app: AppHandle) {
                     return; // not a GSI payload
                 }
             }
+            // Web pages always send an http(s) Origin; the game, the
+            // Overwolf companion and local tools don't. Refusing those keeps
+            // websites from triggering clips (Medal does the same).
+            if from_web_page(&buf) {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                return;
+            }
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await;
@@ -308,6 +353,8 @@ async fn gsi_listener(app: AppHandle) {
             };
             if buf.starts_with(b"POST /overwolf") {
                 handle_overwolf_payload(&app, &json);
+            } else if buf.starts_with(b"POST /api/v1/event/invoke") {
+                handle_event_invoke(&app, &json);
             } else {
                 handle_cs2_payload(&app, &json);
             }
@@ -327,21 +374,61 @@ fn content_length(buf: &[u8]) -> Option<usize> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-fn handle_cs2_payload(app: &AppHandle, json: &serde_json::Value) {
-    // Only count our own player, not someone we spectate.
+fn from_web_page(request: &[u8]) -> bool {
+    let head_end = find_body(request).unwrap_or(request.len());
+    let Ok(head) = std::str::from_utf8(&request[..head_end]) else {
+        return false;
+    };
+    head.lines().any(|l| {
+        let l = l.to_ascii_lowercase();
+        l.starts_with("origin:") && l["origin:".len()..].trim().starts_with("http")
+    })
+}
+
+/// Whether this CS2 payload carries a new kill by us. Diffs `round_kills`
+/// (in `player_state`) against our last own payload; skips spectated
+/// players (dead or watching) and warmup/freezetime/intermission/gameover.
+fn cs2_new_kill(json: &serde_json::Value, last_round_kills: &AtomicI64) -> bool {
+    if json["auth"]["token"] != GSI_TOKEN {
+        return false;
+    }
     let own = json["provider"]["steamid"].as_str().is_some()
         && json["provider"]["steamid"] == json["player"]["steamid"];
     if !own {
-        return;
+        return false;
     }
-    let Some(kills) = json["player"]["match_stats"]["kills"].as_i64() else {
-        return;
+    let Some(kills) = json["player"]["state"]["round_kills"].as_i64() else {
+        return false;
     };
-    let last = CS2_KILLS.swap(kills, Ordering::Relaxed);
-    if last >= 0 && kills > last {
+    let last = last_round_kills.swap(kills, Ordering::Relaxed);
+    let map_phase = json["map"]["phase"].as_str().unwrap_or("live");
+    let round_phase = json["round"]["phase"].as_str().unwrap_or("live");
+    let playing = !matches!(map_phase, "warmup" | "intermission" | "gameover")
+        && round_phase != "freezetime";
+    playing && last >= 0 && kills > last
+}
+
+fn handle_cs2_payload(app: &AppHandle, json: &serde_json::Value) {
+    if cs2_new_kill(json, &CS2_ROUND_KILLS) {
+        let hs = json["player"]["state"]["round_killhs"].as_i64().unwrap_or(0);
+        crate::logs::line(&format!("auto-clip: cs2 kill (round headshots {hs})"));
         let delay = crate::clips::load_settings_inner(app).auto_clip_delay_s;
         schedule_clip(app, delay);
     }
+}
+
+/// Medal's third-party game API shape: `{"eventId", "eventName",
+/// "triggerActions": ["SaveClip"], ...}`, so a game, mod or script can ask
+/// for a clip. An event that only asks for a screenshot is ignored.
+fn handle_event_invoke(app: &AppHandle, json: &serde_json::Value) {
+    if let Some(actions) = json["triggerActions"].as_array() {
+        if !actions.iter().any(|a| a == "SaveClip") {
+            return;
+        }
+    }
+    let name = json["eventName"].as_str().or(json["eventId"].as_str()).unwrap_or("event");
+    crate::logs::line(&format!("auto-clip: api event {name}"));
+    schedule_clip(app, crate::clips::load_settings_inner(app).auto_clip_delay_s);
 }
 
 /// A message from the Overwolf companion app: `{"type":"hello"}` on start
@@ -455,13 +542,57 @@ fn install_cs2_gsi_config() -> bool {
         if cfg_dir.exists() {
             let cfg = format!(
                 "\"ClipForge GSI\"\n{{\n \"uri\" \"http://127.0.0.1:{GSI_PORT}\"\n \
-                 \"timeout\" \"1.0\"\n \"buffer\" \"0.2\"\n \"throttle\" \"0.5\"\n \
-                 \"heartbeat\" \"30.0\"\n \"data\"\n {{\n  \"provider\" \"1\"\n  \
-                 \"player_state\" \"1\"\n  \"map\" \"1\"\n }}\n}}\n"
+                 \"timeout\" \"1.0\"\n \"buffer\" \"0.1\"\n \"throttle\" \"0.1\"\n \
+                 \"heartbeat\" \"30.0\"\n \"auth\"\n {{\n  \"token\" \"{GSI_TOKEN}\"\n }}\n \
+                 \"data\"\n {{\n  \"provider\" \"1\"\n  \"map\" \"1\"\n  \"round\" \"1\"\n  \
+                 \"player_id\" \"1\"\n  \"player_state\" \"1\"\n }}\n}}\n"
             );
             return std::fs::write(cfg_dir.join("gamestate_integration_clipforge.cfg"), cfg)
                 .is_ok();
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn payload(round_kills: i64, player: &str, round_phase: &str) -> serde_json::Value {
+        json!({
+            "auth": {"token": GSI_TOKEN},
+            "provider": {"steamid": "me"},
+            "map": {"phase": "live"},
+            "round": {"phase": round_phase},
+            "player": {"steamid": player, "state": {"round_kills": round_kills}},
+        })
+    }
+
+    #[test]
+    fn cs2_kill_counts_only_own_live_kills() {
+        let last = AtomicI64::new(-1);
+        assert!(!cs2_new_kill(&payload(0, "me", "live"), &last), "first payload is a baseline");
+        assert!(cs2_new_kill(&payload(1, "me", "live"), &last));
+        assert!(!cs2_new_kill(&payload(3, "other", "live"), &last), "spectated player");
+        assert!(!cs2_new_kill(&payload(0, "me", "freezetime"), &last), "new round resets");
+        assert!(cs2_new_kill(&payload(1, "me", "live"), &last));
+        let mut foreign = payload(2, "me", "live");
+        foreign["auth"]["token"] = json!("other");
+        assert!(!cs2_new_kill(&foreign, &last), "another app's GSI config");
+    }
+
+    #[test]
+    fn auto_clip_covers_pre_roll_and_caps() {
+        let t = Instant::now();
+        assert_eq!(window_length(t, t + Duration::from_secs(8)), 18.0);
+        assert_eq!(window_length(t, t + Duration::from_secs(500)), MAX_AUTO_CLIP);
+    }
+
+    #[test]
+    fn web_pages_are_refused() {
+        assert!(from_web_page(b"POST /api/v1/event/invoke HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n{}"));
+        assert!(!from_web_page(b"POST /overwolf HTTP/1.1\r\nOrigin: overwolf-extension://abc\r\n\r\n{}"));
+        assert!(!from_web_page(b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n{}"));
+    }
 }
