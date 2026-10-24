@@ -1,5 +1,6 @@
 mod autoclip;
 mod gamesources;
+mod screenkills;
 mod backup;
 mod clips;
 mod elevation;
@@ -348,6 +349,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::run(handle));
             tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));
+            screenkills::run(app.handle().clone());
 
             // Silent self-update from GitHub Releases. Checks shortly after
             // launch and then every 30 minutes — a failed check (offline at

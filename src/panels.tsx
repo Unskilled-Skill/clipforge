@@ -924,8 +924,9 @@ export function SettingsPage(props: {
             <div className="toggle-text">
               <span className="toggle-title">Auto-clip kills</span>
               <span className="toggle-desc">
-                Built in: CS2, Dota 2, League, Rocket League (goals, saves, demos), Arena
-                Breakout and Valheim (boss kills); more with Overwolf below. Kills close together
+                Built in: CS2, Dota 2, League, Valorant (spots the kill banner on screen),
+                Rocket League (goals, saves, demos), Arena Breakout and Valheim (boss kills); more
+                with Overwolf below. Kills close together
                 land in one clip. Games read their setup at launch, so restart one already running.
               </span>
             </div>
