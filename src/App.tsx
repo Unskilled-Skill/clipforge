@@ -14,6 +14,9 @@ import {
   Copy,
   Crosshair,
   LinkSimple,
+  MagnifyingGlassMinus,
+  MagnifyingGlassPlus,
+  ArrowsInLineHorizontal,
   DiscordLogo,
   Gif,
   FilmSlate,
@@ -39,6 +42,8 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
+import { TimelineController } from "./timeline/controller";
+import { Filmstrip, Ruler } from "./timeline/parts";
 import type {
   CaptureTest,
   ClipInfo,
@@ -52,14 +57,8 @@ import type {
 import appIcon from "./assets/logo.svg";
 import "./App.css";
 
-// Ruler tick positions (seconds) for a clip: coarsest step that still
-// yields a readable ~10 labels.
-function rulerTicks(duration: number): number[] {
-  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300];
-  const step = steps.find((s) => duration / s <= 10) ?? 600;
-  const out: number[] = [];
-  for (let t = step; t < duration; t += step) out.push(t);
-  return out;
+function trimReadout(start: number, end: number) {
+  return `${start.toFixed(1)}s → ${end.toFixed(1)}s · ${(end - start).toFixed(1)}s selected`;
 }
 
 // Thumbnails live at a deterministic path next to the clip, so a card can
@@ -383,13 +382,24 @@ function App() {
   const [appVersion, setAppVersion] = useState("");
   const [launchingObs, setLaunchingObs] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const dragging = useRef<"start" | "end" | "scrub" | null>(null);
-  // Seek requested while a previous seek was still decoding — applied on
-  // 'seeked' so scrubbing renders every frame it can without flooding seeks.
-  const scrubTarget = useRef<number | null>(null);
-  const timelineRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const playheadRef = useRef<HTMLDivElement>(null);
+  // Timeline DOM, driven by TimelineController (pointer, playhead, zoom).
+  const tl = {
+    scroller: useRef<HTMLDivElement>(null),
+    sizer: useRef<HTMLDivElement>(null),
+    surface: useRef<HTMLDivElement>(null),
+    videoLane: useRef<HTMLDivElement>(null),
+    playhead: useRef<HTMLDivElement>(null),
+    range: useRef<HTMLDivElement>(null),
+    startHandle: useRef<HTMLDivElement>(null),
+    endHandle: useRef<HTMLDivElement>(null),
+    dimLeft: useRef<HTMLDivElement>(null),
+    dimRight: useRef<HTMLDivElement>(null),
+  };
+  const [timeline, setTimeline] = useState<TimelineController | null>(null);
+  const [timelineZoom, setTimelineZoom] = useState(1);
+  // Live "a → b" readout while dragging (written directly, no re-render).
+  const trimReadoutRef = useRef<HTMLSpanElement>(null);
   // Per-track mixer: one hidden <audio> per track, each solo'd to its own
   // track, volume driven by that track's slider. The master <video> is muted
   // while this engine is active (multi-track clip + track API available).
@@ -625,27 +635,14 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioKeep, trackGain, selected]);
 
-  // Drive the playhead straight from the video clock, moving the DOM node
-  // directly (translateX — no layout, no React re-render). The rAF loop only
-  // runs while the video is actually playing; when paused, 'seeked' events
-  // (scrub, frame-step) reposition it one-shot. Keeps the editor at ~0% CPU
-  // when idle instead of ticking 60fps forever.
+  // Per-track audio sync and the selection preview/loop. The playhead is
+  // the TimelineController's job. The rAF loop only runs while playing, so
+  // the editor sits at ~0% CPU when idle.
   useEffect(() => {
     if (!selected) return;
     const v = videoRef.current;
     if (!v) return;
     let raf = 0;
-    let last = -1;
-    const setPos = () => {
-      const d = v.duration || 0;
-      const lane = timelineRef.current;
-      if (d <= 0 || !lane || !playheadRef.current) return;
-      const px = (v.currentTime / d) * lane.clientWidth;
-      if (Math.abs(px - last) > 0.25) {
-        playheadRef.current.style.transform = `translateX(${px}px)`;
-        last = px;
-      }
-    };
     // Keep the per-track <audio> mixer locked to the video clock: pause
     // together, resume together, and nudge any element that drifts >0.2s.
     const syncAudios = () => {
@@ -667,7 +664,6 @@ function App() {
       }
     };
     const tick = () => {
-      setPos();
       syncAudios();
       if (previewing) {
         if (v.currentTime >= trimEnd) {
@@ -688,33 +684,22 @@ function App() {
     };
     const onPause = () => syncAudios();
     const onSeeked = () => {
-      // While scrubbing the pointer owns the playhead; don't snap it back to
-      // the decoded frame. Drain the queued scrub target so the video keeps
-      // chasing the cursor one completed seek at a time.
-      if (dragging.current !== "scrub") setPos();
       // Align paused audio elements so a resume starts in sync.
       if (perTrackOk.current && v.paused) {
         for (const el of Object.values(trackAudioRefs.current)) {
           if (el?.paused) el.currentTime = v.currentTime;
         }
       }
-      if (scrubTarget.current != null) {
-        const t = scrubTarget.current;
-        scrubTarget.current = null;
-        v.currentTime = t;
-      }
     };
     v.addEventListener("play", start);
     v.addEventListener("pause", onPause);
     v.addEventListener("seeked", onSeeked);
-    v.addEventListener("loadedmetadata", setPos);
     start(); // autoPlay may already be running when the effect attaches
     return () => {
       cancelAnimationFrame(raf);
       v.removeEventListener("play", start);
       v.removeEventListener("pause", onPause);
       v.removeEventListener("seeked", onSeeked);
-      v.removeEventListener("loadedmetadata", setPos);
     };
   }, [selected, previewing, trimStart, trimEnd, loopPreview]);
 
@@ -1169,98 +1154,62 @@ function App() {
   }
 
 
-  function timeAt(clientX: number) {
-    const el = timelineRef.current;
-    if (!el || duration === 0) return 0;
-    const rect = el.getBoundingClientRect();
-    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return frac * duration;
-  }
-
-  function onTimelineDown(e: React.PointerEvent) {
-    const t = timeAt(e.clientX);
-    const startDist = Math.abs(t - trimStart);
-    const endDist = Math.abs(t - trimEnd);
-    const grabRange = duration * 0.04;
-    if (Math.min(startDist, endDist) < grabRange) {
-      // Grabbing a trim handle: pause and show the frame under it while
-      // dragging; playback resumes from the handle on release.
-      dragging.current = startDist <= endDist ? "start" : "end";
-      setPreviewing(false);
-      videoRef.current?.pause();
-      scrubTo(dragging.current === "start" ? trimStart : trimEnd);
-    } else {
-      // Scrub: pause (editor convention), seek to the pointer, follow the drag.
-      beginScrub();
-      scrubTo(t);
-    }
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-  }
-
-  function onTimelineMove(e: React.PointerEvent) {
-    if (!dragging.current) return;
-    const t = timeAt(e.clientX);
-    if (dragging.current === "start") {
-      const next = Math.min(Math.round(t * 10) / 10, trimEnd - 0.5);
-      setTrimStart(next);
-      scrubTo(next);
-    } else if (dragging.current === "end") {
-      const next = Math.max(Math.round(t * 10) / 10, trimStart + 0.5);
-      setTrimEnd(next);
-      scrubTo(next);
-    } else {
-      scrubTo(t);
-    }
-  }
-
-  function onTimelineUp() {
-    const handle = dragging.current;
-    dragging.current = null;
-    const video = videoRef.current;
-    if (!video || (handle !== "start" && handle !== "end")) return;
-    scrubTarget.current = null;
-    // Play the selection from the handle just moved. For the end handle,
+  // Timeline controller: created once the lanes exist, torn down with the
+  // clip. React pushes the trim range and markers in; drags come back once.
+  const onTimelineCommit = useRef((_start: number, _end: number, _by: "start" | "end" | "move") => {});
+  onTimelineCommit.current = (start, end, by) => {
+    setTrimStart(start);
+    setTrimEnd(end);
+    // Play the selection from the edge just moved; for the end handle,
     // start a couple of seconds before it so the cut point is audible.
-    video.currentTime = handle === "start" ? trimStart : Math.max(trimStart, trimEnd - 2);
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = by === "end" ? Math.max(start, end - 2) : start;
     setPreviewing(true);
     video.play().catch(() => {});
-  }
-
-  function beginScrub() {
-    dragging.current = "scrub";
-    setPreviewing(false);
-    videoRef.current?.pause();
-  }
-
-  // Grab the playhead itself (head cap or the line) to scrub from its spot.
-  function onPlayheadDown(e: React.PointerEvent) {
-    e.stopPropagation();
-    beginScrub();
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-  }
-
-  function movePlayheadToTime(t: number) {
-    const lane = timelineRef.current;
-    const ph = playheadRef.current;
-    const d = videoRef.current?.duration || duration;
-    if (!lane || !ph || d <= 0) return;
-    ph.style.transform = `translateX(${(Math.min(Math.max(t, 0), d) / d) * lane.clientWidth}px)`;
-  }
-
-  // Scrub: the playhead sticks to the pointer instantly; the video renders
-  // every frame it can keep up with. Only one seek is in flight at a time —
-  // the next target waits for 'seeked' (drained in the playhead effect) so
-  // Chromium doesn't cancel/restart seeks and skip frames.
-  function scrubTo(t: number) {
-    const v = videoRef.current;
-    if (!v) return;
-    movePlayheadToTime(t);
-    if (v.seeking) {
-      scrubTarget.current = t;
-    } else {
-      v.currentTime = t;
-    }
-  }
+  };
+  const hasDuration = duration > 0;
+  useEffect(() => {
+    const video = videoRef.current;
+    const els = {
+      scroller: tl.scroller.current,
+      sizer: tl.sizer.current,
+      surface: tl.surface.current,
+      videoLane: tl.videoLane.current,
+      playhead: tl.playhead.current,
+      range: tl.range.current,
+      startHandle: tl.startHandle.current,
+      endHandle: tl.endHandle.current,
+      dimLeft: tl.dimLeft.current,
+      dimRight: tl.dimRight.current,
+    };
+    if (!selected || !hasDuration || !video || Object.values(els).some((el) => !el)) return;
+    const ctl = new TimelineController(video, els as Record<keyof typeof els, HTMLElement>, {
+      onTrimCommit: (start, end, by) => onTimelineCommit.current(start, end, by),
+      onTrimLive: (start, end) => {
+        if (trimReadoutRef.current) trimReadoutRef.current.textContent = trimReadout(start, end);
+      },
+      onInteract: () => setPreviewing(false),
+      onZoom: setTimelineZoom,
+    });
+    setTimeline(ctl);
+    setTimelineZoom(1);
+    return () => {
+      ctl.destroy();
+      setTimeline(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.path, playerReload, hasDuration]);
+  useEffect(() => {
+    timeline?.setDuration(duration);
+  }, [timeline, duration]);
+  useEffect(() => {
+    timeline?.setTrim(trimStart, trimEnd);
+    if (trimReadoutRef.current) trimReadoutRef.current.textContent = trimReadout(trimStart, trimEnd);
+  }, [timeline, trimStart, trimEnd]);
+  useEffect(() => {
+    timeline?.setMarkers(killMarkers);
+  }, [timeline, killMarkers]);
 
   // Editor keyboard shortcuts: space play/pause, arrows frame-step
   // (shift = 1s), [ ] set trim markers at the playhead.
@@ -2691,9 +2640,42 @@ function App() {
                     {killMarkers.length} kill{killMarkers.length > 1 ? "s" : ""}
                   </button>
                 )}
-                <span className="trim-readout">
-                  {trimStart.toFixed(1)}s → {trimEnd.toFixed(1)}s · {(trimEnd - trimStart).toFixed(1)}s selected
+                <span className="trim-readout" ref={trimReadoutRef}>
+                  {trimReadout(trimStart, trimEnd)}
                 </span>
+                <div className="tl-zoom" title="Zoom the timeline (Ctrl + scroll)">
+                  <button
+                    className="preview-btn"
+                    onClick={() => timeline?.zoomBy(1 / 1.5)}
+                    disabled={timelineZoom <= 1}
+                    aria-label="Zoom out"
+                  >
+                    <MagnifyingGlassMinus size={13} weight="bold" />
+                  </button>
+                  <span className="tl-zoom-level">
+                    {timelineZoom < 10 ? timelineZoom.toFixed(1) : Math.round(timelineZoom)}×
+                  </span>
+                  <button
+                    className="preview-btn"
+                    onClick={() => timeline?.zoomBy(1.5)}
+                    disabled={!timeline || timelineZoom >= timeline.maxZoom}
+                    aria-label="Zoom in"
+                  >
+                    <MagnifyingGlassPlus size={13} weight="bold" />
+                  </button>
+                  <button
+                    className="preview-btn"
+                    onClick={() =>
+                      trimStart <= 0.05 && trimEnd >= duration - 0.05
+                        ? timeline?.setZoom(1)
+                        : timeline?.fitRange(trimStart, trimEnd)
+                    }
+                    title="Zoom to the selection"
+                    aria-label="Zoom to the selection"
+                  >
+                    <ArrowsInLineHorizontal size={13} weight="bold" />
+                  </button>
+                </div>
               </div>
               {duration > 0 && (
                 <div className="multitrack">
@@ -2748,76 +2730,58 @@ function App() {
                       );
                     })}
                   </div>
-                  <div
-                    ref={timelineRef}
-                    className="mt-tracks"
-                    onPointerDown={onTimelineDown}
-                    onPointerMove={onTimelineMove}
-                    onPointerUp={onTimelineUp}
-                  >
-                    <div className="mt-ruler">
-                      {rulerTicks(duration).map((t) => (
-                        <span key={t} className="mt-tick" style={{ left: `${(t / duration) * 100}%` }}>
-                          {formatDuration(t)}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="mt-lane mt-vid">
-                      {(filmstrip || thumbs[selected.path]) && (
-                        <img
-                          className={filmstrip ? "strip" : ""}
-                          src={convertFileSrc(filmstrip ?? thumbs[selected.path].thumb)}
-                          alt=""
-                          draggable={false}
-                        />
-                      )}
-                    </div>
-                    {trackLabels(audioTracks).map((t) => {
-                      const wave = trackWaves.find((w) => w.track === t.i);
-                      return (
-                        <div key={t.i} className={`mt-lane ${audioKeep.has(t.i) ? "" : "off"}`}>
-                          {wave && (
-                            <img src={convertFileSrc(wave.waveform)} alt="" draggable={false} />
-                          )}
+                  <div ref={tl.scroller} className={`mt-scroller ${timelineZoom > 1 ? "zoomed" : ""}`}>
+                    <div ref={tl.sizer} className="mt-sizer">
+                      <div ref={tl.surface} className="mt-tracks">
+                        <Ruler ctl={timeline} />
+                        <div ref={tl.videoLane} className="mt-lane mt-vid">
+                          <Filmstrip
+                            ctl={timeline}
+                            reel={filmstrip ? convertFileSrc(filmstrip) : null}
+                            poster={thumbs[selected.path] ? convertFileSrc(thumbs[selected.path].thumb) : null}
+                          />
                         </div>
-                      );
-                    })}
-                    <div
-                      className="mt-range"
-                      style={{
-                        left: `${(trimStart / duration) * 100}%`,
-                        width: `${((trimEnd - trimStart) / duration) * 100}%`,
-                      }}
-                    />
-                    {killMarkers
-                      .filter((t) => t >= 0 && t <= duration)
-                      .map((t, i) => (
-                        <div
-                          key={i}
-                          className="kill-marker"
-                          style={{ left: `${(t / duration) * 100}%` }}
-                          title={`Kill at ${formatDuration(t)} — click to jump`}
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const v = videoRef.current;
-                            if (!v) return;
-                            v.pause();
-                            setPreviewing(false);
-                            v.currentTime = t;
-                          }}
-                        >
-                          <Crosshair size={11} weight="bold" />
+                        {trackLabels(audioTracks).map((t) => {
+                          const wave = trackWaves.find((w) => w.track === t.i);
+                          return (
+                            <div key={t.i} className={`mt-lane ${audioKeep.has(t.i) ? "" : "off"}`}>
+                              {wave && <img src={convertFileSrc(wave.waveform)} alt="" draggable={false} />}
+                            </div>
+                          );
+                        })}
+                        <div ref={tl.dimLeft} className="mt-dim left" />
+                        <div ref={tl.dimRight} className="mt-dim right" />
+                        <div ref={tl.range} className="mt-range" />
+                        {killMarkers
+                          .filter((t) => t >= 0 && t <= duration)
+                          .map((t, i) => (
+                            <div
+                              key={i}
+                              className="kill-marker"
+                              data-timeline-interactive
+                              style={{ left: `${(t / duration) * 100}%` }}
+                              title={`Kill at ${formatDuration(t)} — click to jump`}
+                              onClick={() => {
+                                const v = videoRef.current;
+                                if (!v) return;
+                                v.pause();
+                                setPreviewing(false);
+                                v.currentTime = t;
+                              }}
+                            >
+                              <Crosshair size={11} weight="bold" />
+                            </div>
+                          ))}
+                        <div ref={tl.startHandle} className="mt-handle start" title="Drag to trim · double-click resets">
+                          <span className="grip" />
                         </div>
-                      ))}
-                    <div ref={playheadRef} className="mt-playhead" style={{ left: 0 }}>
-                      <div className="mt-playhead-grab" onPointerDown={onPlayheadDown} />
-                    </div>
-                    <div className="mt-handle" style={{ left: `${(trimStart / duration) * 100}%` }}>
-                      <span className="grip" />
-                    </div>
-                    <div className="mt-handle" style={{ left: `${(trimEnd / duration) * 100}%` }}>
-                      <span className="grip" />
+                        <div ref={tl.endHandle} className="mt-handle end" title="Drag to trim · double-click resets">
+                          <span className="grip" />
+                        </div>
+                        <div ref={tl.playhead} className="mt-playhead">
+                          <div className="mt-playhead-grab" data-playhead />
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2826,7 +2790,7 @@ function App() {
 
             <p className="kbd-hints">
               <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows 1s ·{" "}
-              <kbd>[</kbd> set start · <kbd>]</kbd> set end · <kbd>esc</kbd> back
+              <kbd>[</kbd> set start · <kbd>]</kbd> set end · <kbd>ctrl</kbd>+scroll zoom · <kbd>esc</kbd> back
             </p>
           </div>
         )}

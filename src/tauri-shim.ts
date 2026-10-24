@@ -85,7 +85,7 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
     case "copy_clip":
       return null;
     case "gen_filmstrip":
-      return "mock://filmstrip";
+      return "mock://filmstrip.reel20.jpg";
     case "take_update_notes":
       // Show the what's-new modal once per browser tab, like a real update.
       if (!sessionStorage.getItem("mock_whatsnew")) {
@@ -191,9 +191,15 @@ export const invoke: typeof realInvoke = inTauri
   ? realInvoke
   : (mockInvoke as typeof realInvoke);
 
+// Optional real media for editor design work: drop a clip.mp4 and its
+// clip.reel20.jpg into the git-ignored .mock/ folder (vite serves it).
+const mockMedia = (p: string) =>
+  p.endsWith(".mp4") ? "/.mock/clip.mp4" : p.includes(".reel20.jpg") ? "/.mock/clip.reel20.jpg" : null;
+
 export const convertFileSrc: typeof realConvert = inTauri
   ? realConvert
   : (p: string) =>
+      mockMedia(p) ??
       `data:image/svg+xml,${encodeURIComponent(
         `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#1b1f2e"/><rect x="0" y="120" width="320" height="60" fill="#141824"/><circle cx="${(p.length * 37) % 280 + 20}" cy="80" r="26" fill="#2c3350"/></svg>`
       )}`;

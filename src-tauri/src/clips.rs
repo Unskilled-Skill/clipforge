@@ -840,6 +840,9 @@ fn remove_clip_leftovers(app: &AppHandle, path: &str) {
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave.png")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.markers.json")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.strip.jpg")));
+        if let Some(reel) = find_reel(&thumbs, &stem) {
+            let _ = std::fs::remove_file(reel);
+        }
         for i in 0..6 {
             let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave{i}.png")));
         }
@@ -1267,9 +1270,10 @@ fn gen_waveform_blocking(input: String) -> Result<String, String> {
     Ok(out.to_string_lossy().replace('\\', "/"))
 }
 
-/// 10-frame filmstrip for the editor's video lane, cached in `.thumbs`.
-/// One tiled JPEG per clip — the lane reads as actual footage over time
-/// instead of one stretched thumbnail.
+/// Filmstrip reel for the editor's video lane, cached in `.thumbs`: one
+/// frame per ~3 s (10 to 60 frames) tiled in a row, so the lane still shows
+/// distinct footage when zoomed in. The frame count is in the filename
+/// (`<clip>.reel24.jpg`), which the editor reads to slice the tiles.
 #[tauri::command]
 pub async fn gen_filmstrip(input: String) -> Result<String, String> {
     blocking(move || gen_filmstrip_blocking(input)).await
@@ -1280,35 +1284,51 @@ fn gen_filmstrip_blocking(input: String) -> Result<String, String> {
     let input_path = PathBuf::from(&input);
     let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out = dir.join(format!(
-        "{}.strip.jpg",
-        input_path.file_stem().ok_or("bad path")?.to_string_lossy()
-    ));
-    if !out.exists() {
-        let duration = clip_duration(&ffmpeg, &input)?;
-        // One frame per 10% of the clip, tiled into a single row.
-        let fps = 10.0 / duration.max(0.5);
-        let result = ffmpeg_cmd(&ffmpeg)
-            .args([
-                "-hide_banner",
-                "-y",
-                "-i",
-                &input,
-                "-vf",
-                &format!("fps={fps:.6},scale=-2:92,tile=10x1"),
-                "-frames:v",
-                "1",
-                "-q:v",
-                "4",
-            ])
-            .arg(&out)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !result.status.success() {
-            return Err(String::from_utf8_lossy(&result.stderr).to_string());
-        }
+    let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+    if let Some(cached) = find_reel(&dir, &stem) {
+        return Ok(cached.to_string_lossy().replace('\\', "/"));
+    }
+    let duration = clip_duration(&ffmpeg, &input)?;
+    let frames = reel_frames(duration);
+    let out = dir.join(format!("{stem}.reel{frames}.jpg"));
+    let fps = frames as f64 / duration.max(0.5);
+    let result = ffmpeg_cmd(&ffmpeg)
+        .args([
+            "-hide_banner",
+            "-y",
+            "-i",
+            &input,
+            "-vf",
+            &format!("fps={fps:.6},scale=-2:92,tile={frames}x1"),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "4",
+        ])
+        .arg(&out)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !result.status.success() {
+        return Err(String::from_utf8_lossy(&result.stderr).to_string());
     }
     Ok(out.to_string_lossy().replace('\\', "/"))
+}
+
+/// Reel frames for a clip: one per ~3 s, at least 10, at most 60.
+fn reel_frames(duration: f64) -> u32 {
+    ((duration / 3.0).round() as u32).clamp(10, 60)
+}
+
+/// The cached reel for `stem` in `thumbs`, whatever its frame count.
+fn find_reel(thumbs: &std::path::Path, stem: &str) -> Option<PathBuf> {
+    let prefix = format!("{stem}.reel");
+    std::fs::read_dir(thumbs).ok()?.flatten().map(|e| e.path()).find(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix(&prefix))
+            .and_then(|rest| rest.strip_suffix(".jpg"))
+            .is_some_and(|n| n.parse::<u32>().is_ok())
+    })
 }
 
 #[derive(Serialize)]

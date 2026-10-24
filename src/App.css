@@ -826,37 +826,83 @@ select:focus,
 .mt-label input { accent-color: #4c6ef5; margin: 0; flex-shrink: 0; }
 .mt-vid-label { height: 46px; color: #c3c6cf; cursor: default; }
 
-.mt-tracks {
+/* Lanes scroll horizontally together when zoomed; the labels column stays.
+   The sizer is zoom × 100% wide; everything inside is positioned in its px. */
+.mt-scroller {
+  --ruler-h: 20px;
   position: relative;
   flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #2b2f3c transparent;
+}
+.mt-scroller.zoomed { padding-bottom: 4px; }
+.mt-sizer { position: relative; width: 100%; }
+.mt-tracks {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
   cursor: pointer;
   touch-action: none;
+  user-select: none;
 }
+.mt-tracks[data-dragging="move"] { cursor: grabbing; }
+.mt-tracks[data-dragging="start"],
+.mt-tracks[data-dragging="end"] { cursor: ew-resize; }
 .mt-lane {
+  position: relative;
   height: 40px;
   background: #0e0f14;
   border-radius: 5px;
   overflow: hidden;
 }
-.mt-lane img { width: 100%; height: 100%; object-fit: fill; display: block; }
+.mt-lane img { width: 100%; height: 100%; object-fit: fill; display: block; pointer-events: none; }
 .mt-lane.off { opacity: 0.35; }
 .mt-vid { height: 46px; }
-.mt-vid img { object-fit: cover; }
-/* Filmstrip is pre-tiled to the lane's shape — stretch it edge to edge. */
-.mt-vid img.strip { object-fit: fill; }
-
-.mt-range {
+.mt-film {
   position: absolute;
   top: 0;
-  bottom: 0;
-  background: rgba(76, 110, 245, 0.16);
-  border-left: 1px solid #4c6ef5;
-  border-right: 1px solid #4c6ef5;
+  left: 0;
+  height: 100%;
+  display: block;
   pointer-events: none;
+  will-change: transform;
 }
+
+/* Darkens what's outside the selection: full-width layers scaled on X
+   (no layout per frame). */
+.mt-dim {
+  position: absolute;
+  top: var(--ruler-h);
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: rgba(6, 7, 10, 0.62);
+  pointer-events: none;
+  transform: scaleX(0);
+  z-index: 1;
+}
+.mt-dim.left { transform-origin: left; }
+.mt-dim.right { transform-origin: right; }
+.mt-range {
+  position: absolute;
+  top: var(--ruler-h);
+  bottom: 0;
+  left: 0;
+  width: 0;
+  border-top: 2px solid #4c6ef5;
+  border-bottom: 2px solid #4c6ef5;
+  border-radius: 6px;
+  background: rgba(76, 110, 245, 0.08);
+  pointer-events: none;
+  z-index: 1;
+}
+/* In the video lane, the selection can be dragged as a whole. */
+.mt-tracks .mt-vid { cursor: grab; }
+
 .mt-playhead {
   position: absolute;
   top: 0;
@@ -867,7 +913,7 @@ select:focus,
   background: #ff5f6d;
   box-shadow: 0 0 6px rgba(255, 95, 109, 0.7);
   pointer-events: none;
-  z-index: 3;
+  z-index: 4;
   will-change: transform;
 }
 /* Grab zone: an invisible full-height strip over the line plus a visible
@@ -885,7 +931,7 @@ select:focus,
 .mt-playhead-grab::before {
   content: "";
   position: absolute;
-  top: -5px;
+  top: 0;
   left: 50%;
   transform: translateX(-50%);
   width: 13px;
@@ -896,24 +942,53 @@ select:focus,
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
 }
 .mt-playhead-grab:hover::before { background: #ff7a86; }
+
+/* Trim handles: 12px tabs inside the selection's edges (TimelineController
+   positions them; HANDLE_PX must match the width). */
 .mt-handle {
   position: absolute;
-  top: 0;
+  top: var(--ruler-h);
   bottom: 0;
-  width: 2px;
-  margin-left: -1px;
+  left: 0;
+  width: 12px;
   background: #4c6ef5;
-  z-index: 2;
+  z-index: 3;
+  cursor: ew-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease;
 }
+.mt-handle.start { border-radius: 6px 2px 2px 6px; }
+.mt-handle.end { border-radius: 2px 6px 6px 2px; }
+.mt-handle:hover,
+.mt-tracks[data-dragging="start"] .mt-handle.start,
+.mt-tracks[data-dragging="end"] .mt-handle.end { background: #6a86ff; }
+.mt-tracks[data-snapped="1"] .mt-handle { background: #ffd166; }
 .mt-handle .grip {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 10px;
-  height: 22px;
-  border-radius: 3px;
-  background: #4c6ef5;
+  width: 2px;
+  height: 18px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 3px 0 0 rgba(255, 255, 255, 0.35);
+  margin-left: -3px;
+}
+
+/* ---- zoom controls in the trim header ---- */
+.tl-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 14px;
+}
+.tl-zoom .preview-btn { padding: 0 7px; margin-left: 0; }
+.tl-zoom .preview-btn:disabled { opacity: 0.35; cursor: default; }
+.tl-zoom-level {
+  min-width: 34px;
+  text-align: center;
+  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-size: 11px;
+  color: #8a8f9a;
 }
 .card-meta {
   display: flex;
@@ -1577,7 +1652,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  z-index: 4;
+  z-index: 5;
   box-shadow: 0 0 0 2px #16171d, 0 0 8px rgba(240, 96, 95, 0.55);
   transition: transform 0.1s ease;
 }
@@ -1720,31 +1795,33 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 .onboard-dot { transition: width 0.2s var(--ease-out), background 0.2s ease; }
 .onboard-dot.active { width: 18px; border-radius: 4px; }
 
-/* ---- editor time ruler ---- */
+/* ---- editor time ruler (ticks only for the visible stretch) ---- */
 .mt-ruler {
   position: relative;
   height: 16px;
   flex-shrink: 0;
   user-select: none;
+  overflow: hidden;
 }
 .mt-ruler-spacer { height: 16px; flex-shrink: 0; }
 .mt-tick {
   position: absolute;
-  top: 0;
-  transform: translateX(-50%);
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 4px;
+  background: #262935;
+}
+.mt-tick.major { height: 7px; background: #3a3e4c; }
+.mt-tick-label {
+  position: absolute;
+  bottom: 6px;
+  left: 4px;
   font-family: "JetBrains Mono Variable", Consolas, monospace;
   font-size: 9.5px;
+  line-height: 1;
   color: #5f636e;
-  padding-top: 1px;
-}
-.mt-tick::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -3px;
-  width: 1px;
-  height: 3px;
-  background: #2a2d38;
+  white-space: nowrap;
 }
 
 /* ---- global export progress bar ---- */
@@ -1946,7 +2023,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
     0 0 110px -32px var(--game, transparent);
 }
 .editor .mt-range {
-  background: color-mix(in srgb, var(--game, #4c6ef5) 13%, transparent);
+  background: color-mix(in srgb, var(--game, #4c6ef5) 8%, transparent);
 }
 
 /* ---- NEW badge on clips saved since the last visit ---- */
