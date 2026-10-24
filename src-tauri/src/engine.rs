@@ -364,6 +364,12 @@ impl Engine {
         game_audio.set_visible(false).map_err(err)?;
         let vc_audio = source(&mut scene, "wasapi_process_output_capture", "VCAudio", process_audio_settings(vc_exe))?;
         set_mixers(&vc_audio, VC)?;
+        // Frozen/black picture watch (see picture.rs).
+        let fps = video.fps;
+        scene
+            .runtime()
+            .run_with_obs_result(move || unsafe { crate::picture::install(fps) })
+            .map_err(err)?;
 
         *guard = Some(Inner {
             ctx,
@@ -481,6 +487,7 @@ impl Engine {
         if inner.video != video {
             inner.ctx.reset_video(video_info(video)).map_err(err)?;
             inner.video = video;
+            crate::picture::set_fps(video.fps);
         }
         inner.replay = Some(build_replay(&mut inner.ctx, &inner.scene, &output)?);
         inner.output = Some(output);
@@ -628,10 +635,36 @@ impl Engine {
             .unwrap_or_default()
     }
 
+    /// Drop the capture target so the next `set_game` re-applies it from
+    /// scratch: the hook re-attaches (or the window capture is rebuilt).
+    pub fn reset_target(&self) {
+        if let Ok(mut guard) = self.inner.lock() {
+            if let Some(inner) = guard.as_mut() {
+                inner.target = None;
+                inner.game = None;
+                if let Some((_, old)) = inner.window_capture.take() {
+                    if let Ok(items) = inner.scene.items_for_source(&old) {
+                        for item in items {
+                            let _ = inner.scene.remove_item(item.as_ref());
+                        }
+                    }
+                }
+                if let Ok(idle) = data(&inner.scene, game_capture_settings(None)) {
+                    let _ = inner.game_capture.inner_source().update_settings(idle);
+                }
+                let _ = inner.game_capture.set_visible(false);
+            }
+        }
+        crate::picture::reset();
+    }
+
     /// Tear libobs down (app exit). Stops the buffer first.
     pub fn shutdown(&self) {
         let _ = self.stop_buffer();
         if let Ok(mut guard) = self.inner.lock() {
+            if let Some(inner) = guard.as_ref() {
+                let _ = inner.scene.runtime().run_with_obs_result(|| unsafe { crate::picture::uninstall() });
+            }
             guard.take();
         }
     }

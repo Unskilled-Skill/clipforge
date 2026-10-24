@@ -10,6 +10,7 @@ mod gpu;
 mod health;
 mod logs;
 mod obs;
+mod picture;
 mod setup;
 mod share;
 mod supervisor;

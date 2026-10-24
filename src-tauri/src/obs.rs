@@ -33,6 +33,11 @@ const GAME_NAMES: &[(&str, &str)] = &[
     ("gta5", "GTA"),
 ];
 
+/// Friendly game name for messages ("Valorant", "CS2").
+pub fn pretty_game_name(exe: &str) -> String {
+    pretty_game(exe)
+}
+
 /// Prettify an exe name for filenames: known games get friendly labels,
 /// the rest get generic suffixes stripped and the first letter uppercased.
 fn pretty_game(exe: &str) -> String {

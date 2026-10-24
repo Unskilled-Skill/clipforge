@@ -99,6 +99,19 @@ fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&class[..len])
 }
 
+/// Seconds since the last keyboard or mouse input, system-wide.
+pub fn idle_secs() -> u32 {
+    use windows::Win32::System::SystemInformation::GetTickCount;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe {
+        if !GetLastInputInfo(&mut info).as_bool() {
+            return 0;
+        }
+        GetTickCount().wrapping_sub(info.dwTime) / 1000
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -37,6 +37,34 @@ static WARNED_ELEVATED_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::At
 static STARTED_ON_IGPU: AtomicBool = AtomicBool::new(false);
 static IGPU_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Seconds of a single-colour (black) or frozen picture before acting.
+const SOLID_SECS: u32 = 20;
+const FROZEN_SECS: u32 = 30;
+/// The player counts as playing if they touched input this recently; an
+/// idle player in front of a paused game isn't a frozen capture.
+const ACTIVE_INPUT_SECS: u32 = 10;
+
+#[derive(Debug, PartialEq)]
+enum PictureAction { None, Rehook, WindowCapture, Warn }
+
+/// What to do about the captured picture. `stage` counts earlier actions
+/// this game run: first re-attach the capture; if a black picture persists
+/// with the hook, switch to window capture; otherwise tell the user once.
+fn picture_action(p: crate::picture::PictureState, stage: u8, hooked: bool) -> PictureAction {
+    let solid = p.solid_secs >= SOLID_SECS;
+    let frozen = p.still_secs >= FROZEN_SECS;
+    match (solid || frozen, stage) {
+        (false, _) => PictureAction::None,
+        (true, 0) => PictureAction::Rehook,
+        (true, 1) if solid && hooked => PictureAction::WindowCapture,
+        (true, 1) => PictureAction::Warn,
+        _ => PictureAction::None,
+    }
+}
+
+/// (game, stage) for `picture_action`, reset when the game changes.
+static PICTURE_STAGE: std::sync::Mutex<(Option<String>, u8)> = std::sync::Mutex::new((None, 0));
+
 #[derive(Debug, PartialEq)]
 enum BufferAction { Keep, Start, Stop }
 
@@ -330,6 +358,62 @@ async fn tick(
         _ => {}
     }
 
+    // Frozen or black picture while the player is actively in the game.
+    // Anything else (alt-tabbed, idle, no game) restarts the count.
+    // An unattached hook is black for a known reason (handled above).
+    let watching = state.game.as_ref().filter(|g| {
+        ENGINE.buffer_active()
+            && crate::fullscreen::foreground_exe().as_deref() == Some(g.as_str())
+            && crate::fullscreen::idle_secs() < ACTIVE_INPUT_SECS
+            && (window_capture || ENGINE.info().game_hooked)
+    });
+    match watching {
+        None => crate::picture::reset(),
+        Some(game) => {
+            let picture = crate::picture::state();
+            // Decide and advance the stage under the lock; act after it.
+            let action = {
+                let mut stage = PICTURE_STAGE.lock().unwrap();
+                if stage.0.as_deref() != Some(game.as_str()) {
+                    *stage = (Some(game.clone()), 0);
+                }
+                let action = picture_action(picture, stage.1, !window_capture);
+                stage.1 = match action {
+                    PictureAction::None => stage.1,
+                    PictureAction::Rehook | PictureAction::WindowCapture => 1,
+                    PictureAction::Warn => 2,
+                };
+                action
+            };
+            let what = if picture.solid_secs >= SOLID_SECS { "black" } else { "frozen" };
+            match action {
+                PictureAction::None => {}
+                PictureAction::Rehook => {
+                    crate::logs::line(&format!("{game}: captured picture {what}; re-attaching capture"));
+                    let _ = crate::obs::blocking(|| Ok(ENGINE.reset_target())).await;
+                }
+                PictureAction::WindowCapture => {
+                    crate::picture::reset();
+                    crate::obs::fall_back_to_window_capture(app, game, "Its captured picture stayed black.");
+                }
+                PictureAction::Warn => {
+                    crate::picture::reset();
+                    crate::logs::line(&format!("{game}: captured picture still {what} after re-attaching"));
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Capture looks stuck")
+                        .body(format!(
+                            "ClipForge's picture of {} has been {what} for a while. Try Settings → Games → Test, or restart the game.",
+                            crate::obs::pretty_game_name(game)
+                        ))
+                        .show();
+                }
+            }
+        }
+    }
+
     state.buffer_active = ENGINE.buffer_active();
     crate::clips::GAME_RUNNING.store(state.game.is_some(), Ordering::Relaxed);
     // Only meaningful while a game is running and the buffer records;
@@ -371,6 +455,20 @@ async fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picture_recovery_steps() {
+        use crate::picture::PictureState;
+        let fine = PictureState { still_secs: 3, solid_secs: 0 };
+        let black = PictureState { still_secs: 25, solid_secs: 25 };
+        let frozen = PictureState { still_secs: 31, solid_secs: 0 };
+        assert_eq!(picture_action(fine, 0, true), PictureAction::None);
+        assert_eq!(picture_action(black, 0, true), PictureAction::Rehook);
+        assert_eq!(picture_action(black, 1, true), PictureAction::WindowCapture);
+        assert_eq!(picture_action(black, 1, false), PictureAction::Warn, "already window capture");
+        assert_eq!(picture_action(frozen, 1, true), PictureAction::Warn, "frozen never switches methods");
+        assert_eq!(picture_action(black, 2, true), PictureAction::None, "said so once");
+    }
 
     #[test]
     fn arms_only_for_a_connected_game_and_rearms_after_reconnect() {
