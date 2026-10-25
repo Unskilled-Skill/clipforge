@@ -1,6 +1,7 @@
 mod autoclip;
 mod gamesources;
 mod screenkills;
+mod session;
 mod backup;
 mod clips;
 mod elevation;
@@ -233,11 +234,12 @@ fn spawn_dir_watcher(app: AppHandle) {
             let mut watcher = match notify::recommended_watcher(
                 move |event: Result<notify::Event, notify::Error>| {
                     if let Ok(event) = event {
-                        // Thumbnail writes would loop refresh -> gen -> refresh.
-                        let relevant = event
-                            .paths
-                            .iter()
-                            .any(|p| !p.to_string_lossy().contains(".thumbs"));
+                        // Thumbnail writes would loop refresh -> gen -> refresh;
+                        // a session recording writes constantly.
+                        let relevant = event.paths.iter().any(|p| {
+                            let p = p.to_string_lossy();
+                            !p.contains(".thumbs") && !p.contains(".sessions")
+                        });
                         if relevant {
                             let _ = tx.send(());
                         }
@@ -350,6 +352,11 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::run(handle));
             tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));
+            {
+                // Finish sessions a crash left half-done.
+                let dir = clips::load_settings_inner(app.handle()).clips_dir;
+                tauri::async_runtime::spawn_blocking(move || session::recover(&dir));
+            }
             screenkills::run(app.handle().clone());
 
             // Silent self-update from GitHub Releases. Checks shortly after

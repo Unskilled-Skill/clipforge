@@ -448,6 +448,7 @@ async fn tick(
         },
         BufferAction::Keep => {},
     }
+    crate::session::tick(app, &settings, state.game.as_deref(), state.buffer_active).await;
 
     state
 }

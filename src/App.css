@@ -2026,6 +2026,17 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   background: color-mix(in srgb, var(--game, #4c6ef5) 8%, transparent);
 }
 
+/* ---- SESSION badge on full-session recordings ---- */
+.session-badge {
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: rgba(127, 155, 255, 0.92);
+  color: #0b1230;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
 /* ---- NEW badge on clips saved since the last visit ---- */
 .new-badge {
   padding: 3px 8px;

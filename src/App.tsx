@@ -125,6 +125,11 @@ function isEdit(name: string) {
   return /_discord\.|_trim_|_gif\.gif$|_frame_|^Montage_/.test(name);
 }
 
+// "<Game> Session <date time>.mp4" from full-session recording.
+function isSession(name: string) {
+  return /^\S+ Session \d{4}-\d{2}-\d{2}/.test(name);
+}
+
 function gameOf(clip: ClipInfo) {
   if (isEdit(clip.name)) return "Edits";
   // "<Game> <timestamp>.mp4" — anything without that shape (UUIDs,
@@ -2150,6 +2155,7 @@ function App() {
                         {gameOf(c)}
                       </div>
                       <div className="card-topright">
+                        {isSession(c.name) && <div className="session-badge">SESSION</div>}
                         {lastSeenRef.current > 0 &&
                           c.modified_ms > lastSeenRef.current &&
                           !isEdit(c.name) && <div className="new-badge">NEW</div>}

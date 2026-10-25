@@ -868,6 +868,25 @@ export function SettingsPage(props: {
           </div>
           <div className="toggle-card">
             <div className="toggle-text">
+              <span className="toggle-title">Record whole sessions</span>
+              <span className="toggle-desc">
+                Also saves every game session as one video, with your kills bookmarked on its timeline,
+                so you can cut highlights afterwards. No extra encoding, but about 9 GB per hour at
+                20 Mbps; sessions count toward the storage cap. Pauses under 3 GB free.
+              </span>
+            </div>
+            <button
+              className={`switch ${settings.session_recording ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.session_recording}
+              aria-label="Record whole sessions"
+              onClick={() => saveSettings({ ...settings, session_recording: !settings.session_recording })}
+            >
+              <span className="knob" />
+            </button>
+          </div>
+          <div className="toggle-card">
+            <div className="toggle-text">
               <span className="toggle-title">Start with Windows</span>
               <span className="toggle-desc">Launch to the tray at login, ready before you play</span>
             </div>

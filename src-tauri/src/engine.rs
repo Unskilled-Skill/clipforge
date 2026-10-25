@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use libobs_wrapper::{
     context::ObsContext,
     data::{
-        output::{ObsOutputTrait, ObsReplayBufferOutputRef},
+        output::{ObsOutputRef, ObsOutputTrait, ObsReplayBufferOutputRef},
         video::ObsVideoInfoBuilder,
         object::ObsObjectTrait,
         ObsData,
@@ -73,6 +73,11 @@ struct Inner {
     /// RNNoise on the mic: strips keyboard clatter and fan hum. Toggled, not removed.
     mic_denoise: ObsFilterRef,
     replay: Option<ObsReplayBufferOutputRef>,
+    /// Full-session recording: a file writer sharing the replay buffer's
+    /// encoders (no extra encoding). Created once, reused per session.
+    session: Option<ObsOutputRef>,
+    /// File the running session writes to.
+    session_path: Option<PathBuf>,
     output: Option<OutputConfig>,
     video: VideoConfig,
     game: Option<String>,
@@ -383,6 +388,8 @@ impl Engine {
             _mic: mic,
             mic_denoise,
             replay: None,
+            session: None,
+            session_path: None,
             output: None,
             video,
             game: None,
@@ -514,6 +521,8 @@ impl Engine {
     pub fn stop_buffer(&self) -> Result<(), String> {
         let mut guard = self.inner.lock().map_err(err)?;
         let Some(inner) = guard.as_mut() else { return Ok(()) };
+        // A session shares the buffer's encoders: it ends with the buffer.
+        stop_session_inner(inner);
         inner.active = false;
         let Some(replay) = inner.replay.as_ref() else { return Ok(()) };
         if !output_active(replay) {
@@ -537,6 +546,69 @@ impl Engine {
         }
         crate::logs::line("replay buffer stopped");
         Ok(())
+    }
+
+    /// Start recording the whole session to `path` (fragmented MP4, so a
+    /// crash still leaves a playable file), using the replay buffer's own
+    /// encoders. The buffer must be recording.
+    pub fn start_session(&self, path: &std::path::Path) -> Result<(), String> {
+        let mut guard = self.inner.lock().map_err(err)?;
+        let inner = guard.as_mut().ok_or("capture engine not running")?;
+        if inner.session_path.is_some() {
+            return Ok(());
+        }
+        let replay = inner
+            .replay
+            .as_ref()
+            .filter(|r| output_active(r))
+            .ok_or("the replay buffer isn't recording")?;
+        let venc = replay.attached_video_encoder().map_err(err)?.ok_or("no video encoder")?;
+        let aencs = replay.attached_audio_encoders().map_err(err)?;
+        let settings = data(&inner.scene, serde_json::json!({
+            "path": path.to_string_lossy().replace('/', "\\"),
+            "muxer_settings": "movflags=frag_keyframe+empty_moov+default_base_moof",
+        }))?;
+        let out = match inner.session.as_ref() {
+            Some(out) => {
+                out.update_settings(settings).map_err(err)?;
+                out.clone()
+            }
+            None => {
+                let out = inner
+                    .ctx
+                    .output(OutputInfo::new("ffmpeg_muxer", "ClipForge Session", Some(settings), None))
+                    .map_err(err)?;
+                inner.session = Some(out.clone());
+                out
+            }
+        };
+        // The buffer's encoders change when its output is rebuilt: re-attach.
+        out.set_video_encoder(venc).map_err(err)?;
+        for (idx, enc) in aencs {
+            out.set_audio_encoder(enc, idx).map_err(err)?;
+        }
+        out.start().map_err(|e| format!("Couldn't start the session recording: {e}"))?;
+        inner.session_path = Some(path.to_path_buf());
+        crate::logs::line(&format!("session recording started: {}", path.display()));
+        Ok(())
+    }
+
+    /// End the running session (if any); its file joins `finished_sessions`.
+    pub fn stop_session(&self) {
+        if let Ok(mut guard) = self.inner.lock() {
+            if let Some(inner) = guard.as_mut() {
+                stop_session_inner(inner);
+            }
+        }
+    }
+
+    pub fn session_active(&self) -> bool {
+        self.inner.lock().map(|g| g.as_ref().is_some_and(|i| i.session_path.is_some())).unwrap_or(false)
+    }
+
+    /// Session files that finished recording since the last call.
+    pub fn finished_sessions(&self) -> Vec<PathBuf> {
+        std::mem::take(&mut *FINISHED_SESSIONS.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// Whether the buffer is really recording, asked of libobs rather than
@@ -668,6 +740,19 @@ impl Engine {
             guard.take();
         }
     }
+}
+
+static FINISHED_SESSIONS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn stop_session_inner(inner: &mut Inner) {
+    let Some(path) = inner.session_path.take() else { return };
+    if let Some(out) = inner.session.as_ref() {
+        if out.is_active().unwrap_or(false) {
+            let _ = out.stop();
+        }
+    }
+    crate::logs::line(&format!("session recording stopped: {}", path.display()));
+    FINISHED_SESSIONS.lock().unwrap_or_else(|p| p.into_inner()).push(path);
 }
 
 fn build_replay(ctx: &mut ObsContext, scene: &ObsSceneRef, cfg: &OutputConfig) -> Result<ObsReplayBufferOutputRef, String> {

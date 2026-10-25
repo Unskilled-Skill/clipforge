@@ -174,6 +174,9 @@ pub struct Settings {
     /// Seconds to wait after the last kill before saving (multikill window).
     #[serde(default = "default_auto_clip_delay")]
     pub auto_clip_delay_s: f64,
+    /// Also record each whole game session to one file, kills bookmarked.
+    #[serde(default)]
+    pub session_recording: bool,
     /// Valorant: only auto-clip rounds with at least this many kills (1 =
     /// every kill). Games that don't report a kill count ignore it.
     #[serde(default = "default_min_kills")]
@@ -258,6 +261,7 @@ impl Default for Settings {
             auto_clip: false,
             auto_clip_delay_s: default_auto_clip_delay(),
             auto_clip_min_kills: default_min_kills(),
+            session_recording: false,
             overwolf_events: false,
             replay_seconds: default_replay_seconds(),
             video_fps: default_fps(),
@@ -757,7 +761,7 @@ fn best_h264_encoder(ffmpeg: &PathBuf) -> String {
         .clone()
 }
 
-fn find_ffmpeg() -> Option<PathBuf> {
+pub fn find_ffmpeg() -> Option<PathBuf> {
     // Every thumbnail/waveform/trim asks for ffmpeg; spawning `ffmpeg
     // -version` each time added a process launch per call. Cache hits only,
     // so an ffmpeg installed while the app runs is still picked up.

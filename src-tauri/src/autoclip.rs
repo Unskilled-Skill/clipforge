@@ -189,6 +189,21 @@ pub fn record_kill() {
     let now = Instant::now();
     kills.retain(|t| now.duration_since(*t) < KILL_RETENTION);
     kills.push(now);
+    if let Some(session) = SESSION_KILLS.lock().unwrap().as_mut() {
+        session.push(now);
+    }
+}
+
+/// Kills during the running full-session recording (None = no session):
+/// they become its timeline bookmarks.
+static SESSION_KILLS: Mutex<Option<Vec<Instant>>> = Mutex::new(None);
+
+pub fn begin_session() {
+    *SESSION_KILLS.lock().unwrap() = Some(Vec::new());
+}
+
+pub fn end_session() -> Vec<Instant> {
+    SESSION_KILLS.lock().unwrap().take().unwrap_or_default()
 }
 
 /// Write the kill-marker sidecar for a clip that just hit disk: every
