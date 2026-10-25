@@ -279,8 +279,7 @@ export class TimelineController {
     const s = this.x(this.start);
     const e = this.x(Math.min(this.end || this.duration, this.duration));
     const W = Math.max(this.width, 1);
-    range.style.transform = `translateX(${s}px)`;
-    range.style.width = `${Math.max(e - s, 0)}px`;
+    range.style.transform = `translateX(${s}px) scaleX(${Math.max(e - s, 0) / W})`;
     startHandle.style.transform = `translateX(${s}px)`;
     endHandle.style.transform = `translateX(${e - HANDLE_PX}px)`;
     dimLeft.style.transform = `scaleX(${s / W})`;
@@ -349,7 +348,7 @@ export class TimelineController {
   }
 
   private onDown = (e: PointerEvent) => {
-    if (e.button !== 0 || this.duration <= 0) return;
+    if (e.button !== 0 || this.duration <= 0 || this.pointerId != null) return;
     const target = e.target as Element;
     if (target.closest("[data-timeline-interactive]")) return;
     this.measure();
@@ -385,6 +384,7 @@ export class TimelineController {
 
   private onUp = (e: PointerEvent) => {
     if (e.pointerId !== this.pointerId) return;
+    if (this.el.surface.hasPointerCapture(e.pointerId)) this.el.surface.releasePointerCapture(e.pointerId);
     this.pointerId = null;
     const mode = this.mode;
     if (this.pendingX != null) {

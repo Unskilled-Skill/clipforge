@@ -1,0 +1,39 @@
+# 01 — Impeccable
+
+Method: dual-agent (A: /root/design_suite_a; B: /root/design_suite_b). Reviews ran independently on unchanged source. Read-only review, no implementation.
+
+Scope: Library, Editor, Settings, onboarding, dialogs, setup and empty/error states. Browser at native default1280x800 and minimum960x620; real media in preview fixtures. Native capture/export not exercised. This expanded viewport coverage differs from the earlier 900px-height reviews; score changes are not a controlled trend experiment.
+
+| Heuristic | Score | Finding |
+|---|---:|---|
+| System status |3|Settings persistence lacks clear acknowledgment|
+| Real-world language |3|Audio architecture still requires explanation|
+| User control |3|Skip/Escape/Undo and clear filters work|
+| Consistency |3|Compact controls compete for space|
+| Error prevention |3|Confirmations, overlap protection and warnings help|
+| Recognition |3|Timeline ruler is too weak for precision|
+| Efficiency |3|Strong keyboard, range, montage and zoom support|
+| Minimalism |2|Supporting controls receive more space than footage|
+| Error recovery |2|Raw setup and backup errors remain|
+| Help |3|Tutorial, diagnostics and sample verification are useful|
+|Total|28/40|Good|
+
+Design specificity: gameplay-oriented identity is credible: game/day/kill grouping, rolling-buffer status, five tracks, kill markers and Discord budgets. The weak point is spatial priority, not a lack of brand styling.
+
+## Priority findings
+
+- [P1] src/App.css:2481,2445 — Five-track preview is approximately267x150 at both1280x800 and960x620. Observed in browser. Tiny footage and a wide empty center make precise picture review difficult. Recompose stage and offer a collapsible mixer rather than shrinking the player so aggressively.
+- [P1] src/App.css:1025,1120,2462 — At960x620, mixer falls below the fold and the trim header wraps/squeezes. Scroll remains available, so this is difficulty, not a blocked task. Add an explicit compact desktop composition and two-row toolbar.
+- [P2] src/App.css:1825,1827 — Ruler labels are9.5px and #5f636e. Increase size/contrast while retaining major/minor hierarchy.
+- [P2] src/panels.tsx:557,650,771 — Nine peer links and healthy diagnostics consume prime Settings space. Keep healthy detail collapsed by default and group navigation by task.
+- [P2] src/SetupCheck.tsx:32,49; src/panels.tsx:406,418 — Raw backend errors remain in setup/backup. Source-only finding, not a claimed induced live failure. Add local task/retry language with technical details disclosed separately.
+- [P3] src/App.tsx storage warning action / src/App.css setup-btn — At960px Storage settings wraps inside a compact fixed-height button and touches its lower edge. Observed in clean browser screenshot.
+
+Strengths: recognizable library; clear primary Discord export; recovery/control via Undo, confirmation, skip and sample verification. Cognitive load is mainly mixer dependencies plus nine Settings destinations and compact-window chrome. Personas: Alex must scroll between footage/controls; Jordan must understand five audio sources; Sam must read faint tiny time labels. Emotional valley: judging a cut through a small player.
+
+Detector: one CLI invocation over App.tsx,panels.tsx,timeline/parts.tsx,SetupCheck.tsx returned[] exit0. Runtime flags: Library1280=25, Library960=17, Settings1280=9, Settings960=11, Editor1280/960=8 each. These overlap and are not unique defects. Hidden Cleanup controls, intended scroll regions, semantic game stripes, detector-self text occlusion and overlay-created document overflow were excluded. Sample field-label contrast7.51:1; no blanket WCAG compliance claim.
+
+Questions to consider: should footage or export configuration dominate editing space? Can compact Settings prioritize the next action over technical inventory?
+Questions skipped: user requested sequential reviews only; no implementation direction is required.
+
+Run notes: slug src-app-tsx; no ignore.md; assessments independent; headless overlay injection succeeded but no visible Human tab is claimed; A/B sessions closed, B detector server stopped. Screenshots/runtime evidence retained under Temp. Parent preview remains active for later sequential reviews.

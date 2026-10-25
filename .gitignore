@@ -26,3 +26,4 @@ dist-ssr
 .tauri-signing/
 tauri-override.json
 .mock/
+.impeccable/live/

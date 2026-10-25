@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { gameName, momentTitle, killBadge, clipKillCount, matchesClipSearch } from "./clip-presentation";
+import { moveItem } from "./clip-selection";
+import { createSettingsWriter } from "./settings-save";
+import { useMediaQuery } from "./use-media-query";
 import { SetupCheck } from "./SetupCheck";
 import { isDiscordApp } from "./app-blacklist";
 import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog } from "./tauri-shim";
@@ -18,6 +22,7 @@ import {
   MagnifyingGlassPlus,
   ArrowsInLineHorizontal,
   DiscordLogo,
+  DotsThree,
   Gif,
   FilmSlate,
   FilmStrip,
@@ -55,7 +60,9 @@ import type {
   ThumbInfo,
 } from "./types";
 import appIcon from "./assets/logo.svg";
+import "./tokens.css";
 import "./App.css";
+import "./editor.css";
 
 function trimReadout(start: number, end: number) {
   return `${start.toFixed(1)}s → ${end.toFixed(1)}s · ${(end - start).toFixed(1)}s selected`;
@@ -102,7 +109,7 @@ function relativeTime(ms: number) {
 }
 
 const GAME_COLORS: Record<string, string> = {
-  valorant: "#ff4655",
+  valorant: "#c4a0ec",
   cs2: "#f5a623",
   apex: "#ff8c42",
   r5apex: "#ff8c42",
@@ -212,6 +219,7 @@ function trackLabels(count: number): TrackMeta[] {
 }
 
 function App() {
+  const reduceMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [showSetupCheck, setShowSetupCheck] = useState(false);
   const [status, setStatus] = useState<ObsStatus>({
     connected: false,
@@ -219,6 +227,15 @@ function App() {
     obs_version: null,
   });
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsSave, setSettingsSave] = useState<{ state: "idle" | "saving" | "saved" | "error"; detail?: string }>({ state: "idle" });
+  const settingsPending = useRef(0);
+  const settingsSubmitted = useRef<Settings | null>(null);
+  const settingsVersion = useRef(0);
+  const settingsRetry = useRef<Settings | null>(null);
+  const writeSettings = useRef(createSettingsWriter<Settings>(() => invoke<Settings>("load_settings"), async (snapshot) => {
+    await invoke("save_settings", { settings: snapshot });
+    void invoke("apply_obs_config").catch(() => {});
+  }));
   const [clips, setClips] = useState<ClipInfo[]>([]);
   const [selected, setSelected] = useState<ClipInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -245,6 +262,12 @@ function App() {
     }
   });
   const [exporting, setExporting] = useState(false);
+  const [undoDelete, setUndoDelete] = useState<{ id: string; clip: ClipInfo } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [markerCounts, setMarkerCounts] = useState<Record<string, number>>({});
+  const [diskDismissed, setDiskDismissed] = useState(false);
+  const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [noVideo, setNoVideo] = useState(false);
@@ -259,6 +282,9 @@ function App() {
   const [previewing, setPreviewing] = useState(false);
   const [loopPreview, setLoopPreview] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
+  const [reorderNotice, setReorderNotice] = useState("");
+  const [mixerOpen, setMixerOpen] = useState(false);
+  const [audioNotice, setAudioNotice] = useState("");
   const [audioTracks, setAudioTracks] = useState(1);
   const [audioKeep, setAudioKeep] = useState<Set<number>>(new Set([0]));
   // Per-track export gain, 1 = unchanged. Applied in the ffmpeg mix.
@@ -320,7 +346,7 @@ function App() {
   const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
   const [streamableReady, setStreamableReady] = useState(false);
   const [streamableUrl, setStreamableUrl] = useState("");
-  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "largest" | "longest" | "name">(
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "largest" | "longest" | "name" | "kills">(
     "newest"
   );
   const [targetMb, setTargetMb] = useState(10);
@@ -480,6 +506,7 @@ function App() {
     (async () => {
       getVersion().then(setAppVersion).catch(() => {});
       const s = await invoke<Settings>("load_settings");
+      settingsSubmitted.current = s;
       setSettings(s);
       setHkSave(s.hotkey_save);
       setHkShort(s.hotkey_short);
@@ -534,7 +561,12 @@ function App() {
       listen("auto-clipped", () => showToast("Auto-clipped!")),
       // Every settings save (UI or backend) arrives here, so the UI's copy
       // stays current and never overwrites a backend change when it saves.
-      listen<Settings>("settings-changed", (e) => setSettings(e.payload)),
+      listen<Settings>("settings-changed", (e) => {
+        if (!settingsPending.current && !settingsRetry.current) {
+          settingsSubmitted.current = e.payload;
+          setSettings(e.payload);
+        }
+      }),
       listen<{ stage: string; pct: number }>("engine-download-progress", (e) => setEngineProgress(e.payload)),
       // The game hook failed on a game and the backend switched it to
       // window capture: pick up the changed settings and say so.
@@ -572,6 +604,27 @@ function App() {
       .then(setGameSources)
       .catch(() => setGameSources([]));
   }, [showSettings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pending = [...clips];
+    const counts: Record<string, number> = {};
+    async function worker() {
+      while (pending.length && !cancelled) {
+        const clip = pending.shift()!;
+        try { counts[clip.path] = (await invoke<number[]>("load_markers", { input: clip.path })).length; }
+        catch { /* Missing sidecars are ordinary recordings. */ }
+      }
+    }
+    Promise.all(Array.from({ length: 4 }, worker)).then(() => { if (!cancelled) setMarkerCounts(counts); });
+    return () => { cancelled = true; };
+  }, [clips]);
+
+  useEffect(() => {
+    if (!reduceMotion) return;
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    setHoverPath(null);
+  }, [reduceMotion]);
 
   // Re-apply the keep-checkboxes to live playback whenever they change.
   useEffect(() => {
@@ -720,6 +773,7 @@ function App() {
     // with dead paths.
     if (clips.length > 0) {
       const live = new Set(clips.map((c) => c.path));
+      if (undoDelete) live.add(undoDelete.clip.path);
       const prune = <T,>(prev: Record<string, T>): Record<string, T> => {
         const stale = Object.keys(prev).filter((p) => !live.has(p));
         if (stale.length === 0) return prev;
@@ -730,7 +784,7 @@ function App() {
       setTrimRanges(prune);
       setAudioMemory(prune);
     }
-  }, [clips]);
+  }, [clips, undoDelete]);
 
   // Remember the trim range per clip (dropped again when it's the full clip),
   // so montage can cut each clip to its last trim without re-opening it.
@@ -846,8 +900,7 @@ function App() {
       game_exes: [...settings.game_exes, exe],
       game_blacklist: settings.game_blacklist.filter((g) => g.toLowerCase() !== exe),
     };
-    setSettings(next);
-    await invoke("save_settings", { settings: next });
+    await saveSettings(next);
     showToast(`Added ${exe} — add a capture source for it below`);
   }
 
@@ -886,6 +939,7 @@ function App() {
   }
 
   function selectClip(clip: ClipInfo) {
+    setAudioNotice("");
     setSelected(clip);
     setTrimStart(0);
     setTrimEnd(0);
@@ -945,7 +999,7 @@ function App() {
       await invoke("copy_clip", { path: clip.path });
       showToast("Clip copied — Ctrl+V it into Discord");
     } catch (e) {
-      setError(String(e));
+      setError(`Could not copy this clip. Check that the source file is still available, then try Share again. Details: ${String(e)}`);
     }
   }
 
@@ -978,13 +1032,12 @@ function App() {
   // Move one entry of the (insertion-ordered) selection Set — the montage
   // cut order — from one position to another.
   function reorderSel(from: number, to: number) {
-    if (from < 0 || to < 0 || from === to) return;
-    setMontageSel((prev) => {
-      const arr = [...prev];
-      const [moved] = arr.splice(from, 1);
-      arr.splice(to, 0, moved);
-      return new Set(arr);
-    });
+    const paths = [...montageSel];
+    if (from < 0 || to < 0 || from >= paths.length || to >= paths.length || from === to) return;
+    const moved = paths[from];
+    setMontageSel(new Set(moveItem(paths, from, to)));
+    setReorderNotice(`Clip moved to position ${to + 1} of ${paths.length}.`);
+    requestAnimationFrame(() => [...document.querySelectorAll<HTMLElement>(".sel-strip-entry")].find((entry) => entry.dataset.selectionPath === moved)?.focus());
   }
 
   function queueNext() {
@@ -1018,7 +1071,7 @@ function App() {
       const name = newPath.split("/").pop() ?? "";
       selectClip({ path: newPath, name, modified_ms: Date.now(), size_bytes: 0 });
     } catch (e) {
-      setError(String(e));
+      setError(`Could not save the montage. Check that all selected clips are available and the clips drive has free space, then try again. Details: ${String(e)}`);
     } finally {
       setMontaging(false);
       setExportPct(null);
@@ -1078,7 +1131,7 @@ function App() {
       showToast("GIF exported and copied — Ctrl+V it");
       await refreshClips();
     } catch (e) {
-      setError(String(e));
+      setError(`Could not export the GIF. Keep the selection under 15 seconds, check free disk space, then try again. Details: ${String(e)}`);
     }
   }
 
@@ -1093,7 +1146,7 @@ function App() {
       showToast("Frame saved and copied — Ctrl+V it");
       await refreshClips();
     } catch (e) {
-      setError(String(e));
+      setError(`Could not save the frame. Wait for the video to load and check free disk space, then try Save frame again. Details: ${String(e)}`);
     }
   }
 
@@ -1226,7 +1279,8 @@ function App() {
       if (
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement
+        target instanceof HTMLSelectElement ||
+        (e.key !== "Escape" && target.closest("button, summary, [role=slider], [role=radio]"))
       )
         return;
       const video = videoRef.current;
@@ -1267,10 +1321,12 @@ function App() {
     if (selected) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
+      if (ctxMenu) return;
       if (
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement
+        target instanceof HTMLSelectElement ||
+        (e.key !== "Escape" && target.closest("button, summary, [role=slider], [role=radio]"))
       )
         return;
       // Queue player owns the keys while it's open.
@@ -1329,14 +1385,28 @@ function App() {
   // Any click or Esc anywhere closes the context menu.
   useEffect(() => {
     if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
-    window.addEventListener("click", close);
-    window.addEventListener("contextmenu", close);
+    const owner = [...document.querySelectorAll<HTMLElement>(".card")].find((card) => card.dataset.clipPath === ctxMenu.clip.path);
+    const previousFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : owner;
+    document.querySelector<HTMLButtonElement>(".ctx-menu button")?.focus();
+    const close = (restore = false) => {
+      setCtxMenu(null);
+      if (restore) requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (previousFocus?.isConnected && (active === document.body || (active instanceof Element && active.closest(".ctx-menu")))) previousFocus.focus();
+      });
+    };
+    const onClick = (e: MouseEvent) => close(e.target instanceof Element && !!e.target.closest(".ctx-menu"));
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      close(true);
+    };
+    window.addEventListener("click", onClick);
+    window.addEventListener("contextmenu", onClick);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("click", onClick);
+      window.removeEventListener("contextmenu", onClick);
       window.removeEventListener("keydown", onKey);
     };
   }, [ctxMenu]);
@@ -1374,20 +1444,37 @@ function App() {
     }
   }
 
-  async function saveSettings(s: Settings) {
-    await invoke("save_settings", { settings: s });
-    setSettings(s);
-    // Push the change straight to OBS (path, tracks, length, video). Best
-    // effort — fails harmlessly when OBS isn't connected yet.
-    invoke("apply_obs_config").catch(() => {});
+  function saveSettings(snapshot: Settings): Promise<void> {
+    const before = settingsSubmitted.current ?? settingsRef.current ?? snapshot;
+    settingsSubmitted.current = snapshot;
+    const version = ++settingsVersion.current;
+    settingsPending.current++;
+    settingsRetry.current = snapshot;
+    settingsRef.current = snapshot;
+    setSettings(snapshot);
+    setSettingsSave({ state: "saving" });
+    const request = writeSettings.current(before, snapshot).then((canonical) => {
+      if (version === settingsVersion.current) {
+        settingsSubmitted.current = canonical;
+        settingsRef.current = canonical;
+        setSettings(canonical);
+        settingsRetry.current = null;
+        setSettingsSave({ state: "saved" });
+      }
+    }).catch((error: unknown) => {
+      if (version === settingsVersion.current) setSettingsSave({ state: "error", detail: String(error) });
+      throw error;
+    }).finally(() => { settingsPending.current--; });
+    void request.catch(() => {});
+    return request;
   }
 
   // Persist a new clips folder, point OBS's recording output at it, and
   // reload the library from the new location — all without an app restart.
   async function applyClipsDir(dir: string) {
     const next = { ...settingsRef.current!, clips_dir: dir };
-    setSettings(next);
-    await invoke("save_settings", { settings: next });
+    try { await saveSettings(next); }
+    catch { return; }
     invoke("apply_obs_config").catch(() => {});
     await refreshClips(dir);
     showToast("Clips folder updated");
@@ -1398,10 +1485,16 @@ function App() {
       "This resets every ClipForge setting (hotkeys, capture, storage cap, connection) back to defaults. Your clips are not affected.",
       { title: "Reset to defaults", kind: "warning" }
     );
-    if (!ok) return;
+    if (!ok || settingsPending.current) return;
     setResetting(true);
     try {
       const fresh = await invoke<Settings>("reset_settings");
+      writeSettings.current.reset();
+      settingsVersion.current++;
+      settingsRetry.current = null;
+      settingsSubmitted.current = fresh;
+      settingsRef.current = fresh;
+      setSettingsSave({ state: "idle" });
       setSettings(fresh);
       setHkSave(fresh.hotkey_save);
       setHkShort(fresh.hotkey_short);
@@ -1417,17 +1510,30 @@ function App() {
   }
 
   async function deleteClip(clip: ClipInfo) {
+    if (deleting || restoring) return;
+    setDeleting(true);
     setError(null);
     try {
-      await invoke("delete_clip", { path: clip.path });
+      const id = await invoke<string>("recycle_clip", { path: clip.path });
       if (selected?.path === clip.path) setSelected(null);
+      setCtxMenu(null);
       setClips((prev) => prev.filter((c) => c.path !== clip.path));
+      setUndoDelete({ id, clip });
       showToast("Moved to Recycle Bin");
-    } catch (e) {
-      setError(String(e));
-    } finally {
+    } catch (e) { setError(String(e)); }
+    finally { setDeleting(false); await refreshClips(); }
+  }
+
+  async function restoreDeleted() {
+    if (!undoDelete || restoring) return;
+    setRestoring(true);
+    try {
+      await invoke("restore_clip", { id: undoDelete.id });
       await refreshClips();
-    }
+      setUndoDelete(null);
+      showToast("Clip restored");
+    } catch (e) { setError(`Could not restore clip: ${String(e)}. You can also restore it from the Recycle Bin.`); }
+    finally { setRestoring(false); }
   }
 
   async function scanBlack() {
@@ -1449,6 +1555,9 @@ function App() {
   async function deleteAllBlack() {
     setError(null);
     const black = clips.filter((c) => blackMap[c.path]);
+    if (!black.length) return;
+    const ok = await confirmDialog(`Move ${black.length} blank recording${black.length === 1 ? "" : "s"} to the Recycle Bin? Review the marked clips first if you are unsure.`, { title: "Delete blank recordings", kind: "warning" });
+    if (!ok) return;
     for (const clip of black) {
       try {
         await invoke("delete_clip", { path: clip.path });
@@ -1477,7 +1586,7 @@ function App() {
       const name = newPath.split("/").pop() ?? "";
       selectClip({ path: newPath, name, modified_ms: Date.now(), size_bytes: 0 });
     } catch (e) {
-      setError(String(e));
+      setError(`Could not trim this clip. Check that the source file is available and the clips drive has free space, then retry. Details: ${String(e)}`);
     } finally {
       setTrimming(false);
     }
@@ -1514,7 +1623,7 @@ function App() {
       setShareLinks(await invoke<ShareLink[]>("list_share_links", { input: selected.path }));
       showToast("Link copied — paste it anywhere, it plays in Discord");
     } catch (e) {
-      setError(String(e));
+      setError(`Could not upload to Catbox. Check your connection and optional account key in Sharing settings, then try again. Details: ${String(e)}`);
     } finally {
       setSharing(null);
       setExportPct(null);
@@ -1530,7 +1639,7 @@ function App() {
       setStreamableReady(true);
       showToast("Drag the highlighted file onto streamable.com");
     } catch (e) {
-      setError(String(e));
+      setError(`Could not prepare the Streamable upload. Check free disk space and that your browser can open, then try again. Details: ${String(e)}`);
     } finally {
       setSharing(null);
       setExportPct(null);
@@ -1570,7 +1679,7 @@ function App() {
       showToast("Exported and copied to clipboard — Ctrl+V in Discord");
       await refreshClips();
     } catch (e) {
-      setError(String(e));
+      setError(`Could not export for Discord. Check that the source clip is available and the clips drive has free space, then try Export and copy again. Details: ${String(e)}`);
     } finally {
       setExporting(false);
       setExportPct(null);
@@ -1602,14 +1711,14 @@ function App() {
       (c) =>
         (gameFilter === "all" ||
           (gameFilter === "favorites" ? favorites.includes(c.path) : gameOf(c) === gameFilter)) &&
-        (search === "" ||
-          c.name.toLowerCase().includes(search.toLowerCase()) ||
-          gameOf(c).toLowerCase().includes(search.toLowerCase()))
+        matchesClipSearch(c.name, gameOf(c), markerCounts[c.path] ?? 0, search)
     )
     .sort((a, b) => {
       switch (sortBy) {
         case "oldest":
           return a.modified_ms - b.modified_ms;
+        case "kills":
+          return clipKillCount(b.name, markerCounts[b.path] ?? 0) - clipKillCount(a.name, markerCounts[a.path] ?? 0) || b.modified_ms - a.modified_ms;
         case "largest":
           return b.size_bytes - a.size_bytes;
         case "longest":
@@ -1654,7 +1763,7 @@ function App() {
       g.items.push(it);
     }
     for (const g of groups) {
-      const names = [...new Set(g.items.map(({ c }) => gameOf(c)))];
+      const names = [...new Set(g.items.map(({ c }) => gameName(gameOf(c))))];
       const gamesText = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
       const n = g.items.length;
       const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
@@ -1705,7 +1814,7 @@ function App() {
           </div>
           <div className="brand-text">
             <span className="brand-name">ClipForge</span>
-            <span className="brand-ver">{appVersion ? `v${appVersion}` : ""}</span>
+            <span className="brand-ver">{appVersion === "dev" ? "Development" : appVersion ? `v${appVersion}` : ""}</span>
           </div>
         </div>
 
@@ -1730,6 +1839,7 @@ function App() {
             <GearSix size={17} weight={showSettings ? "fill" : "regular"} />
             Settings
           </button>
+          {whatsNew && <button className="nav-item" onClick={() => setShowWhatsNew(true)}><Sparkle size={17} />What’s new <span className="update-dot" /></button>}
         </nav>
 
         <div className="sidebar-spacer" />
@@ -1805,7 +1915,9 @@ function App() {
         </div>
       </aside>
 
-      <main className="main">
+      <a className="skip-main" href="#clipforge-content" onClick={(e) => { e.preventDefault(); document.getElementById("clipforge-content")?.focus(); }}>Skip to main content</a>
+      <main className="main" id="clipforge-content" tabIndex={-1}>
+        {!showSettings && settingsSave.state === "error" && <div className="error-bar" role="alert"><span>Settings were not saved. Your edits are preserved.</span><button className="btn-ghost" onClick={() => { setSelected(null); setShowSettings(true); }}>Review settings</button></div>}
         {showSetupCheck && <SetupCheck
           supervisor={sup}
           onClose={() => setShowSetupCheck(false)}
@@ -1821,7 +1933,7 @@ function App() {
           </div>
         )}
         {error && (
-          <div className="error-bar">
+          <div className="error-bar" role="alert">
             <span>{error}</span>
             {/capture engine|replay buffer/i.test(error) && (
               <button
@@ -1849,13 +1961,14 @@ function App() {
             </button>
           </div>
         )}
-        {diskFree != null && diskFree < 5 * 1024 ** 3 && (
-          <div className="setup-bar disk-bar">
+        {diskFree != null && diskFree < 5 * 1024 ** 3 && (!diskDismissed || diskFree < 1024 ** 3) && (
+          <div className={`setup-bar disk-bar ${diskFree < 1024 ** 3 ? "critical" : ""}`} role="status">
             <Warning size={15} weight="fill" />
             <span>
-              Low disk space — {formatSize(diskFree)} free on the clips drive. ClipForge stops saving
-              clips when it runs out; delete some clips or lower the storage cap.
+              Low disk space — {formatSize(diskFree)} free. Free up space to keep saving clips.
             </span>
+            <button className="setup-btn" onClick={() => { setSelected(null); setShowSettings(true); requestAnimationFrame(() => document.getElementById("settings-storage")?.scrollIntoView()); }}>Storage settings</button>
+            {diskFree >= 1024 ** 3 && <button className="btn-ghost" aria-label="Dismiss low disk warning" onClick={() => setDiskDismissed(true)}><X size={14} /></button>}
           </div>
         )}
         {sup?.engine_downloading && (
@@ -1965,6 +2078,7 @@ function App() {
                 >
                   <option value="newest">Newest</option>
                   <option value="oldest">Oldest</option>
+                  <option value="kills">Most kills</option>
                   <option value="largest">Largest</option>
                   <option value="longest">Longest</option>
                   <option value="name">Name</option>
@@ -1988,10 +2102,10 @@ function App() {
                   onClick={scanBlack}
                   disabled={scanning || clips.length === 0}
                   title="Find clips that recorded only a black screen"
-                  aria-label="Scan for black clips"
+                  aria-label="Find blank recordings"
                 >
-                  <Sparkle size={15} />
-                  <span className="btn-label">{scanning ? "scanning…" : "Scan for black"}</span>
+                  <MagnifyingGlass size={15} />
+                  <span className="btn-label">{scanning ? "Checking…" : "Find blank recordings"}</span>
                 </button>
                 {blackCount > 0 && (
                   <button className="btn-danger" onClick={deleteAllBlack}>
@@ -2030,7 +2144,7 @@ function App() {
                   onClick={() => setGameFilter(g)}
                 >
                   <span className="chip-dot" style={{ background: gameColor(g) }} />
-                  {g}
+                  {gameName(g)}
                   <span className="chip-count">{clips.filter((c) => gameOf(c) === g).length}</span>
                 </button>
               ))}
@@ -2079,9 +2193,9 @@ function App() {
                         <span className="session-meta">{g.meta}</span>
                         <span className="session-rule" />
                         {g.items.some(({ c }) => !favorites.includes(c.path)) && (
-                          <button className="session-clear" onClick={() => clearUnstarred(g.label, g.items.map(({ c }) => c))}>
+                          <details className="session-actions"><summary aria-label={`Cleanup options for ${g.label}`}>Cleanup</summary><button className="session-clear" onClick={() => clearUnstarred(g.label, g.items.map(({ c }) => c))}>
                             Keep starred, clear the rest
-                          </button>
+                          </button></details>
                         )}
                       </div>
                     )}
@@ -2089,12 +2203,22 @@ function App() {
                 {g.items.map(({ c, i }) => (
                   <div
                     key={c.path}
+                    data-clip-path={c.path}
                     className={`card ${i === focusIdx ? "kb-focus" : ""}`}
                     style={{ "--game": gameColor(gameOf(c)) } as React.CSSProperties}
                     // Roving tabindex: Tab lands on one card, arrows walk the
                     // grid (library shortcuts below), Enter opens it.
                     tabIndex={i === Math.max(0, focusIdx) ? 0 : -1}
-                    aria-label={c.name}
+                    role="group"
+                    aria-label={`${momentTitle(c.name, markerCounts[c.path] ?? 0)}, ${new Date(c.modified_ms).toLocaleString()}. Enter to edit; Shift+F10 for actions.`}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "F10" && e.shiftKey) {
+                        e.preventDefault(); e.stopPropagation();
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setCtxMenu({ x: Math.min(r.left, window.innerWidth - 200), y: Math.min(r.top, window.innerHeight - 300), clip: c });
+                      }
+                    }}
                     onFocus={(e) => e.target === e.currentTarget && setFocusIdx(i)}
                     // Shift-click anywhere on the card range-selects instead of
                     // opening; mousedown guard stops the browser text-select.
@@ -2117,6 +2241,7 @@ function App() {
                       // still. The delay keeps fast mouse passes from
                       // spinning up video decodes.
                       onMouseEnter={() => {
+                        if (reduceMotion) return;
                         if (hoverTimer.current) clearTimeout(hoverTimer.current);
                         hoverTimer.current = setTimeout(() => setHoverPath(c.path), 250);
                       }}
@@ -2136,7 +2261,7 @@ function App() {
                         loading="lazy"
                         onError={(e) => (e.currentTarget.style.visibility = "hidden")}
                       />
-                      {hoverPath === c.path && (
+                      {hoverPath === c.path && !reduceMotion && (
                         // Layered over the still and faded in only once
                         // frames actually flow — no blank flash.
                         <video
@@ -2152,9 +2277,10 @@ function App() {
                       <div className="thumb-vignette" />
                       <div className="game-tag">
                         <span className="chip-dot" style={{ background: gameColor(gameOf(c)) }} />
-                        {gameOf(c)}
+                        {gameName(gameOf(c))}
                       </div>
                       <div className="card-topright">
+                        {killBadge(markerCounts[c.path] ?? 0, c.name) && <span className="highlight-badge"><Crosshair size={13} />{killBadge(markerCounts[c.path], c.name)}</span>}
                         {isSession(c.name) && <div className="session-badge">SESSION</div>}
                         {lastSeenRef.current > 0 &&
                           c.modified_ms > lastSeenRef.current &&
@@ -2197,17 +2323,10 @@ function App() {
                       {thumbs[c.path] && thumbs[c.path].duration > 0 && (
                         <div className="duration-badge">{formatDuration(thumbs[c.path].duration)}</div>
                       )}
-                      <button
-                        className="card-trash"
-                        title="Move to Recycle Bin"
-                        aria-label={`Delete ${c.name}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteClip(c);
-                        }}
-                      >
-                        <Trash size={15} />
-                      </button>
+                      <button className="card-quick-share" title="Copy file to share in Discord" aria-label={`Copy ${momentTitle(c.name, markerCounts[c.path] ?? 0)} to share`}
+                        onClick={(e) => { e.stopPropagation(); void copyClip(c); }}><Copy size={15} /> Share</button>
+                      <button className="card-menu" aria-label={`More actions for ${momentTitle(c.name, markerCounts[c.path] ?? 0)}`} title="More actions"
+                        onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ x: Math.min(r.left, window.innerWidth - 200), y: Math.min(r.bottom, window.innerHeight - 300), clip: c }); }}><DotsThree size={20} weight="bold" /></button>
                       <button
                         className={`card-star ${favorites.includes(c.path) ? "on" : ""}`}
                         title="Favorite — survives storage cleanup"
@@ -2236,8 +2355,8 @@ function App() {
                           }}
                         />
                       ) : (
-                        <span className="card-title">
-                          {c.name}
+                        <span className="card-title" title={c.name}>
+                          {momentTitle(c.name, markerCounts[c.path] ?? 0)}
                           <button
                             className="card-rename-btn"
                             title="Rename"
@@ -2252,7 +2371,7 @@ function App() {
                         </span>
                       )}
                       <span className="card-meta">
-                        {formatSize(c.size_bytes)} <span className="meta-dot" /> {relativeTime(c.modified_ms)}
+                        {new Date(c.modified_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} <span className="meta-dot" /> {relativeTime(c.modified_ms)} <span className="meta-dot" /> {formatSize(c.size_bytes)}
                       </span>
                     </div>
                   </div>
@@ -2263,6 +2382,7 @@ function App() {
               </div>
             )}
 
+            <p className="library-hints"><span>Arrow keys: browse</span><span>Enter: edit</span><span>Shift-click: select a range</span><span>Right-click / Shift+F10: actions</span><span>Share: copy for Discord</span></p>
             {montageSel.size >= 1 && (
               <div className="sel-bar">
                 {montageSel.size >= 2 && (
@@ -2271,8 +2391,13 @@ function App() {
                       const c = clips.find((x) => x.path === p);
                       if (!c) return null;
                       return (
+                        <div key={p} className="sel-strip-entry" data-selection-path={p} role="group" tabIndex={0}
+                          aria-label={`Montage clip ${i + 1} of ${montageSel.size}: ${momentTitle(c.name, markerCounts[p] ?? 0)}. Control and arrow keys move it.`}
+                          onKeyDown={(e) => {
+                            if (!e.ctrlKey || !["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+                            e.preventDefault(); e.stopPropagation(); reorderSel(i, i + (e.key === "ArrowLeft" ? -1 : 1));
+                          }}>
                         <div
-                          key={p}
                           className="sel-strip-item"
                           title={c.name}
                           draggable
@@ -2291,10 +2416,16 @@ function App() {
                           />
                           <span className="sel-strip-num">{i + 1}</span>
                         </div>
+                        <div className="sel-strip-moves">
+                          <button aria-label={`Move clip ${i + 1} earlier`} disabled={i === 0} onClick={() => reorderSel(i, i - 1)}><ArrowLeft size={13} /></button>
+                          <button aria-label={`Move clip ${i + 1} later`} disabled={i === montageSel.size - 1} onClick={() => reorderSel(i, i + 1)}><ArrowRight size={13} /></button>
+                        </div>
+                        </div>
                       );
                     })}
                   </div>
                 )}
+                <span className="sr-only" role="status">{reorderNotice}</span>
                 <div className="sel-bar-row">
                   <span className="sel-count">
                     {montageSel.size} selected
@@ -2342,7 +2473,7 @@ function App() {
           </>
         ) : (
           <div
-            className="editor"
+            className={`editor ${mixerOpen ? "mixer-open" : ""}`}
             style={{ "--game": gameColor(gameOf(selected)) } as React.CSSProperties}
           >
             <div className="editor-top">
@@ -2351,6 +2482,7 @@ function App() {
                 Library
               </button>
               <span className="chip-dot" style={{ background: gameColor(gameOf(selected)) }} />
+              <h1 className="editor-heading">
               {renaming ? (
                 <input
                   className="rename-input"
@@ -2364,17 +2496,19 @@ function App() {
                   }}
                 />
               ) : (
-                <span
+                <button
                   className="editor-title"
-                  title="Click to rename"
+                  title={selected.name}
+                  aria-label={`Rename ${momentTitle(selected.name, markerCounts[selected.path] ?? killMarkers.length)}`}
                   onClick={() => {
                     setRenameValue(selected.name.replace(/\.[^.]+$/, ""));
                     setRenaming(true);
                   }}
                 >
-                  {selected.name}
-                </span>
+                  {momentTitle(selected.name, markerCounts[selected.path] ?? killMarkers.length)}
+                </button>
               )}
+              </h1>
               <span className="editor-meta mono">
                 {formatSize(selected.size_bytes)}
                 {duration > 0 && ` · ${formatDuration(duration)}`}
@@ -2395,13 +2529,13 @@ function App() {
                 <Star size={15} weight={favorites.includes(selected.path) ? "fill" : "regular"} />
                 {favorites.includes(selected.path) ? "Favorited" : "Favorite"}
               </button>
-              <button className="btn-delete" onClick={() => deleteClip(selected)}>
+              <button className="btn-delete" disabled={deleting || restoring} onClick={() => deleteClip(selected)}>
                 <Trash size={15} />
                 Delete
               </button>
             </div>
 
-            <div className="editor-stage">
+            <div className={`editor-stage ${audioTracks >= 5 ? "many-tracks" : ""}`}>
             <div className="player-wrap">
               <video
                 ref={videoRef}
@@ -2483,6 +2617,16 @@ function App() {
                     <button
                       key={o.mb}
                       role="radio"
+                      aria-label={`${o.mb} MB · ${o.note}`}
+                      tabIndex={targetMb === o.mb ? 0 : -1}
+                      onKeyDown={(e) => {
+                        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+                        e.preventDefault(); e.stopPropagation();
+                        const sizes = [10, 50, 500];
+                        const next = (sizes.indexOf(targetMb) + (["ArrowRight", "ArrowDown"].includes(e.key) ? 1 : 2)) % 3;
+                        setTargetMb(sizes[next]);
+                        (e.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
+                      }}
                       aria-checked={targetMb === o.mb}
                       className={targetMb === o.mb ? "on" : ""}
                       onClick={() => setTargetMb(o.mb)}
@@ -2496,7 +2640,7 @@ function App() {
                     divides the size budget into a nonsense bitrate. */}
                 {trimEnd - trimStart > 0 && (
                   <div className="export-quality">
-                    <span>Estimated quality</span>
+                    <span>Quality</span>
                     <span className={`mono ${goodQuality ? "good" : "bad"}`}>
                       ~{(kbps / 1000).toFixed(1)} Mbps · {goodQuality ? "good" : "trim shorter"}
                     </span>
@@ -2509,6 +2653,7 @@ function App() {
                     : "Export and copy"}
                 </button>
               </section>
+              <details className="more-share"><summary>More ways to share</summary>
               <section className="export-card share-card">
                 <h2 className="export-title">Share as link</h2>
                 <span className="field-hint">
@@ -2547,6 +2692,7 @@ function App() {
                     <input
                       className="mono"
                       placeholder="Paste the Streamable link to keep it here"
+                      aria-label="Streamable share link" type="url" name="streamable-url" spellCheck={false} autoComplete="off"
                       value={streamableUrl}
                       onChange={(e) => setStreamableUrl(e.target.value)}
                     />
@@ -2607,11 +2753,13 @@ function App() {
                   Copy file
                 </button>
               </div>
+              </details>
             </aside>
             </div>
 
             <div className="trim-section">
               <div className="trim-head">
+                <div className="trim-actions">
                 <span className="trim-label">TRIM</span>
                 <button
                   className={`preview-btn ${previewing ? "on" : ""}`}
@@ -2646,6 +2794,10 @@ function App() {
                     {killMarkers.length} kill{killMarkers.length > 1 ? "s" : ""}
                   </button>
                 )}
+                <button className="preview-btn mixer-toggle" aria-expanded={mixerOpen} aria-controls="clip-multitrack" onClick={() => setMixerOpen((open) => !open)}>
+                  <Waveform size={14} />Audio · {audioKeep.has(0) ? "all" : `${audioKeep.size} tracks`}
+                </button>
+                </div>
                 <span className="trim-readout" ref={trimReadoutRef}>
                   {trimReadout(trimStart, trimEnd)}
                 </span>
@@ -2683,8 +2835,9 @@ function App() {
                   </button>
                 </div>
               </div>
+              {duration > 0 && mixerOpen && <p className="audio-note" role="status">{audioNotice || (audioTracks >= 5 ? "Mix keeps all audio. Game or Voice replaces Mix/Desktop; add Mic to keep your reaction." : "Mix keeps all audio. Individual tracks replace the mix to avoid duplicate sound.")}</p>}
               {duration > 0 && (
-                <div className="multitrack">
+                <div className="multitrack" id="clip-multitrack" tabIndex={mixerOpen ? 0 : -1} aria-label={mixerOpen ? "Audio mixer and timeline; scroll for more tracks" : "Video timeline"}>
                   <div className="mt-labels">
                     <div className="mt-ruler-spacer" />
                     <div className="mt-label mt-vid-label">
@@ -2696,7 +2849,7 @@ function App() {
                       return (
                         <label
                           key={t.i}
-                          className={`mt-label ${on ? "on" : ""}`}
+                          className={`mt-label mt-audio ${on ? "on" : ""}`}
                           title={
                             t.i === 0
                               ? "Keep in export. The mix already contains every other track."
@@ -2707,20 +2860,22 @@ function App() {
                         >
                           <input
                             type="checkbox"
+                            aria-label={`Include ${t.label} in export`}
                             checked={on}
-                            onChange={(e) =>
-                              setAudioKeep((prev) => {
-                                if (e.target.checked) return keepTrack(prev, t.i, audioTracks);
-                                const next = new Set(prev);
-                                next.delete(t.i);
-                                return next;
-                              })
-                            }
+                            onChange={(e) => {
+                              const next = e.target.checked ? keepTrack(audioKeep, t.i, audioTracks) : new Set([...audioKeep].filter((i) => i !== t.i));
+                              const removed = trackLabels(audioTracks).filter((track) => audioKeep.has(track.i) && !next.has(track.i));
+                              const kept = trackLabels(audioTracks).filter((track) => next.has(track.i)).map((track) => track.label);
+                              setAudioKeep(next);
+                              setAudioNotice(`${removed.length ? `${removed.map((track) => track.label).join(" and ")} removed to avoid duplicate sound. ` : ""}Export audio: ${kept.join(", ") || "none (silent video)"}.${next.size === 1 && next.has(1) && audioTracks >= 5 ? " Add voice or mic to keep reactions." : ""}`);
+                            }}
                           />
                           <t.Icon size={14} weight="fill" className="mt-label-icon" />
                           {t.label}
                           <input
                             type="range"
+                            aria-label={`${t.label} export volume`}
+                            aria-valuetext={`${Math.round((trackGain[t.i] ?? 1) * 100)} percent`}
                             min={0}
                             max={2}
                             step={0.05}
@@ -2750,7 +2905,7 @@ function App() {
                         {trackLabels(audioTracks).map((t) => {
                           const wave = trackWaves.find((w) => w.track === t.i);
                           return (
-                            <div key={t.i} className={`mt-lane ${audioKeep.has(t.i) ? "" : "off"}`}>
+                            <div key={t.i} className={`mt-lane mt-audio ${audioKeep.has(t.i) ? "" : "off"}`}>
                               {wave && <img src={convertFileSrc(wave.waveform)} alt="" draggable={false} />}
                             </div>
                           );
@@ -2770,10 +2925,24 @@ function App() {
                             v.currentTime = t;
                           }}
                         />
-                        <div ref={tl.startHandle} className="mt-handle start" title="Drag to trim · double-click resets">
+                        <div ref={tl.startHandle} className="mt-handle start" title="Drag or use arrow keys to trim" role="slider" tabIndex={0}
+                          aria-label="Trim start" aria-valuemin={0} aria-valuemax={trimEnd - 0.5} aria-valuenow={trimStart} aria-valuetext={`${trimStart.toFixed(1)} seconds`}
+                          onKeyDown={(e) => {
+                            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+                            e.preventDefault(); e.stopPropagation();
+                            const next = e.key === "Home" ? 0 : e.key === "End" ? trimEnd - 0.5 : trimStart + (e.key === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 1 : 0.1);
+                            setTrimStart(Math.round(Math.max(0, Math.min(trimEnd - 0.5, next)) * 10) / 10);
+                          }}>
                           <span className="grip" />
                         </div>
-                        <div ref={tl.endHandle} className="mt-handle end" title="Drag to trim · double-click resets">
+                        <div ref={tl.endHandle} className="mt-handle end" title="Drag or use arrow keys to trim" role="slider" tabIndex={0}
+                          aria-label="Trim end" aria-valuemin={trimStart + 0.5} aria-valuemax={duration} aria-valuenow={trimEnd} aria-valuetext={`${trimEnd.toFixed(1)} seconds`}
+                          onKeyDown={(e) => {
+                            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+                            e.preventDefault(); e.stopPropagation();
+                            const next = e.key === "Home" ? trimStart + 0.5 : e.key === "End" ? duration : trimEnd + (e.key === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 1 : 0.1);
+                            setTrimEnd(Math.round(Math.max(trimStart + 0.5, Math.min(duration, next)) * 10) / 10);
+                          }}>
                           <span className="grip" />
                         </div>
                         <div ref={tl.playhead} className="mt-playhead">
@@ -2786,22 +2955,30 @@ function App() {
               )}
             </div>
 
+            <details className="editor-shortcuts"><summary>Keyboard shortcuts</summary>
             <p className="kbd-hints">
-              <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame · <kbd>shift</kbd>+arrows 1s ·{" "}
-              <kbd>[</kbd> set start · <kbd>]</kbd> set end · <kbd>ctrl</kbd>+scroll zoom · <kbd>esc</kbd> back
+              <span className="key-hint"><kbd>space</kbd> play/pause</span>
+              <span className="key-hint"><kbd>←</kbd><kbd>→</kbd> frame</span>
+              <span className="key-hint"><kbd>shift</kbd> + arrows: 1s</span>
+              <span className="key-hint"><kbd>[</kbd> start</span>
+              <span className="key-hint"><kbd>]</kbd> end</span>
+              <span className="key-hint"><kbd>ctrl</kbd> + scroll: zoom</span>
+              <span className="key-hint"><kbd>esc</kbd> back</span>
             </p>
+            </details>
           </div>
         )}
 
-        {toast && (
-          <div className="toast">
+        {(toast || undoDelete) && (
+          <div className="toast" role="status">
             <CheckCircle size={17} weight="fill" color="#40dd80" />
-            {toast}
+            {toast ?? "Clip moved to Recycle Bin"}
+            {undoDelete && <><button className="btn-ghost" disabled={restoring} onClick={restoreDeleted}>{restoring ? "Restoring…" : "Undo delete"}</button><button className="btn-ghost" aria-label="Dismiss undo" onClick={() => setUndoDelete(null)}><X size={14} /></button></>}
           </div>
         )}
 
       {/* Waits for the tutorial so first launch never stacks two dialogs. */}
-      {whatsNew && !showOnboarding && (
+      {whatsNew && showWhatsNew && !showOnboarding && (
         <Modal label={`Updated to v${whatsNew.version}`} className="modal whatsnew-modal" onClose={() => setWhatsNew(null)}>
           <div className="modal-head">
             <Sparkle size={19} color="#7f9bff" weight="fill" />
@@ -2835,7 +3012,15 @@ function App() {
       )}
 
       {ctxMenu && (
-        <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+        <div className="ctx-menu" role="dialog" aria-label="Clip actions" style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          onKeyDown={(e) => {
+            if (!["ArrowDown", "ArrowUp", "Home", "End", "Tab"].includes(e.key)) return;
+            e.preventDefault(); e.stopPropagation();
+            const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+            const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (index + (e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey) ? -1 : 1) + buttons.length) % buttons.length;
+            buttons[next]?.focus();
+          }}>
           <button onClick={() => selectClip(ctxMenu.clip)}>
             <Play size={14} weight="fill" />
             Open in editor
@@ -2862,7 +3047,7 @@ function App() {
             Show in Explorer
           </button>
           <div className="ctx-sep" />
-          <button className="danger" onClick={() => deleteClip(ctxMenu.clip)}>
+          <button className="danger" disabled={deleting || restoring} onClick={() => deleteClip(ctxMenu.clip)}>
             <Trash size={14} />
             Delete
           </button>
@@ -2872,6 +3057,7 @@ function App() {
       {previewQueue && previewQueue[previewQIdx] && (
         <Modal label="Clip preview queue" className="queue-player" onClose={() => setPreviewQueue(null)}>
           <video
+            tabIndex={0}
             key={previewQueue[previewQIdx]}
             src={convertFileSrc(previewQueue[previewQIdx])}
             autoPlay
@@ -2929,7 +3115,8 @@ function App() {
           currentVc={settings.vc_exe}
           runningApps={runningApps}
           onPick={async (exe) => {
-            await saveSettings({ ...settings, vc_exe: exe });
+            try { await saveSettings({ ...settings, vc_exe: exe }); }
+            catch { return; }
             setVcPicker(false);
             showToast(`Voice-chat audio set to ${exe}`);
           }}
@@ -2943,6 +3130,11 @@ function App() {
           settings={settings}
           setSettings={setSettings}
           saveSettings={saveSettings}
+          savingSettings={settingsSave.state === "saving"}
+          saveFeedback={settingsSave.state !== "idle" && <div className={`settings-save-feedback ${settingsSave.state}`} role={settingsSave.state === "error" ? "alert" : "status"}>
+            <span>{settingsSave.state === "saving" ? "Saving settings…" : settingsSave.state === "saved" ? "Changes saved" : "Could not save settings. Your edits are preserved. Check the settings folder is writable, then retry."}</span>
+            {settingsSave.state === "error" && <><button className="btn-ghost" onClick={() => { if (settingsRetry.current) void saveSettings(settingsRetry.current); }}>Retry saving</button><details><summary>Technical details</summary><p>{settingsSave.detail}</p></details></>}
+          </div>}
           applyClipsDir={applyClipsDir}
           resetSettings={resetSettings}
           resetting={resetting}

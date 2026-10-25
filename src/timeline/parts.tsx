@@ -145,7 +145,9 @@ export function KillMarkers({
         const n = g.times.length;
         const span = n > 1 ? `${fmtTime(g.times[0])}–${fmtTime(g.times[n - 1])}` : fmtTime(g.t);
         return (
-          <div
+          <button
+            type="button"
+            aria-label={`${n > 1 ? `${n} kills` : "Kill"} at ${span}. Jump to moment`}
             key={g.t}
             className={`kill-marker ${n > 1 ? "group" : ""}`}
             data-timeline-interactive
@@ -154,7 +156,7 @@ export function KillMarkers({
             onClick={() => onJump(g.t)}
           >
             {n > 1 ? <span className="kill-count-num">{n}</span> : icon}
-          </div>
+          </button>
         );
       })}
     </>

@@ -823,6 +823,30 @@ pub fn delete_clip(app: AppHandle, path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Single deletes retain sidecars and favorites so Undo restores the whole moment.
+/// Return the exact Recycle Bin identity, including when older copies share its name.
+#[tauri::command]
+pub fn recycle_clip(path: String) -> Result<String, String> {
+    let original = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let before = trash::os_limited::list().map_err(|e| e.to_string())?;
+    trash::delete(&original).map_err(|e| e.to_string())?;
+    let items = trash::os_limited::list().map_err(|e| format!("Clip is in the Recycle Bin, but Undo is unavailable: {e}"))?;
+    items.into_iter()
+        .find(|item| std::fs::canonicalize(&item.original_parent)
+            .map(|parent| parent.join(&item.name) == original)
+            .unwrap_or(false) && !before.iter().any(|old| old.id == item.id))
+        .map(|item| item.id.to_string_lossy().into_owned())
+        .ok_or_else(|| "Clip is in the Recycle Bin. Restore it there if Undo is unavailable.".to_string())
+}
+
+#[tauri::command]
+pub fn restore_clip(id: String) -> Result<(), String> {
+    let item = trash::os_limited::list().map_err(|e| e.to_string())?
+        .into_iter().find(|item| item.id == std::ffi::OsStr::new(&id))
+        .ok_or_else(|| "The clip is no longer in the Recycle Bin".to_string())?;
+    trash::os_limited::restore_all([item]).map_err(|e| e.to_string())
+}
+
 /// Everything a deleted clip leaves behind: cached thumbnail/waveforms/
 /// filmstrip/markers in `.thumbs` (they pile up forever otherwise) and its
 /// favorites entry. Shared by manual deletes and the storage cap.
@@ -1769,4 +1793,35 @@ fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, Str
         write_markers(&out, &shifted);
     }
     Ok(out)
+}
+#[cfg(all(test, target_os = "windows"))]
+mod recycle_tests {
+    use super::{recycle_clip, restore_clip};
+
+    #[test]
+    fn undo_restores_exact_clip_and_preserves_markers() {
+        let folder = std::env::temp_dir().join(format!("clipforge-undo-test-{}", std::process::id()));
+        std::fs::create_dir_all(folder.join(".thumbs")).unwrap();
+        let clip = folder.join("moment.mp4");
+        let markers = folder.join(".thumbs/moment.markers.json");
+        std::fs::write(&clip, b"first recording").unwrap();
+        std::fs::write(&markers, b"[1.2,3.4]").unwrap();
+        let first = recycle_clip(clip.to_string_lossy().into_owned()).unwrap();
+        assert!(!clip.exists());
+        assert!(markers.exists());
+        std::fs::write(&clip, b"second recording").unwrap();
+        let second = recycle_clip(clip.to_string_lossy().into_owned()).unwrap();
+        assert_ne!(first, second);
+        restore_clip(second).unwrap();
+        assert_eq!(std::fs::read(&clip).unwrap(), b"second recording");
+        assert!(restore_clip(first.clone()).is_err(), "must not overwrite an existing clip");
+        std::fs::remove_file(&clip).unwrap();
+        restore_clip(first).unwrap();
+        assert_eq!(std::fs::read(&clip).unwrap(), b"first recording");
+        assert_eq!(std::fs::read(&markers).unwrap(), b"[1.2,3.4]");
+        std::fs::remove_file(clip).unwrap();
+        std::fs::remove_file(markers).unwrap();
+        std::fs::remove_dir(folder.join(".thumbs")).unwrap();
+        std::fs::remove_dir(folder).unwrap();
+    }
 }

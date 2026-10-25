@@ -40,7 +40,9 @@ const mockSettings = {
   encoder_pref: "auto",
 };
 
+const mockDefaults = structuredClone(mockSettings);
 let mockFavorites: string[] = [];
+const mockDeleted = new Map<string, (typeof mockClips)[number]>();
 
 const games = ["Valorant", "Rainbowsix", "Marathon", "Cs2", "Apex"];
 const mockClips = Array.from({ length: 14 }, (_, i) => ({
@@ -56,10 +58,29 @@ const mockThumbs = Object.fromEntries(
 
 async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise<unknown> {
   switch (cmd) {
+    case "recycle_clip": {
+      const path = String(_args?.path);
+      const index = mockClips.findIndex((clip) => clip.path === path);
+      if (index < 0) throw new Error("Clip not found");
+      mockDeleted.set(path, mockClips.splice(index, 1)[0]);
+      return path;
+    }
+    case "restore_clip": {
+      const id = String(_args?.id);
+      const clip = mockDeleted.get(id);
+      if (!clip) throw new Error("Clip is no longer in the Recycle Bin");
+      mockClips.push(clip);
+      mockDeleted.delete(id);
+      return null;
+    }
+    case "save_settings":
+      Object.assign(mockSettings, structuredClone(_args?.settings));
+      mockSettings.game_exes = mockSettings.game_exes.map(exe => exe.trim().toLowerCase()).filter(exe => exe && !mockSettings.game_blacklist.some((blocked: string) => blocked === exe) && !/^discord(ptb|canary)?\.exe$/.test(exe));
+      return null;
     case "load_settings":
-      return mockSettings;
+      return structuredClone(mockSettings);
     case "list_clips":
-      return mockClips;
+      return [...mockClips];
     case "gen_thumbnails":
       return mockThumbs;
     case "analyze_black":
@@ -76,7 +97,7 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return mockFavorites;
     }
     case "list_audio_tracks":
-      return 3;
+      return 5;
     case "load_markers":
       // Every third mock clip has kill markers, for editor design work.
       return (_args as { input: string }).input.match(/mock-(\d+)/)?.[1] &&
@@ -174,7 +195,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
         { exe: "spotify.exe", title: "Spotify" },
       ];
     case "reset_settings":
-      return mockSettings;
+      Object.assign(mockSettings, structuredClone(mockDefaults));
+      return structuredClone(mockSettings);
     case "remove_watched_game":
       return mockSettings;
     case "list_game_capture_sources":
@@ -235,7 +257,7 @@ export const openDialog = inTauri
 
 export const confirmDialog: typeof realConfirmDialog = inTauri
   ? realConfirmDialog
-  : (async () => true) as typeof realConfirmDialog;
+  : (async (message: string) => window.confirm(message)) as typeof realConfirmDialog;
 
 export const getVersion: typeof realGetVersion = inTauri
   ? realGetVersion

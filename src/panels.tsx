@@ -8,6 +8,14 @@ import appIcon from "./assets/logo.svg";
 import { blacklistApp, isDiscordApp } from "./app-blacklist";
 import type { BackupStatus, CaptureTest, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import { captureTestLabel } from "./types";
+
+// Backend save echoes must not replace text being edited before its blur save.
+function useSettingDraft<T>(value: T) {
+  const [draft, setDraft] = useState(value);
+  const editing = useRef(false);
+  useEffect(() => { if (!editing.current) setDraft(value); }, [value]);
+  return [draft, (next: T) => { editing.current = true; setDraft(next); }, () => { editing.current = false; }] as const;
+}
 import {
   ArrowCounterClockwise,
   ArrowLeft,
@@ -102,6 +110,7 @@ function HotkeyInput(props: {
             e.currentTarget.blur();
             return;
           }
+          if (e.key === "Tab") return;
           const { combo, complete } = captureHotkey(e);
           setLive(combo);
           if (!complete) return;
@@ -143,13 +152,23 @@ export function Modal(props: {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
+  // Focus guards let the browser traverse native media shadow controls normally.
+  const wrapFocus = (last: boolean) => {
+    const nodes = [...(ref.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), video[controls], audio[controls], summary, [tabindex]:not([tabindex="-1"])') ?? [])]
+      .filter((el) => !el.hasAttribute("data-modal-focus-guard") && (el.tabIndex >= 0 || el.matches("video[controls], audio[controls]")) && el.getClientRects().length > 0);
+    const target = last ? nodes[nodes.length - 1] : nodes[0];
+    if (target) target.focus();
+    else ref.current?.focus();
+  };
+
   useEffect(() => {
     const close = () => closeRef.current();
     modalStack.push(close);
     const returnFocus = document.activeElement as HTMLElement | null;
-    ref.current?.focus();
+    wrapFocus(false);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || modalStack[modalStack.length - 1] !== close) return;
+      if (modalStack[modalStack.length - 1] !== close) return;
+      if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopImmediatePropagation();
       if (dismissRef.current) close();
@@ -173,7 +192,9 @@ export function Modal(props: {
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
+        <span tabIndex={0} className="modal-focus-guard" data-modal-focus-guard aria-hidden="true" onFocus={() => wrapFocus(true)} />
         {children}
+        <span tabIndex={0} className="modal-focus-guard" data-modal-focus-guard aria-hidden="true" onFocus={() => wrapFocus(false)} />
       </div>
     </div>
   );
@@ -351,7 +372,7 @@ function BackupSettings(props: { settings: Settings; saveSettings: (s: Settings)
   const summary = !status?.enabled
     ? "Off. Pick a folder to back up your starred clips."
     : !status.folder_ok
-      ? "Folder not found. Is Google Drive running?"
+      ? "Backup folder unavailable. Reconnect the drive or choose another folder."
       : status.running
         ? `Backing up… ${status.pending} left`
         : status.pending > 0
@@ -362,10 +383,11 @@ function BackupSettings(props: { settings: Settings; saveSettings: (s: Settings)
 
   return (
     <div className="set-col">
-      <span className="field-label">Back up starred clips to</span>
+      <label className="field-label" htmlFor="backup-folder">Back up starred clips to</label>
       <div className="set-row">
         <input
           className="mono"
+          id="backup-folder" name="backup-folder" autoComplete="off" spellCheck={false}
           placeholder="F:/My Drive/ClipForge"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -398,13 +420,12 @@ function BackupSettings(props: { settings: Settings; saveSettings: (s: Settings)
       </div>
       <span className="field-hint">
         {summary}
-        {(message || status?.error) && (
-          <>
-            <br />
-            {message || status?.error}
-          </>
-        )}
+
       </span>
+      {(message || status?.error) && <div className="field-error" role="alert">
+        <p>Could not back up your clips. Reconnect the backup drive or choose a writable folder, then use Back up now to retry.</p>
+        <details><summary>Technical details</summary><p>{message || status?.error}</p></details>
+      </div>}
       <span className="field-hint">
         Only starred clips are copied, and only when no game is running, so uploads never slow
         down your matches. Keep the clips folder above on a local drive.
@@ -419,10 +440,10 @@ function CatboxSettings(props: { settings: Settings; saveSettings: (s: Settings)
   useEffect(() => setDraft(settings.catbox_userhash), [settings.catbox_userhash]);
   return (
     <label className="set-col">
-      <span className="field-label">catbox.moe userhash</span>
+      <span className="field-label">Catbox account key (optional)</span>
       <input
         className="mono"
-        type="password"
+        type="password" name="catbox-account-key" spellCheck={false}
         autoComplete="off"
         placeholder="Empty = upload without an account"
         value={draft}
@@ -432,8 +453,7 @@ function CatboxSettings(props: { settings: Settings; saveSettings: (s: Settings)
         }}
       />
       <span className="field-hint">
-        Shared links go to your catbox account. Find the userhash on catbox.moe → Manage account
-        while logged in.
+        Find your account key in Catbox → Manage account; leave blank for anonymous uploads.
       </span>
     </label>
   );
@@ -468,7 +488,7 @@ function healthChecks(d: Diagnostics): Check[] {
     },
     {
       label: "Admin rights",
-      value: d.elevated ? "On — capture has GPU priority" : "Off",
+      value: d.elevated ? "On — capture has GPU priority" : "Off — standard permissions",
       ok: true,
     },
     {
@@ -484,7 +504,7 @@ function healthChecks(d: Diagnostics): Check[] {
     {
       label: "Quality",
       value: d.bitrate_kbps
-        ? `${Math.round(d.bitrate_kbps / 1000)} Mbps ${d.rate_control ?? ""}`.trim()
+        ? `${Math.round(d.bitrate_kbps / 1000)} Mbps ${d.rate_control === "CBR" ? "constant bitrate" : d.rate_control ?? ""}`.trim()
         : "Unknown",
       ok: (d.bitrate_kbps ?? 0) >= 8000,
     },
@@ -541,6 +561,7 @@ function healthChecks(d: Diagnostics): Check[] {
 
 /// Settings "Health" section: a live view of the recording setup.
 export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [applying, setApplying] = useState(false);
   const [fixing, setFixing] = useState<string | null>(null);
@@ -587,28 +608,7 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
   }, []);
   const checks = diag ? healthChecks(diag) : [];
   const issues = checks.filter((c) => !c.ok).length;
-  return (
-    <section className="set-group health-group">
-      <div className="set-head">
-        <div className="set-head-icon"><Heartbeat size={16} weight="fill" /></div>
-        <div className="set-head-text">
-          <span className="set-head-title">Health</span>
-          <span className="set-head-desc">
-            {!diag
-              ? "Checking…"
-              : applying
-                ? "Applying your change…"
-                : issues === 0
-                ? "Everything is set up for clipping"
-                : `${issues} ${issues > 1 ? "things" : "thing"} to look at`}
-          </span>
-        </div>
-      </div>
-      {diag?.settings_pending && (
-        <span className="field-hint">Some changes are waiting. They apply once your game closes.</span>
-      )}
-      <ul className="health-list">
-        {checks.map((c) => (
+  const renderCheck = (c: Check) => (
           <li key={c.label} className={`health-row ${c.ok ? "ok" : "warn"}`}>
             {c.ok ? (
               <CheckCircle size={16} weight="fill" aria-label="OK" />
@@ -626,8 +626,32 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
               </button>
             )}
           </li>
-        ))}
-      </ul>
+  );
+  return (
+    <section id="settings-health" className="set-group health-group">
+      <div className="set-head">
+        <div className="set-head-icon"><Heartbeat size={16} weight="fill" /></div>
+        <div className="set-head-text">
+          <h2 className="set-head-title">Health</h2>
+          <span className="set-head-desc">
+            {!diag
+              ? "Checking…"
+              : applying
+                ? "Applying your change…"
+                : issues === 0
+                ? "Everything is set up for clipping"
+                : `${issues} ${issues > 1 ? "things" : "thing"} to look at`}
+          </span>
+        </div>
+      </div>
+      {diag?.settings_pending && (
+        <span className="field-hint">Some changes are waiting. They apply once your game closes.</span>
+      )}
+      {issues > 0 && <ul className="health-list">{checks.filter((c) => !c.ok).map(renderCheck)}</ul>}
+      {checks.some((c) => c.ok) && <details className="health-details" open={diagnosticsOpen} onToggle={(e) => setDiagnosticsOpen(e.currentTarget.open)}>
+        <summary>{diagnosticsOpen ? "Hide healthy diagnostics" : `Show ${checks.filter((c) => c.ok).length} healthy checks`}</summary>
+        <ul className="health-list">{checks.filter((c) => c.ok).map(renderCheck)}</ul>
+      </details>}
       {fixError && <span className="field-hint" role="alert">{fixError}</span>}
       <div className="set-row">
         <button className="btn-ghost" onClick={onTestSetup}>Test my setup</button>
@@ -644,6 +668,8 @@ export function SettingsPage(props: {
   settings: Settings;
   setSettings: (s: Settings) => void;
   saveSettings: (s: Settings) => Promise<void>;
+  savingSettings: boolean;
+  saveFeedback: ReactNode;
   applyClipsDir: (dir: string) => Promise<void>;
   resetSettings: () => Promise<void>;
   resetting: boolean;
@@ -675,6 +701,13 @@ export function SettingsPage(props: {
     addGameSource, testGameSource, removeGame, openAppPicker, addGameFromFolder,
     sup, onTutorial, onPickVc,
   } = props;
+  const [watchedDraft, setWatchedDraft] = useState(settings.game_exes.join("\n"));
+  const [vcDraft, setVcDraft, finishVcDraft] = useSettingDraft(settings.vc_exe);
+  const [clipsDraft, setClipsDraft, finishClipsDraft] = useSettingDraft(settings.clips_dir);
+  const editingWatched = useRef(false);
+  useEffect(() => {
+    if (!editingWatched.current) setWatchedDraft(settings.game_exes.join("\n"));
+  }, [settings.game_exes]);
   const [blockedExe, setBlockedExe] = useState("");
   const [elevating, setElevating] = useState(false);
   const [elevateError, setElevateError] = useState<string | null>(null);
@@ -739,24 +772,52 @@ export function SettingsPage(props: {
           <BookOpen size={15} />
           Tutorial
         </button>
-        <button className="btn-ghost reset-btn" disabled={resetting} onClick={resetSettings}>
+        <button className="btn-ghost reset-btn" disabled={resetting || props.savingSettings} onClick={resetSettings}>
           <ArrowCounterClockwise size={14} />
           {resetting ? "resetting…" : "Reset to defaults"}
         </button>
       </header>
+      {props.saveFeedback}
+      <nav className="settings-index" aria-label="Settings sections">
+        {[
+          { label: "Capture", links: [["capture", "Recording quality"], ["automation", "Automation"], ["hotkeys", "Hotkeys"]] },
+          { label: "Audio & games", links: [["audio", "Audio"], ["games", "Games"], ["advanced", "Advanced"]] },
+          { label: "Storage & sharing", links: [["storage", "Storage"], ["sharing", "Sharing"]] },
+          { label: "Health", links: [["health", "Diagnostics"]] },
+        ].map((group) => <details className="settings-nav-group" key={group.label}>
+          <summary>{group.label}</summary>
+          <div>{group.links.map(([id, label]) => <a key={id} href={`#settings-${id}`} onClick={(e) => {
+            e.preventDefault();
+            const target = document.getElementById(`settings-${id}`);
+            const disclosure = target?.closest("details");
+            if (disclosure) disclosure.open = true;
+            const menu = e.currentTarget.closest("details");
+            if (menu) menu.open = false;
+            target?.scrollIntoView({ block: "start" });
+            const heading = target?.querySelector<HTMLElement>("h2");
+            if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+          }}>{label}</a>)}</div>
+        </details>)}
+      </nav>
       <div className="settings-body">
-        <HealthPanel onTestSetup={props.onTestSetup} />
-        <section className="set-group">
+        <section id="settings-capture" className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><FilmSlate size={16} weight="fill" /></div>
             <div className="set-head-text">
-              <span className="set-head-title">Capture</span>
+              <h2 className="set-head-title">Capture</h2>
               <span className="set-head-desc">Buffer length and recording quality</span>
             </div>
           </div>
           <label className="set-col">
             <span className="field-label">Clip length</span>
-            <div className="seg" role="radiogroup" aria-label="Clip length">
+            <div className="seg" role="radiogroup" aria-label="Clip length" onKeyDown={(e) => {
+              if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+              e.preventDefault(); e.stopPropagation();
+              const radios = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+              const index = radios.indexOf(document.activeElement as HTMLButtonElement);
+              const next = e.key === "Home" ? 0 : e.key === "End" ? radios.length - 1 : (index + (["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 1) + radios.length) % radios.length;
+              radios[next]?.focus(); radios[next]?.click();
+            }}>
               {[...new Set([30, 60, 120, 180, 300, settings.replay_seconds])]
                 .sort((a, b) => a - b)
                 .map((s) => (
@@ -764,6 +825,7 @@ export function SettingsPage(props: {
                     key={s}
                     role="radio"
                     aria-checked={settings.replay_seconds === s}
+                    tabIndex={settings.replay_seconds === s ? 0 : -1}
                     className={settings.replay_seconds === s ? "on" : ""}
                     onClick={() => saveSettings({ ...settings, replay_seconds: s })}
                   >
@@ -823,31 +885,18 @@ export function SettingsPage(props: {
                   ))}
               </select>
             </label>
-            <label className="set-col">
-              <span className="field-label">Encoder</span>
-              <select
-                className="audio-select wide"
-                value={settings.encoder_pref}
-                onChange={(e) => saveSettings({ ...settings, encoder_pref: e.target.value })}
-              >
-                <option value="auto">Auto (best)</option>
-                <option value="av1">AV1</option>
-                <option value="hevc">HEVC</option>
-                <option value="h264">H264</option>
-              </select>
-            </label>
+
           </div>
           <span className="field-hint">
-            Changes apply automatically, as soon as no game is running. Auto picks the
-            bitrate from your resolution, frame rate and encoder.
+            Applies after your game closes. Auto chooses the bitrate for your recording quality.
           </span>
         </section>
 
-        <section className="set-group">
+        <section id="settings-automation" className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><Lightning size={16} weight="fill" /></div>
             <div className="set-head-text">
-              <span className="set-head-title">Automation</span>
+              <h2 className="set-head-title">Automation</h2>
               <span className="set-head-desc">Hands-free recording and clipping</span>
             </div>
           </div>
@@ -870,9 +919,7 @@ export function SettingsPage(props: {
             <div className="toggle-text">
               <span className="toggle-title">Record whole sessions</span>
               <span className="toggle-desc">
-                Also saves every game session as one video, with your kills bookmarked on its timeline,
-                so you can cut highlights afterwards. No extra encoding, but about 9 GB per hour at
-                20 Mbps; sessions count toward the storage cap. Pauses under 3 GB free.
+                Save full sessions with kill bookmarks; about 9 GB/hour at 20 Mbps. Pauses below 3 GB free.
               </span>
             </div>
             <button
@@ -904,8 +951,7 @@ export function SettingsPage(props: {
             <div className="toggle-text">
               <span className="toggle-title">Run with admin rights</span>
               <span className="toggle-desc">
-                Gives recording GPU priority (fewer dropped frames when a game maxes your GPU) and
-                captures games whose anti-cheat blocks it. Windows asks once to allow it.
+                Improve capture priority and compatibility. Windows asks for permission.
               </span>
             </div>
             <button
@@ -943,10 +989,7 @@ export function SettingsPage(props: {
             <div className="toggle-text">
               <span className="toggle-title">Auto-clip kills</span>
               <span className="toggle-desc">
-                Built in: CS2, Dota 2, League, Valorant (spots the kill banner on screen),
-                Rocket League (goals, saves, demos), Arena Breakout and Valheim (boss kills); more
-                with Overwolf below. Kills close together
-                land in one clip. Games read their setup at launch, so restart one already running.
+                Save supported game highlights automatically. Restart a running game after enabling.
               </span>
             </div>
             <button
@@ -1003,11 +1046,11 @@ export function SettingsPage(props: {
           </div>
         </section>
 
-        <section className="set-group">
+        <section id="settings-hotkeys" className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><Keyboard size={16} weight="fill" /></div>
             <div className="set-head-text">
-              <span className="set-head-title">Hotkeys</span>
+              <h2 className="set-head-title">Hotkeys</h2>
               <span className="set-head-desc">Global — they work while a game has focus</span>
             </div>
           </div>
@@ -1066,27 +1109,26 @@ export function SettingsPage(props: {
           </div>
         </section>
 
-        <section className="set-group">
+        <section id="settings-audio" className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><Waveform size={16} weight="fill" /></div>
             <div className="set-head-text">
-              <span className="set-head-title">Split audio</span>
+              <h2 className="set-head-title">Split audio</h2>
               <span className="set-head-desc">Five tracks per clip — game, voice, desktop, mic, mix</span>
             </div>
           </div>
           <span className="field-hint">
-            Every clip records 5 audio tracks (full mix, game, voice chat, desktop, mic), so
-            an export can keep any of them. Game audio follows the running game; set your
-            voice-chat app below.
+            Choose which tracks to keep when exporting. Set your voice-chat app below.
           </span>
           <label className="set-col">
             <span className="field-label">Voice-chat app (.exe)</span>
             <div className="set-row">
               <input
                 className="mono"
-                value={settings.vc_exe}
-                onChange={(e) => setSettings({ ...settings, vc_exe: e.target.value })}
-                onBlur={() => saveSettings(settings)}
+                aria-label="Voice-chat app (.exe)" name="voice-chat-executable" autoComplete="off" spellCheck={false}
+                value={vcDraft}
+                onChange={(e) => setVcDraft(e.target.value)}
+                onBlur={() => { finishVcDraft(); void saveSettings({ ...settings, vc_exe: vcDraft }); }}
                 placeholder="discord.exe"
               />
               <button className="btn-ghost" onClick={onPickVc}>
@@ -1111,25 +1153,29 @@ export function SettingsPage(props: {
           </div>
         </section>
 
-        <section className="set-group">
+        <section id="settings-games" className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><GameController size={16} weight="fill" /></div>
             <div className="set-head-text">
-              <span className="set-head-title">Games watched</span>
+              <h2 className="set-head-title">Games watched</h2>
               <span className="set-head-desc">What arms the buffer, and how each game is captured</span>
             </div>
           </div>
           <textarea
             className="mono"
+            aria-label="Watched game executables, one per line"
             rows={5}
-            value={settings.game_exes.join("\n")}
-            onChange={(e) =>
-              setSettings({
-                ...settings,
-                game_exes: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean),
-              })
-            }
-            onBlur={() => invoke("save_settings", { settings })}
+            value={watchedDraft}
+            spellCheck={false}
+            autoComplete="off"
+            name="watched-games"
+            onFocus={() => { editingWatched.current = true; }}
+            onChange={(e) => setWatchedDraft(e.target.value)}
+            onBlur={() => {
+              editingWatched.current = false;
+              const game_exes = watchedDraft.split("\n").map((exe) => exe.trim()).filter(Boolean);
+              if (game_exes.join("\n") !== settings.game_exes.join("\n")) void saveSettings({ ...settings, game_exes });
+            }}
           />
           <div className="set-row">
             <button className="btn-ghost apply-btn" onClick={openAppPicker}>
@@ -1141,10 +1187,7 @@ export function SettingsPage(props: {
             </button>
           </div>
           <span className="field-hint">
-            Most fullscreen games are captured automatically. If a game's clips come out
-            black, add a dedicated source for it (matched by its .exe, so the game doesn't
-            need to be open). If Test says the source is live but clips are still black,
-            switch the capture type and add it again.
+            Most games work automatically. For blank recordings, add the game's .exe and test capture.
           </span>
           {settings.game_exes.map((exe) => {
             const source = gameSources.find((g) => g.exe === exe);
@@ -1169,6 +1212,7 @@ export function SettingsPage(props: {
                 <select
                   className="audio-select"
                   value={kind}
+                  aria-label={`Capture method for ${exe}`}
                   disabled={sourceBusy !== null}
                   onChange={(e) => setKindChoice((k) => ({ ...k, [exe]: e.target.value }))}
                 >
@@ -1219,11 +1263,84 @@ export function SettingsPage(props: {
             onClose={() => setBlockPickerApps(null)}
           />
         )}
-        <section className="set-group" aria-labelledby="blacklist-title">
+
+
+        <section id="settings-storage" className="set-group">
+          <div className="set-head">
+            <div className="set-head-icon"><HardDrives size={16} weight="fill" /></div>
+            <div className="set-head-text">
+              <h2 className="set-head-title">Storage</h2>
+              <span className="set-head-desc">Where clips live and how much space they may take</span>
+            </div>
+          </div>
+          <div className="set-row">
+            <input
+              className="mono"
+              aria-label="Clips folder" name="clips-folder" autoComplete="off" spellCheck={false}
+              value={clipsDraft}
+              onChange={(e) => setClipsDraft(e.target.value)}
+              onBlur={() => { finishClipsDraft(); void applyClipsDir(clipsDraft); }}
+            />
+            <button
+              className="btn-ghost"
+              onClick={async () => {
+                const picked = await openDialog({
+                  directory: true,
+                  defaultPath: settings.clips_dir,
+                });
+                if (typeof picked === "string") {
+                  setClipsDraft(picked);
+                  finishClipsDraft();
+                  await applyClipsDir(picked);
+                }
+              }}
+            >
+              Browse
+            </button>
+          </div>
+          <label className="set-col">
+            <span className="field-label">Max storage (GB)</span>
+            <input
+              className="mono"
+              type="number"
+              min={0}
+              value={settings.max_storage_gb}
+              onChange={(e) => saveSettings({ ...settings, max_storage_gb: Number(e.target.value) })}
+            />
+            <span className="field-hint">
+              Past this size, the oldest clips that aren't favorites go to the Recycle Bin.
+              0 turns it off.
+            </span>
+          </label>
+          <BackupSettings settings={settings} saveSettings={saveSettings} />
+
+        </section>
+
+        <details id="settings-advanced" className="set-group advanced-group">
+          <summary>Advanced</summary>
+          <div className="advanced-content">
+            <section className="advanced-section" aria-label="Encoding">
+              <h2 className="set-head-title">Encoding</h2>
+            <label className="set-col">
+              <span className="field-label">Encoder</span>
+              <select
+                className="audio-select wide"
+                value={settings.encoder_pref}
+                onChange={(e) => saveSettings({ ...settings, encoder_pref: e.target.value })}
+              >
+                <option value="auto">Auto (best)</option>
+                <option value="av1">AV1</option>
+                <option value="hevc">HEVC</option>
+                <option value="h264">H264</option>
+              </select>
+            </label>
+              <p className="field-hint">Keyframe timing is managed automatically. See Health for its current value.</p>
+            </section>
+        <section id="settings-blacklist" className="advanced-section" aria-labelledby="blacklist-title">
           <div className="set-head">
             <div className="set-head-icon"><GameController size={16} weight="fill" /></div>
             <div className="set-head-text">
-              <span className="set-head-title" id="blacklist-title">App blacklist</span>
+              <h2 className="set-head-title" id="blacklist-title">App blacklist</h2>
               <span className="set-head-desc">Exclude apps from game detection and video capture</span>
             </div>
           </div>
@@ -1263,55 +1380,14 @@ export function SettingsPage(props: {
             </>
           )}
         </section>
+            <section id="settings-sharing" className="advanced-section" aria-labelledby="sharing-title">
+              <h2 id="sharing-title" className="set-head-title">Sharing</h2>
+              <CatboxSettings settings={settings} saveSettings={saveSettings} />
+            </section>
+          </div>
+        </details>
 
-        <section className="set-group">
-          <div className="set-head">
-            <div className="set-head-icon"><HardDrives size={16} weight="fill" /></div>
-            <div className="set-head-text">
-              <span className="set-head-title">Storage</span>
-              <span className="set-head-desc">Where clips live and how much space they may take</span>
-            </div>
-          </div>
-          <div className="set-row">
-            <input
-              className="mono"
-              value={settings.clips_dir}
-              onChange={(e) => setSettings({ ...settings, clips_dir: e.target.value })}
-              onBlur={() => applyClipsDir(settings.clips_dir)}
-            />
-            <button
-              className="btn-ghost"
-              onClick={async () => {
-                const picked = await openDialog({
-                  directory: true,
-                  defaultPath: settings.clips_dir,
-                });
-                if (typeof picked === "string") {
-                  setSettings({ ...settings, clips_dir: picked });
-                  await applyClipsDir(picked);
-                }
-              }}
-            >
-              Browse
-            </button>
-          </div>
-          <label className="set-col">
-            <span className="field-label">Max storage (GB)</span>
-            <input
-              className="mono"
-              type="number"
-              min={0}
-              value={settings.max_storage_gb}
-              onChange={(e) => saveSettings({ ...settings, max_storage_gb: Number(e.target.value) })}
-            />
-            <span className="field-hint">
-              Past this size, the oldest clips that aren't favorites go to the Recycle Bin.
-              0 turns it off.
-            </span>
-          </label>
-          <BackupSettings settings={settings} saveSettings={saveSettings} />
-          <CatboxSettings settings={settings} saveSettings={saveSettings} />
-        </section>
+        <HealthPanel onTestSetup={props.onTestSetup} />
 
       </div>
     </div>
@@ -1340,7 +1416,7 @@ export function OnboardingModal(props: {
   onFinish: () => void;
 }) {
   const {
-    step: onboardStep, setStep: setOnboardStep, setup, status, settings, setSettings,
+    step: onboardStep, setStep: setOnboardStep, setup, status, settings,
     saveSettings, installing, installTool, engineError, engineDownloading, engineProgress, firstRun, onClose, onFinish,
   } = props;
   // Setup gate: Next stays locked until the required software is in place,
@@ -1348,12 +1424,13 @@ export function OnboardingModal(props: {
   // it later from Settings → Health instead of being stuck here.
   const [ffmpegFailed, setFfmpegFailed] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [replayDraft, setReplayDraft, finishReplayDraft] = useSettingDraft(settings.replay_seconds);
   const engineReady = status.connected;
   const ffmpegReady = !!setup?.ffmpeg_installed;
   const setupFailed = (!engineReady && !!engineError && !engineDownloading) || (!ffmpegReady && ffmpegFailed);
   const setupBlocked = onboardStep === 1 && !(engineReady && ffmpegReady) && !setupFailed;
   return (
-    <Modal label="ClipForge tutorial" className="modal onboarding-modal" onClose={onClose} dismissible={false}>
+    <Modal label="ClipForge tutorial" className="modal onboarding-modal" onClose={onFinish}>
       <div className="modal-head">
         <BookOpen size={19} color="#7f9bff" weight="fill" />
         <span className="modal-title">
@@ -1479,16 +1556,17 @@ export function OnboardingModal(props: {
                 type="number"
                 min={15}
                 max={900}
-                value={settings.replay_seconds}
+                value={replayDraft}
                 onChange={(e) =>
-                  setSettings({ ...settings, replay_seconds: Number(e.target.value) })
+                  setReplayDraft(Number(e.target.value))
                 }
-                onBlur={() =>
-                  saveSettings({
+                onBlur={() => {
+                  finishReplayDraft();
+                  void saveSettings({
                     ...settings,
-                    replay_seconds: Math.min(900, Math.max(15, settings.replay_seconds || 15)),
-                  })
-                }
+                    replay_seconds: Math.min(900, Math.max(15, replayDraft || 15)),
+                  });
+                }}
               />
             </label>
             <div className="toggle-card">
@@ -1572,6 +1650,7 @@ export function OnboardingModal(props: {
           ))}
         </div>
         <div className="onboard-actions">
+          {onboardStep < 4 && <button className="btn-ghost" onClick={onFinish}>Skip tutorial</button>}
           {onboardStep > 0 && (
             <button className="btn-ghost" onClick={() => setOnboardStep((s) => s - 1)}>
               <ArrowLeft size={15} />

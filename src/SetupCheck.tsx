@@ -46,7 +46,7 @@ export function SetupCheck({ supervisor, onSample, onClose }: {
         : stage === "review"
           ? "Play the sample in the editor below. Check the picture, game sound, and microphone if you use one."
           : "Play your game for at least ten seconds, make some sound, then return here and save a sample. Its last ten seconds will open in the editor; the original replay stays in your library."}</p>
-    {error && <p role="alert">{error}</p>}
+    {error && <div className="field-error" role="alert"><p>Could not verify your recording. Keep the game running, check the capture engine and free disk space in Health, then save another test sample.</p><details><summary>Technical details</summary><p>{error}</p></details></div>}
     {stage === "ready" && <>
       {!ready && <p className="field-hint">{!isTauri ? "Open the desktop app to test real recording." : "Start a detected game and wait for BUFFER ARMED. Resume recording if it is paused."}</p>}
       <button className="setup-btn" disabled={!ready} onClick={capture}>Save test sample</button>

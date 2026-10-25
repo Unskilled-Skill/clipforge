@@ -489,6 +489,8 @@ pub fn run() {
             clips::list_clips,
             clips::trim_clip,
             clips::delete_clip,
+            clips::recycle_clip,
+            clips::restore_clip,
             clips::analyze_black,
             clips::convert_for_preview,
             clips::gen_thumbnails,
