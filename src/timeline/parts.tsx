@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { TimelineController, TimelineView } from "./controller";
-import { rulerTicks } from "./math";
+import { fmtTime, groupMarkers, rulerTicks } from "./math";
 
 function useView(ctl: TimelineController | null): TimelineView | null {
   const [view, setView] = useState<TimelineView | null>(null);
@@ -118,5 +118,45 @@ export function Filmstrip({
       className="mt-film"
       style={{ transform: `translateX(${view?.scrollLeft ?? 0}px)`, width: view?.viewport ?? "100%" }}
     />
+  );
+}
+
+/**
+ * Kill markers, grouped so ones that would overlap at this zoom share a
+ * pill with their count; they split apart as you zoom in. Clicking jumps to
+ * the group's first kill.
+ */
+export function KillMarkers({
+  ctl,
+  times,
+  icon,
+  onJump,
+}: {
+  ctl: TimelineController | null;
+  times: number[];
+  icon: React.ReactNode;
+  onJump: (t: number) => void;
+}) {
+  const view = useView(ctl);
+  if (!view || view.duration <= 0) return null;
+  return (
+    <>
+      {groupMarkers(times, view.duration, view.width).map((g) => {
+        const n = g.times.length;
+        const span = n > 1 ? `${fmtTime(g.times[0])}–${fmtTime(g.times[n - 1])}` : fmtTime(g.t);
+        return (
+          <div
+            key={g.t}
+            className={`kill-marker ${n > 1 ? "group" : ""}`}
+            data-timeline-interactive
+            style={{ transform: `translateX(${g.x}px)` }}
+            title={`${n > 1 ? `${n} kills` : "Kill"} at ${span} — click to jump`}
+            onClick={() => onJump(g.t)}
+          >
+            {n > 1 ? <span className="kill-count-num">{n}</span> : icon}
+          </div>
+        );
+      })}
+    </>
   );
 }

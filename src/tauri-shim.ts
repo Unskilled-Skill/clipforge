@@ -81,7 +81,7 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       // Every third mock clip has kill markers, for editor design work.
       return (_args as { input: string }).input.match(/mock-(\d+)/)?.[1] &&
         Number((_args as { input: string }).input.match(/mock-(\d+)/)![1]) % 3 === 0
-        ? [4.2, 11.9, 23.5]
+        ? [4.2, 11.9, 12.6, 13.4, 23.5] // a quick triple shows marker grouping
         : [];
     case "copy_clip":
       return null;

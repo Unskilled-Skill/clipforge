@@ -73,3 +73,31 @@ export function snapTime(
   }
   return best == null ? { t, latched: null } : { t: best, latched: best };
 }
+
+export interface MarkerGroup {
+  /** Earliest time in the group (where a click jumps). */
+  t: number;
+  times: number[];
+  /** Pill position (px), centred over the group. */
+  x: number;
+}
+
+/**
+ * Merge markers that would overlap on screen: walking in time order, a
+ * marker within `gapPx` of its group's first one joins it. Groups re-split
+ * as the timeline zooms in.
+ */
+export function groupMarkers(times: number[], duration: number, width: number, gapPx = 22): MarkerGroup[] {
+  const sorted = times.filter((t) => t >= 0 && t <= duration).sort((a, b) => a - b);
+  const groups: MarkerGroup[] = [];
+  for (const t of sorted) {
+    const x = toX(t, duration, width);
+    const g = groups[groups.length - 1];
+    if (g && x - toX(g.t, duration, width) < gapPx) g.times.push(t);
+    else groups.push({ t, times: [t], x });
+  }
+  for (const g of groups) {
+    g.x = (toX(g.times[0], duration, width) + toX(g.times[g.times.length - 1], duration, width)) / 2;
+  }
+  return groups;
+}

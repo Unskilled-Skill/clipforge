@@ -1642,6 +1642,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 .kill-marker {
   position: absolute;
   top: -2px;
+  left: 0;
   width: 18px;
   height: 18px;
   margin-left: -9px;
@@ -1654,9 +1655,12 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   cursor: pointer;
   z-index: 5;
   box-shadow: 0 0 0 2px #16171d, 0 0 8px rgba(240, 96, 95, 0.55);
-  transition: transform 0.1s ease;
+  transition: filter 0.1s ease, box-shadow 0.1s ease;
 }
-.kill-marker:hover { transform: scale(1.25); }
+.kill-marker:hover { filter: brightness(1.2); box-shadow: 0 0 0 2px #16171d, 0 0 12px rgba(240, 96, 95, 0.9); }
+/* Several kills too close to tell apart at this zoom: a wider pill with the count. */
+.kill-marker.group { width: 22px; margin-left: -11px; border-radius: 9px; }
+.kill-count-num { font-size: 10.5px; font-weight: 800; line-height: 1; }
 
 .kill-count {
   display: flex;

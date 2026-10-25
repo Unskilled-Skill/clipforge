@@ -43,7 +43,7 @@ import {
 } from "@phosphor-icons/react";
 import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
 import { TimelineController } from "./timeline/controller";
-import { Filmstrip, Ruler } from "./timeline/parts";
+import { Filmstrip, KillMarkers, Ruler } from "./timeline/parts";
 import type {
   CaptureTest,
   ClipInfo,
@@ -2758,26 +2758,18 @@ function App() {
                         <div ref={tl.dimLeft} className="mt-dim left" />
                         <div ref={tl.dimRight} className="mt-dim right" />
                         <div ref={tl.range} className="mt-range" />
-                        {killMarkers
-                          .filter((t) => t >= 0 && t <= duration)
-                          .map((t, i) => (
-                            <div
-                              key={i}
-                              className="kill-marker"
-                              data-timeline-interactive
-                              style={{ left: `${(t / duration) * 100}%` }}
-                              title={`Kill at ${formatDuration(t)} — click to jump`}
-                              onClick={() => {
-                                const v = videoRef.current;
-                                if (!v) return;
-                                v.pause();
-                                setPreviewing(false);
-                                v.currentTime = t;
-                              }}
-                            >
-                              <Crosshair size={11} weight="bold" />
-                            </div>
-                          ))}
+                        <KillMarkers
+                          ctl={timeline}
+                          times={killMarkers}
+                          icon={<Crosshair size={11} weight="bold" />}
+                          onJump={(t) => {
+                            const v = videoRef.current;
+                            if (!v) return;
+                            v.pause();
+                            setPreviewing(false);
+                            v.currentTime = t;
+                          }}
+                        />
                         <div ref={tl.startHandle} className="mt-handle start" title="Drag to trim · double-click resets">
                           <span className="grip" />
                         </div>
