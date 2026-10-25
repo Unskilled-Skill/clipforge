@@ -54,3 +54,7 @@ A 40-step real trim drag was profiled through Chromium Performance metrics with 
 Browser tests use the preview's fixture backend and a real local video. Real OBS capture, native WebView2 rendering, native filesystem export, network uploads, physical multitouch, GPU traces and NVDA were not exercised. Five Rust tests require additional local/live dependencies. The text test doubles typography tokens; it is not a full operating-system scaling certification. No landing-page redesign was imposed by the inapplicable Design Taste skill.
 
 Evidence scripts/screenshots are retained under `evidence/`; browser CLI/config and preview-server setup are environment-specific. Temporary test sessions and the preview server are closed after verification.
+
+## Release preparation follow-up
+
+The first GitHub CI run for v0.1.41 exposed a Windows Recycle Bin display-name difference: Explorer can hide the file extension that the `trash` library reports. Undo now retains the complete original filename in its opaque receipt, matches hidden-extension entries, and supplies the full name before collision checking and restoration. A focused source review found no important defects. Fresh full local Rust tests: 41 passed, five ignored; GitHub CI is rerun before publication.

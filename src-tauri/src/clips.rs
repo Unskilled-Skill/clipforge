@@ -825,6 +825,30 @@ pub fn delete_clip(app: AppHandle, path: String) -> Result<(), String> {
 
 /// Single deletes retain sidecars and favorites so Undo restores the whole moment.
 /// Return the exact Recycle Bin identity, including when older copies share its name.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RecycleReceipt {
+    id: String,
+    name: String,
+}
+
+fn recycled_name_matches(item: &trash::TrashItem, original: &std::path::Path) -> bool {
+    original.file_name() == Some(item.name.as_os_str())
+        || (original.file_stem() == Some(item.name.as_os_str())
+            && original.extension().is_some()
+            && original.extension() == std::path::Path::new(&item.id).extension())
+}
+
+fn restore_name(mut item: trash::TrashItem, receipt: &RecycleReceipt) -> Result<trash::TrashItem, String> {
+    let name = std::path::Path::new(&receipt.name);
+    if name.file_name() != Some(name.as_os_str()) || !recycled_name_matches(&item, name) {
+        return Err("The original clip filename does not match the Recycle Bin item".into());
+    }
+    // trash uses Explorer display names, which can hide known extensions.
+    // Both its collision check and MoveItem need the complete original name.
+    item.name = receipt.name.clone().into();
+    Ok(item)
+}
+
 #[tauri::command]
 pub fn recycle_clip(path: String) -> Result<String, String> {
     let original = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
@@ -833,17 +857,22 @@ pub fn recycle_clip(path: String) -> Result<String, String> {
     let items = trash::os_limited::list().map_err(|e| format!("Clip is in the Recycle Bin, but Undo is unavailable: {e}"))?;
     items.into_iter()
         .find(|item| std::fs::canonicalize(&item.original_parent)
-            .map(|parent| parent.join(&item.name) == original)
+            .map(|parent| Some(parent.as_path()) == original.parent() && recycled_name_matches(item, &original))
             .unwrap_or(false) && !before.iter().any(|old| old.id == item.id))
-        .map(|item| item.id.to_string_lossy().into_owned())
         .ok_or_else(|| "Clip is in the Recycle Bin. Restore it there if Undo is unavailable.".to_string())
+        .and_then(|item| serde_json::to_string(&RecycleReceipt {
+            id: item.id.to_string_lossy().into_owned(),
+            name: original.file_name().unwrap().to_string_lossy().into_owned(),
+        }).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
 pub fn restore_clip(id: String) -> Result<(), String> {
+    let receipt: RecycleReceipt = serde_json::from_str(&id).map_err(|e| e.to_string())?;
     let item = trash::os_limited::list().map_err(|e| e.to_string())?
-        .into_iter().find(|item| item.id == std::ffi::OsStr::new(&id))
+        .into_iter().find(|item| item.id == std::ffi::OsStr::new(&receipt.id))
         .ok_or_else(|| "The clip is no longer in the Recycle Bin".to_string())?;
+    let item = restore_name(item, &receipt)?;
     trash::os_limited::restore_all([item]).map_err(|e| e.to_string())
 }
 
@@ -1797,6 +1826,26 @@ fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, Str
 #[cfg(all(test, target_os = "windows"))]
 mod recycle_tests {
     use super::{recycle_clip, restore_clip};
+
+    #[test]
+    fn recycled_display_names_can_hide_extensions_without_losing_the_original_name() {
+        use std::ffi::OsString;
+        use std::path::Path;
+        let item = trash::TrashItem {
+            id: OsString::from(r"C:\$Recycle.Bin\user\$R123.mp4"),
+            name: OsString::from("moment"),
+            original_parent: Path::new(r"C:\Clips").to_path_buf(),
+            time_deleted: 0,
+        };
+        assert!(super::recycled_name_matches(&item, Path::new("moment.mp4")));
+        assert!(!super::recycled_name_matches(&item, Path::new("moment.mkv")));
+        assert!(!super::recycled_name_matches(&item, Path::new("other.mp4")));
+        let receipt = super::RecycleReceipt { id: item.id.to_string_lossy().into_owned(), name: "moment.mp4".into() };
+        let restored = super::restore_name(item, &receipt).unwrap();
+        assert_eq!(restored.original_path(), Path::new(r"C:\Clips\moment.mp4"));
+        let invalid = super::RecycleReceipt { id: receipt.id.clone(), name: r"..\other.mp4".into() };
+        assert!(super::restore_name(restored, &invalid).is_err());
+    }
 
     #[test]
     fn undo_restores_exact_clip_and_preserves_markers() {
