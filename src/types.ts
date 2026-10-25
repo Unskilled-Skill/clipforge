@@ -14,6 +14,9 @@ export interface Settings {
   window_capture_games: string[];
   mic_noise_suppression: boolean;
   run_elevated: boolean;
+  admin_rule: string;
+  admin_rule_games: Record<string, string>;
+  discord_target_mb: number;
   vc_exe: string;
   launch_at_login: boolean;
   auto_manage_buffer: boolean;

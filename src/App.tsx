@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { gameName, momentTitle, killBadge, clipKillCount, matchesClipSearch } from "./clip-presentation";
 import { moveItem } from "./clip-selection";
 import { createSettingsWriter } from "./settings-save";
@@ -40,7 +40,6 @@ import {
   SpeakerHigh,
   Star,
   Sparkle,
-  Stack,
   Trash,
   Warning,
   Waveform,
@@ -63,6 +62,7 @@ import appIcon from "./assets/logo.svg";
 import "./tokens.css";
 import "./App.css";
 import "./editor.css";
+import "./studio.css";
 
 function trimReadout(start: number, end: number) {
   return `${start.toFixed(1)}s → ${end.toFixed(1)}s · ${(end - start).toFixed(1)}s selected`;
@@ -151,7 +151,17 @@ function gameColor(game: string) {
   for (const [k, v] of Object.entries(GAME_COLORS)) {
     if (key.includes(k)) return v;
   }
-  return "#7f9bff";
+  return "#7fe6d7";
+}
+
+const GAME_INITIALS: Record<string, string> = { cs2: "CS", r6: "R6", rainbowsix: "R6", overwatch: "OW", lol: "LoL", r5apex: "AP" };
+
+// Short label for the sidebar's game tile: "OW", "CS", "V".
+function gameInitials(game: string) {
+  const known = GAME_INITIALS[game.toLowerCase()];
+  if (known) return known;
+  const words = gameName(game).split(/[\s:-]+/).filter((w) => /^[A-Za-z]/.test(w));
+  return words.length > 1 ? (words[0][0] + words[1][0]).toUpperCase() : (words[0]?.[0] ?? "?").toUpperCase();
 }
 
 // Label each audio track by what it actually contains, which depends on how
@@ -317,9 +327,6 @@ function App() {
   });
   // Card focused by keyboard navigation; -1 = none.
   const [focusIdx, setFocusIdx] = useState(-1);
-  // The grid rises in once per session; returning from the editor (Esc) or
-  // Settings shows it instantly.
-  const gridEntered = useRef(false);
   // Back-to-back preview of the selection: queue of paths + position.
   const [previewQueue, setPreviewQueue] = useState<string[] | null>(null);
   const [previewQIdx, setPreviewQIdx] = useState(0);
@@ -336,6 +343,13 @@ function App() {
   // Manual buffer pause — mirrors the supervisor flag, optimistic on click.
   const [bufferPaused, setBufferPaused] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Library details panel: kill times per clip (loaded when its row takes
+  // focus), the inline preview they seek, and the quick-export size.
+  const [killTimes, setKillTimes] = useState<Record<string, number[]>>({});
+  const inspectorVideo = useRef<HTMLVideoElement>(null);
+  const [libExportMb, setLibExportMb] = useState(10);
+  // Admin banner: also make "restart automatically" this game's rule.
+  const [adminAlways, setAdminAlways] = useState(false);
   const [diskFree, setDiskFree] = useState<number | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
   // Which job the percentage belongs to: "export", "share", "upload", …
@@ -508,6 +522,9 @@ function App() {
       const s = await invoke<Settings>("load_settings");
       settingsSubmitted.current = s;
       setSettings(s);
+      // Exports start at the user's Discord limit; each export can still change it.
+      setTargetMb(s.discord_target_mb || 10);
+      setLibExportMb(s.discord_target_mb || 10);
       setHkSave(s.hotkey_save);
       setHkShort(s.hotkey_short);
       try {
@@ -1003,6 +1020,30 @@ function App() {
     }
   }
 
+  function loadKillTimes(clip: ClipInfo) {
+    if (killTimes[clip.path]) return;
+    invoke<number[]>("load_markers", { input: clip.path })
+      .then((m) => setKillTimes((prev) => ({ ...prev, [clip.path]: m ?? [] })))
+      .catch(() => setKillTimes((prev) => ({ ...prev, [clip.path]: [] })));
+  }
+
+  // Whole clip, default audio, sized to the chosen Discord tier. Trims and
+  // per-track audio stay in the editor.
+  async function exportClipForDiscord(clip: ClipInfo, mb: number) {
+    setExporting(true);
+    setError(null);
+    try {
+      await invoke<string>("export_discord", { input: clip.path, targetMb: mb, start: 0, end: 0, audioTracks: null });
+      showToast("Exported and copied to clipboard — Ctrl+V in Discord");
+      await refreshClips();
+    } catch (e) {
+      setError(`Could not export for Discord. Check that the source clip is available and the clips drive has free space, then try again. Details: ${String(e)}`);
+    } finally {
+      setExporting(false);
+      setExportPct(null);
+    }
+  }
+
   function toggleMontage(clip: ClipInfo) {
     setMontageSel((prev) => {
       const next = new Set(prev);
@@ -1349,15 +1390,9 @@ function App() {
       } else if (!showSettings && e.key.startsWith("Arrow") && visibleClips.length > 0) {
         e.preventDefault();
         // Column count from layout: cards sharing the first card's top row.
-        const cards = document.querySelectorAll<HTMLElement>(".grid .card");
-        // Columns from the grid template: with day sessions the first row
-        // can be a short session, so counting cards on it undercounts.
-        const firstGrid = document.querySelector<HTMLElement>(".session-grid");
-        const cols = firstGrid
-          ? Math.max(1, getComputedStyle(firstGrid).gridTemplateColumns.split(" ").length)
-          : 1;
-        const delta =
-          e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : e.key === "ArrowDown" ? cols : -cols;
+        // One clip per table row, so every arrow steps a single row.
+        const cards = document.querySelectorAll<HTMLElement>(".st-table .st-row");
+        const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
         const next =
           focusIdx === -1 ? 0 : Math.max(0, Math.min(visibleClips.length - 1, focusIdx + delta));
         setFocusIdx(next);
@@ -1385,7 +1420,7 @@ function App() {
   // Any click or Esc anywhere closes the context menu.
   useEffect(() => {
     if (!ctxMenu) return;
-    const owner = [...document.querySelectorAll<HTMLElement>(".card")].find((card) => card.dataset.clipPath === ctxMenu.clip.path);
+    const owner = [...document.querySelectorAll<HTMLElement>(".st-row")].find((card) => card.dataset.clipPath === ctxMenu.clip.path);
     const previousFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : owner;
     document.querySelector<HTMLButtonElement>(".ctx-menu button")?.focus();
     const close = (restore = false) => {
@@ -1706,11 +1741,36 @@ function App() {
   }
 
   const games = [...new Set(clips.map(gameOf))].sort();
+  // Sidebar views share the game filter's slot: "all", the smart lists, or a game.
+  const inLibraryView = (c: ClipInfo, view: string) => {
+    switch (view) {
+      case "all":
+        return true;
+      case "favorites":
+        return favorites.includes(c.path);
+      case "multikills":
+        return clipKillCount(c.name, markerCounts[c.path] ?? 0) >= 2;
+      case "sessions":
+        return isSession(c.name);
+      default:
+        return gameOf(c) === view;
+    }
+  };
+  const libraryViews = [
+    { key: "all", label: "All clips", Icon: FilmStrip },
+    { key: "multikills", label: "Multikills", Icon: Crosshair },
+    { key: "favorites", label: "Starred", Icon: Star },
+    { key: "sessions", label: "Full matches", Icon: FilmSlate },
+  ].map((v) => ({ ...v, count: clips.filter((c) => inLibraryView(c, v.key)).length }));
+  const openLibraryView = (view: string) => {
+    setShowSettings(false);
+    setSelected(null);
+    setGameFilter(view);
+  };
   const visibleClips = clips
     .filter(
       (c) =>
-        (gameFilter === "all" ||
-          (gameFilter === "favorites" ? favorites.includes(c.path) : gameOf(c) === gameFilter)) &&
+        inLibraryView(c, gameFilter) &&
         matchesClipSearch(c.name, gameOf(c), markerCounts[c.path] ?? 0, search)
     )
     .sort((a, b) => {
@@ -1773,6 +1833,144 @@ function App() {
   })();
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
+  // Details panel for the library row that has focus (click, arrows).
+  const inspected = focusIdx >= 0 ? visibleClips[focusIdx] ?? null : null;
+  const inspector = (() => {
+    if (!inspected) {
+      return (
+        <aside className="st-insp st-insp-empty" aria-label="Clip details">
+          <FilmStrip size={28} />
+          <span>Select a clip to see its kills and share it.</span>
+          <span className="st-insp-hint">Double-click or Enter opens the editor.</span>
+        </aside>
+      );
+    }
+    const c = inspected;
+    const markers = markerCounts[c.path] ?? 0;
+    const title = momentTitle(c.name, markers);
+    const times = killTimes[c.path] ?? [];
+    const kills = clipKillCount(c.name, markers);
+    const length = thumbs[c.path]?.duration ?? 0;
+    const fav = favorites.includes(c.path);
+    const exportKbps = length > 0 ? discordKbps(length, libExportMb) : 0;
+    const span = times.length > 1 ? times[times.length - 1] - times[0] : 0;
+    return (
+      <aside className="st-insp" aria-label="Clip details">
+        <div className="st-insp-body">
+          <video
+            key={c.path}
+            ref={inspectorVideo}
+            className="st-insp-video"
+            src={convertFileSrc(c.path)}
+            poster={convertFileSrc(thumbs[c.path]?.thumb ?? guessThumb(c.path))}
+            preload="none"
+            controls
+            aria-label={`Preview of ${title}`}
+          />
+
+          <div className="st-insp-title">
+            <span>{title}</span>
+            <span className="st-sub">
+              {gameName(gameOf(c))} · {new Date(c.modified_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}
+            </span>
+          </div>
+
+          <dl className="st-insp-facts">
+            <div>
+              <dt>Kills</dt>
+              <dd>{kills > 0 ? (span > 0 ? `${kills} in ${span.toFixed(1)} s` : `${kills}`) : "None marked"}</dd>
+            </div>
+            <div>
+              <dt>Length</dt>
+              <dd>{length ? formatDuration(length) : "–"}</dd>
+            </div>
+            <div>
+              <dt>Size</dt>
+              <dd>{formatSize(c.size_bytes)}</dd>
+            </div>
+            <div>
+              <dt>Saved</dt>
+              <dd>{relativeTime(c.modified_ms)}</dd>
+            </div>
+          </dl>
+
+          {times.length > 0 && (
+            <div className="st-insp-kills">
+              <span className="st-insp-label">Kills in this clip</span>
+              {times.map((t, k) => (
+                <button
+                  key={t}
+                  className="st-insp-kill"
+                  title="Jump the preview to this kill"
+                  onClick={() => {
+                    const v = inspectorVideo.current;
+                    if (!v) return;
+                    v.currentTime = Math.max(0, t - 2);
+                    void v.play().catch(() => {});
+                  }}
+                >
+                  <span className="st-insp-kill-dot" aria-hidden="true" />
+                  Kill {k + 1}
+                  <span className="st-insp-kill-time">{formatDuration(t)}.{Math.floor((t % 1) * 10)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="st-insp-actions">
+            {length > 0 && (
+              <div className={`st-insp-hint-box ${exportKbps < 2000 ? "soft" : ""}`}>
+                <span>
+                  All {formatDuration(length)} at {libExportMb} MB → {(exportKbps / 1000).toFixed(1)} Mbps video.
+                  {exportKbps < 2000 ? " May look soft." : " Looks clean."}
+                </span>
+                {exportKbps < 2000 && (
+                  <span className="st-sub">
+                    Trim it shorter to keep it sharp.{" "}
+                    <button className="st-link" onClick={() => selectClip(c)}>Trim in editor</button>
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="st-split">
+              <button className="st-primary" disabled={exporting} onClick={() => void exportClipForDiscord(c, libExportMb)}>
+                <DiscordLogo size={16} weight="fill" />
+                {exporting ? "Exporting…" : "Export for Discord"}
+              </button>
+              <select
+                className="st-primary-select"
+                aria-label="Discord upload limit"
+                value={libExportMb}
+                onChange={(e) => setLibExportMb(Number(e.target.value))}
+              >
+                <option value={10}>10 MB</option>
+                <option value={50}>50 MB</option>
+                <option value={500}>500 MB</option>
+              </select>
+            </div>
+            <div className="st-insp-grid">
+              <button className="st-ghost" onClick={() => selectClip(c)}>
+                <Scissors size={14} /> Edit
+              </button>
+              <button className="st-ghost" onClick={() => void copyClip(c)}>
+                <Copy size={14} /> Copy file
+              </button>
+              <button className={`st-ghost ${fav ? "on" : ""}`} aria-pressed={fav} onClick={() => toggleFavorite(c)}>
+                <Star size={14} weight={fav ? "fill" : "regular"} /> {fav ? "Starred" : "Star"}
+              </button>
+              <button className="st-ghost" onClick={() => invoke("show_in_folder", { path: c.path }).catch(() => {})}>
+                <FolderOpen size={14} /> Show in folder
+              </button>
+            </div>
+            <button className="st-ghost st-insp-delete" disabled={deleting} onClick={() => void deleteClip(c)}>
+              <Trash size={14} /> Move to Recycle Bin
+            </button>
+          </div>
+        </div>
+      </aside>
+    );
+  })();
+
 
   return (
     <div className={`app-frame ${status.replay_buffer_active ? "live" : ""}`}>
@@ -1807,89 +2005,104 @@ function App() {
         </div>
       </div>
       <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">
-            <img src={appIcon} alt="" draggable={false} />
-          </div>
-          <div className="brand-text">
-            <span className="brand-name">ClipForge</span>
-            <span className="brand-ver">{appVersion === "dev" ? "Development" : appVersion ? `v${appVersion}` : ""}</span>
-          </div>
+      <aside className="st-side" aria-label="Sidebar">
+        <div className="st-brand">
+          <img src={appIcon} alt="" draggable={false} />
+          <span className="st-brand-name">ClipForge</span>
+          <span className="st-brand-ver">{appVersion === "dev" ? "dev" : appVersion ? `v${appVersion}` : ""}</span>
         </div>
 
-        <nav className="nav">
-          <button
-            className={`nav-item ${!showSettings ? "active" : ""}`}
-            onClick={() => {
-              setShowSettings(false);
-              setSelected(null);
-            }}
-          >
-            <Stack size={17} weight={!showSettings ? "fill" : "regular"} />
-            Library
-          </button>
-          <button
-            className={`nav-item ${showSettings ? "active" : ""}`}
-            onClick={() => {
-              setShowSettings(true);
-              setSelected(null);
-            }}
-          >
-            <GearSix size={17} weight={showSettings ? "fill" : "regular"} />
-            Settings
-          </button>
-          {whatsNew && <button className="nav-item" onClick={() => setShowWhatsNew(true)}><Sparkle size={17} />What’s new <span className="update-dot" /></button>}
+        <nav className="st-nav" aria-label="Clips">
+          {libraryViews.map(({ key, label, Icon, count }) => {
+            const active = !showSettings && gameFilter === key;
+            return (
+              <button
+                key={key}
+                className={`st-navlink ${active ? "active" : ""}`}
+                aria-current={active ? "page" : undefined}
+                onClick={() => openLibraryView(key)}
+              >
+                <Icon size={15} weight={active ? "fill" : "regular"} />
+                <span className="st-label">{label}</span>
+                <span className="st-count">{count}</span>
+              </button>
+            );
+          })}
         </nav>
 
-        <div className="sidebar-spacer" />
+        {games.length > 0 && (
+          <>
+            <div className="st-section">Games</div>
+            <nav className="st-nav" aria-label="Games">
+              {games.map((g) => {
+                const active = !showSettings && gameFilter === g;
+                return (
+                  <button
+                    key={g}
+                    className={`st-navlink ${active ? "active" : ""}`}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => openLibraryView(g)}
+                  >
+                    <span className="st-tile" aria-hidden="true" style={{ background: `${gameColor(g)}29`, color: gameColor(g) }}>
+                      {gameInitials(g)}
+                    </span>
+                    <span className="st-label">{gameName(g)}</span>
+                    <span className="st-count">{clips.filter((c) => gameOf(c) === g).length}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          </>
+        )}
 
-        <div className={`status-card ${status.replay_buffer_active ? "armed" : ""}`}>
-          <div className="obs-row">
-            <span className={`obs-dot ${status.connected ? "on" : ""}`} />
-            <span className="obs-name">{sup?.engine_downloading ? "Setting up capture…" : "Capture engine"}</span>
-            <span className="obs-ver">{status.obs_version ?? ""}</span>
+        <div className="st-spacer" />
+
+        <div className={`st-capture ${sup?.game_elevated ? "warn" : ""}`} role="status">
+          <div className="st-capture-head">
+            <span>Capture</span>
+            <button
+              className={`st-pill ${sup?.game_elevated ? "warn" : bufferPaused || !status.replay_buffer_active ? "idle" : ""}`}
+              title={bufferPaused ? "Recording is paused. Click to resume" : "Click to pause recording. Stays off, even in-game, until you resume"}
+              onClick={() => {
+                const next = !bufferPaused;
+                setBufferPaused(next);
+                invoke("set_buffer_paused", { paused: next }).catch(() => {});
+                showToast(next ? "Recording paused until you resume it" : "Recording resumed");
+              }}
+            >
+              {sup?.game_elevated
+                ? "Can’t capture"
+                : sup?.engine_downloading
+                  ? "Setting up"
+                  : bufferPaused
+                    ? "Paused"
+                    : status.replay_buffer_active
+                      ? "Live"
+                      : "Idle"}
+            </button>
           </div>
+          <div className="st-buffer">
+            <div className="st-buffer-row">
+              <span>Replay buffer</span>
+              <span>{status.replay_buffer_active && !bufferPaused ? `${formatDuration(settings.replay_seconds)} ready` : "Off"}</span>
+            </div>
+            <div className="st-meter" aria-hidden="true">
+              <div style={{ transform: `scaleX(${status.replay_buffer_active && !bufferPaused ? 1 : 0})` }} />
+            </div>
+          </div>
+          <dl className="st-kv">
+            <dt>Game</dt>
+            <dd>{sup?.game ?? (status.replay_buffer_active && !bufferPaused ? "Closed, stopping soon" : "None running")}</dd>
+            {recLine && (
+              <>
+                <dt>Output</dt>
+                <dd title={recLine}>{recLine}</dd>
+              </>
+            )}
+          </dl>
+          <div className="st-divider" />
           <button
-            className={`buffer-pill ${bufferPaused ? "paused" : status.replay_buffer_active ? "armed" : ""}`}
-            title={
-              bufferPaused
-                ? "Recording is paused — click to resume"
-                : "Click to pause recording — stays off, even in-game, until you resume"
-            }
-            onClick={() => {
-              const next = !bufferPaused;
-              setBufferPaused(next);
-              invoke("set_buffer_paused", { paused: next }).catch(() => {});
-              showToast(next ? "Recording paused until you resume it" : "Recording resumed");
-            }}
-          >
-            <span className="buffer-dot" />
-            {bufferPaused ? "PAUSED" : status.replay_buffer_active ? "REC" : "IDLE"}
-          </button>
-          {status.replay_buffer_active && !bufferPaused && (
-            <div className="rec-summary">
-              <span className="rec-ready">Last {formatDuration(settings.replay_seconds)} ready</span>
-              {recLine && <span className="rec-line">{recLine}</span>}
-            </div>
-          )}
-          {sup?.game && (
-            <div className="game-row">
-              <GameController size={15} color="#ff8c42" weight="fill" />
-              <span className="game-name">{sup.game}</span>
-              <span className="game-running">running</span>
-            </div>
-          )}
-          {!sup?.game && status.replay_buffer_active && !bufferPaused && (
-            <div className="game-row">
-              <GameController size={15} color="#767a85" weight="fill" />
-              <span className="game-name">Game closed</span>
-              <span className="game-running">stopping shortly</span>
-            </div>
-          )}
-          <div className="status-divider" />
-          <button
-            className="hotkey-rows"
+            className="st-hotkeys"
             title="Change hotkeys"
             aria-label={`Hotkeys: save clip ${settings.hotkey_save}, short clip ${settings.hotkey_short}. Change hotkeys`}
             onClick={() => {
@@ -1903,20 +2116,41 @@ function App() {
               }, 120);
             }}
           >
-            <div className="hk-row">
+            <div>
               <span>Save clip</span>
-              <kbd>{settings.hotkey_save}</kbd>
+              <kbd className="st-kbd">{settings.hotkey_save}</kbd>
             </div>
-            <div className="hk-row">
+            <div>
               <span>Short clip</span>
-              <kbd>{settings.hotkey_short}</kbd>
+              <kbd className="st-kbd">{settings.hotkey_short}</kbd>
             </div>
           </button>
         </div>
+
+        <nav className="st-nav" aria-label="App" style={{ marginTop: 6 }}>
+          {whatsNew && (
+            <button className="st-navlink" onClick={() => setShowWhatsNew(true)}>
+              <Sparkle size={15} />
+              <span className="st-label">What’s new</span>
+              <span className="update-dot" />
+            </button>
+          )}
+          <button
+            className={`st-navlink ${showSettings ? "active" : ""}`}
+            aria-current={showSettings ? "page" : undefined}
+            onClick={() => {
+              setShowSettings(true);
+              setSelected(null);
+            }}
+          >
+            <GearSix size={15} weight={showSettings ? "fill" : "regular"} />
+            <span className="st-label">Settings</span>
+          </button>
+        </nav>
       </aside>
 
       <a className="skip-main" href="#clipforge-content" onClick={(e) => { e.preventDefault(); document.getElementById("clipforge-content")?.focus(); }}>Skip to main content</a>
-      <main className="main" id="clipforge-content" tabIndex={-1}>
+      <main className={`main ${!showSettings && !selected ? "st-lib-page" : ""}`} id="clipforge-content" tabIndex={-1}>
         {!showSettings && settingsSave.state === "error" && <div className="error-bar" role="alert"><span>Settings were not saved. Your edits are preserved.</span><button className="btn-ghost" onClick={() => { setSelected(null); setShowSettings(true); }}>Review settings</button></div>}
         {showSetupCheck && <SetupCheck
           supervisor={sup}
@@ -2006,25 +2240,39 @@ function App() {
           </div>
         )}
 
-        {sup?.game_elevated && (
-          <div className="setup-bar">
-            <Warning size={15} weight="fill" />
-            <span>
-              {sup.game} runs as admin, so ClipForge can't record it or hear your save hotkey.
-            </span>
-            <button
-              className="setup-btn"
-              onClick={async () => {
-                try {
-                  await invoke("set_run_elevated", { enabled: true });
-                  await invoke("restart_elevated");
-                } catch (error) {
-                  setToast(String(error));
-                }
-              }}
-            >
-              Run ClipForge as admin
-            </button>
+        {sup?.game_elevated && sup.game && (
+          <div className="st-admin-banner" role="alert">
+            <Warning size={18} weight="fill" />
+            <div className="st-admin-text">
+              <strong>Can’t capture {gameName(sup.game.replace(/\.exe$/i, ""))}</strong>
+              <span>
+                It runs as administrator, so ClipForge can’t see it: clips come out black and {settings.hotkey_save} can’t reach the game.
+                Restart as admin to fix it. Windows will ask for permission.
+              </span>
+            </div>
+            <div className="st-admin-actions">
+              <button
+                className="st-primary st-solo"
+                onClick={async () => {
+                  try {
+                    await invoke("ensure_admin_task");
+                    if (adminAlways && sup.game) {
+                      const exe = sup.game.toLowerCase();
+                      await saveSettings({ ...settings, admin_rule_games: { ...settings.admin_rule_games, [exe]: "auto" } });
+                    }
+                    await invoke("restart_elevated");
+                  } catch (error) {
+                    setToast(String(error));
+                  }
+                }}
+              >
+                Restart as admin
+              </button>
+              <label className="st-admin-check">
+                <input type="checkbox" checked={adminAlways} onChange={(e) => setAdminAlways(e.target.checked)} />
+                Next time, restart automatically for this game
+              </label>
+            </div>
           </div>
         )}
         {sup?.render_lag && (
@@ -2047,31 +2295,30 @@ function App() {
         )}
         {showSettings ? null : !selected ? (
           <>
-            <header className="lib-header">
-              <div className="lib-title">
-                <h1>Library</h1>
-                <span className="lib-count">
-                  {clips.length} clips · {totalSize}
-                  {backedUp > 0 && ` · ${backedUp} backed up`}
-                </span>
-              </div>
-              <div className="lib-actions">
-                <div className="search-box">
-                  <MagnifyingGlass size={15} color="#5f636e" />
+            <div className="st-toolbar">
+              <h1>{libraryViews.find((v) => v.key === gameFilter)?.label ?? gameName(gameFilter)}</h1>
+              <span className="st-total">
+                {visibleClips.length} · {formatSize(visibleClips.reduce((a, c) => a + c.size_bytes, 0))}
+                {backedUp > 0 && ` · ${backedUp} backed up`}
+              </span>
+              <div className="st-toolbar-actions">
+                <label className="st-search">
+                  <MagnifyingGlass size={14} />
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     onKeyDown={(e) => e.key === "Escape" && setSearch("")}
-                    placeholder="Search clips…"
+                    placeholder="Search clips"
+                    aria-label="Search clips"
                   />
                   {search && (
-                    <button className="search-clear" title="Clear (Esc)" aria-label="Clear search" onClick={() => setSearch("")}>
-                      <X size={13} />
+                    <button className="st-icon-btn" title="Clear (Esc)" aria-label="Clear search" onClick={() => setSearch("")}>
+                      <X size={12} />
                     </button>
                   )}
-                </div>
+                </label>
                 <select
-                  className="audio-select"
+                  className="st-select"
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
                   title="Sort clips" aria-label="Sort clips"
@@ -2084,7 +2331,7 @@ function App() {
                   <option value="name">Name</option>
                 </select>
                 <button
-                  className="btn-ghost"
+                  className="st-ghost"
                   onClick={async () => {
                     setRefreshing(true);
                     await refreshClips();
@@ -2094,60 +2341,25 @@ function App() {
                   title="Reload clips from disk"
                   aria-label="Refresh"
                 >
-                  <ArrowsClockwise size={15} />
-                  <span className="btn-label">{refreshing ? "refreshing…" : "Refresh"}</span>
+                  <ArrowsClockwise size={14} />
+                  {refreshing ? "Refreshing…" : "Refresh"}
                 </button>
                 <button
-                  className="btn-ghost"
+                  className="st-ghost"
                   onClick={scanBlack}
                   disabled={scanning || clips.length === 0}
                   title="Find clips that recorded only a black screen"
-                  aria-label="Find blank recordings"
                 >
-                  <MagnifyingGlass size={15} />
-                  <span className="btn-label">{scanning ? "Checking…" : "Find blank recordings"}</span>
+                  <MagnifyingGlass size={14} />
+                  {scanning ? "Checking…" : "Find blank recordings"}
                 </button>
                 {blackCount > 0 && (
-                  <button className="btn-danger" onClick={deleteAllBlack}>
-                    <Trash size={15} />
+                  <button className="st-ghost danger" onClick={deleteAllBlack}>
+                    <Trash size={14} />
                     Delete {blackCount} black
                   </button>
                 )}
               </div>
-            </header>
-
-            <div className="filter-row">
-              <button
-                className={`chip ${gameFilter === "all" ? "active" : ""}`}
-                onClick={() => setGameFilter("all")}
-              >
-                <span className="chip-dot" style={{ background: "#7f9bff" }} />
-                All games
-              </button>
-              <button
-                className={`chip ${gameFilter === "favorites" ? "active" : ""}`}
-                onClick={() => setGameFilter("favorites")}
-              >
-                <Star size={12} weight="fill" color="#f5c518" />
-                Favorites
-              </button>
-              {games.map((g) => (
-                <button
-                  key={g}
-                  className={`chip ${gameFilter === g ? "active" : ""}`}
-                  // Active game chip wears its game's color, not the app accent.
-                  style={
-                    gameFilter === g
-                      ? { borderColor: gameColor(g), background: `${gameColor(g)}1f` }
-                      : undefined
-                  }
-                  onClick={() => setGameFilter(g)}
-                >
-                  <span className="chip-dot" style={{ background: gameColor(g) }} />
-                  {gameName(g)}
-                  <span className="chip-count">{clips.filter((c) => gameOf(c) === g).length}</span>
-                </button>
-              ))}
             </div>
 
             {visibleClips.length === 0 ? (
@@ -2157,7 +2369,7 @@ function App() {
                   <MagnifyingGlass size={44} color="#33363f" />
                   <span className="empty-title">No clips match</span>
                   <span className="empty-hint">
-                    {search ? `Nothing named or tagged “${search}”` : "Nothing in this filter"}
+                    {search ? `Nothing named or tagged “${search}”` : "Nothing in this view"}
                   </span>
                   <button
                     className="btn-ghost"
@@ -2179,210 +2391,244 @@ function App() {
                 </div>
               )
             ) : (
-              <div
-                className={gridEntered.current ? "grid" : "grid enter"}
-                onAnimationEnd={(e) => {
-                  if (e.target === e.currentTarget) gridEntered.current = true;
-                }}
-              >
-                {clipGroups.map((g) => (
-                  <section className="session" key={g.key} aria-label={g.label || "Clips"}>
-                    {g.label && (
-                      <div className="session-head">
-                        <h2 className="session-title">{g.label}</h2>
-                        <span className="session-meta">{g.meta}</span>
-                        <span className="session-rule" />
-                        {g.items.some(({ c }) => !favorites.includes(c.path)) && (
-                          <details className="session-actions"><summary aria-label={`Cleanup options for ${g.label}`}>Cleanup</summary><button className="session-clear" onClick={() => clearUnstarred(g.label, g.items.map(({ c }) => c))}>
-                            Keep starred, clear the rest
-                          </button></details>
-                        )}
-                      </div>
-                    )}
-                    <div className="session-grid">
-                {g.items.map(({ c, i }) => (
-                  <div
-                    key={c.path}
-                    data-clip-path={c.path}
-                    className={`card ${i === focusIdx ? "kb-focus" : ""}`}
-                    style={{ "--game": gameColor(gameOf(c)) } as React.CSSProperties}
-                    // Roving tabindex: Tab lands on one card, arrows walk the
-                    // grid (library shortcuts below), Enter opens it.
-                    tabIndex={i === Math.max(0, focusIdx) ? 0 : -1}
-                    role="group"
-                    aria-label={`${momentTitle(c.name, markerCounts[c.path] ?? 0)}, ${new Date(c.modified_ms).toLocaleString()}. Enter to edit; Shift+F10 for actions.`}
-                    onKeyDown={(e) => {
-                      if (e.target !== e.currentTarget) return;
-                      if (e.key === "F10" && e.shiftKey) {
-                        e.preventDefault(); e.stopPropagation();
-                        const r = e.currentTarget.getBoundingClientRect();
-                        setCtxMenu({ x: Math.min(r.left, window.innerWidth - 200), y: Math.min(r.top, window.innerHeight - 300), clip: c });
-                      }
-                    }}
-                    onFocus={(e) => e.target === e.currentTarget && setFocusIdx(i)}
-                    // Shift-click anywhere on the card range-selects instead of
-                    // opening; mousedown guard stops the browser text-select.
-                    onMouseDown={(e) => e.shiftKey && e.preventDefault()}
-                    onClick={(e) => (e.shiftKey ? handleSelect(c, true) : selectClip(c))}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      // Clamp so the menu never renders off-screen.
-                      setCtxMenu({
-                        x: Math.min(e.clientX, window.innerWidth - 200),
-                        y: Math.min(e.clientY, window.innerHeight - 300),
-                        clip: c,
-                      });
-                    }}
-                  >
-                    <div
-                      className="card-thumb"
-                      // Hover a beat → muted looping preview replaces the
-                      // still. The delay keeps fast mouse passes from
-                      // spinning up video decodes.
-                      onMouseEnter={() => {
-                        if (reduceMotion) return;
-                        if (hoverTimer.current) clearTimeout(hoverTimer.current);
-                        hoverTimer.current = setTimeout(() => setHoverPath(c.path), 250);
-                      }}
-                      onMouseLeave={() => {
-                        if (hoverTimer.current) clearTimeout(hoverTimer.current);
-                        setHoverPath((p) => (p === c.path ? null : p));
-                      }}
-                    >
-                      <div className="thumb-placeholder" />
-                      <img
-                        // Remount when the backend confirms the thumb, so a
-                        // guess that 404'd (fresh clip) retries once the
-                        // file actually exists.
-                        key={`${c.path}#${thumbs[c.path] ? "t" : "g"}`}
-                        src={convertFileSrc(thumbs[c.path]?.thumb ?? guessThumb(c.path))}
-                        alt=""
-                        loading="lazy"
-                        onError={(e) => (e.currentTarget.style.visibility = "hidden")}
-                      />
-                      {hoverPath === c.path && !reduceMotion && (
-                        // Layered over the still and faded in only once
-                        // frames actually flow — no blank flash.
-                        <video
-                          className="thumb-preview"
-                          src={convertFileSrc(c.path)}
-                          muted
-                          autoPlay
-                          loop
-                          playsInline
-                          onPlaying={(e) => e.currentTarget.classList.add("ready")}
-                        />
-                      )}
-                      <div className="thumb-vignette" />
-                      <div className="game-tag">
-                        <span className="chip-dot" style={{ background: gameColor(gameOf(c)) }} />
-                        {gameName(gameOf(c))}
-                      </div>
-                      <div className="card-topright">
-                        {killBadge(markerCounts[c.path] ?? 0, c.name) && <span className="highlight-badge"><Crosshair size={13} />{killBadge(markerCounts[c.path], c.name)}</span>}
-                        {isSession(c.name) && <div className="session-badge">SESSION</div>}
-                        {lastSeenRef.current > 0 &&
-                          c.modified_ms > lastSeenRef.current &&
-                          !isEdit(c.name) && <div className="new-badge">NEW</div>}
-                        {trimRanges[c.path] && (
-                          <div
-                            className="trim-badge"
-                            title={`Saved trim ${trimRanges[c.path][0].toFixed(1)}s → ${trimRanges[c.path][1].toFixed(1)}s — montage uses this cut`}
-                          >
-                            <Scissors size={11} weight="bold" />
-                          </div>
-                        )}
-                        {blackMap[c.path] === true && (
-                          <div className="black-badge">
-                            <Warning size={11} weight="fill" />
-                            BLACK
-                          </div>
-                        )}
-                        <button
-                          className={`card-select ${montageSel.has(c.path) ? "on" : ""}`}
-                          title="Select — shift-click selects the range"
-                          aria-label={montageSel.has(c.path) ? `Deselect ${c.name}` : `Select ${c.name}`}
-                          aria-pressed={montageSel.has(c.path)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleSelect(c, e.shiftKey);
-                          }}
-                        >
-                          {montageSel.has(c.path) ? (
-                            // Number = cut position in the montage.
-                            <span className="sel-num">{[...montageSel].indexOf(c.path) + 1}</span>
-                          ) : (
-                            <Circle size={17} />
-                          )}
-                        </button>
-                      </div>
-                      <div className="play-circle">
-                        <Play size={18} weight="fill" color="#fff" />
-                      </div>
-                      {thumbs[c.path] && thumbs[c.path].duration > 0 && (
-                        <div className="duration-badge">{formatDuration(thumbs[c.path].duration)}</div>
-                      )}
-                      <button className="card-quick-share" title="Copy file to share in Discord" aria-label={`Copy ${momentTitle(c.name, markerCounts[c.path] ?? 0)} to share`}
-                        onClick={(e) => { e.stopPropagation(); void copyClip(c); }}><Copy size={15} /> Share</button>
-                      <button className="card-menu" aria-label={`More actions for ${momentTitle(c.name, markerCounts[c.path] ?? 0)}`} title="More actions"
-                        onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setCtxMenu({ x: Math.min(r.left, window.innerWidth - 200), y: Math.min(r.bottom, window.innerHeight - 300), clip: c }); }}><DotsThree size={20} weight="bold" /></button>
-                      <button
-                        className={`card-star ${favorites.includes(c.path) ? "on" : ""}`}
-                        title="Favorite — survives storage cleanup"
-                        aria-label={`Favorite ${c.name}`}
-                        aria-pressed={favorites.includes(c.path)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleFavorite(c);
-                        }}
-                      >
-                        <Star size={15} weight={favorites.includes(c.path) ? "fill" : "regular"} />
-                      </button>
-                    </div>
-                    <div className="card-text">
-                      {libRenamePath === c.path ? (
+              <div className="st-lib-body">
+              <div className="st-scroll">
+                <table className="st-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" className="c-check">
                         <input
-                          className="card-rename"
-                          autoFocus
-                          value={libRenameValue}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setLibRenameValue(e.target.value)}
-                          onBlur={() => commitLibRename(c)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") commitLibRename(c);
-                            if (e.key === "Escape") setLibRenamePath(null);
-                          }}
+                          type="checkbox"
+                          aria-label="Select all clips in this view"
+                          checked={visibleClips.every((c) => montageSel.has(c.path))}
+                          onChange={(e) => setMontageSel(e.target.checked ? new Set(visibleClips.map((c) => c.path)) : new Set())}
                         />
-                      ) : (
-                        <span className="card-title" title={c.name}>
-                          {momentTitle(c.name, markerCounts[c.path] ?? 0)}
-                          <button
-                            className="card-rename-btn"
-                            title="Rename"
-                            aria-label={`Rename ${c.name}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              startLibRename(c);
-                            }}
-                          >
-                            <PencilSimple size={13} />
-                          </button>
-                        </span>
-                      )}
-                      <span className="card-meta">
-                        {new Date(c.modified_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} <span className="meta-dot" /> {relativeTime(c.modified_ms)} <span className="meta-dot" /> {formatSize(c.size_bytes)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-                    </div>
-                  </section>
-                ))}
+                      </th>
+                      <th scope="col">Clip</th>
+                      <th scope="col" className="c-game">Game</th>
+                      <th scope="col" className="c-kills">Kills</th>
+                      <th scope="col" className="c-len num">Length</th>
+                      <th scope="col" className="c-size num">Size</th>
+                      <th scope="col" className="c-saved num">Saved</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clipGroups.map((g) => (
+                      <Fragment key={g.key}>
+                        {g.label && (
+                          <tr className="st-group">
+                            <td colSpan={7}>
+                              <div className="st-group-inner">
+                                <strong>{g.label}</strong>
+                                <span className="st-group-meta">{g.meta}</span>
+                                {g.items.some(({ c }) => !favorites.includes(c.path)) && (
+                                  <details className="session-actions"><summary aria-label={`Cleanup options for ${g.label}`}>Cleanup</summary><button className="session-clear" onClick={() => clearUnstarred(g.label, g.items.map(({ c }) => c))}>
+                                    Keep starred, clear the rest
+                                  </button></details>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        {g.items.map(({ c, i }) => {
+                          const markers = markerCounts[c.path] ?? 0;
+                          const title = momentTitle(c.name, markers);
+                          const kills = clipKillCount(c.name, markers);
+                          const ace = killBadge(markers, c.name) === "ACE";
+                          const fav = favorites.includes(c.path);
+                          return (
+                            <tr
+                              key={c.path}
+                              data-clip-path={c.path}
+                              className={`st-row ${i === focusIdx ? "kb-focus" : ""} ${montageSel.has(c.path) ? "picked" : ""}`}
+                              // Roving tabindex: Tab lands on one row, arrows walk
+                              // the table (library shortcuts), Enter opens it.
+                              tabIndex={i === Math.max(0, focusIdx) ? 0 : -1}
+                              aria-label={`${title}, ${new Date(c.modified_ms).toLocaleString()}. Enter to edit; Shift+F10 for actions.`}
+                              onKeyDown={(e) => {
+                                if (e.target !== e.currentTarget) return;
+                                if (e.key === "F10" && e.shiftKey) {
+                                  e.preventDefault(); e.stopPropagation();
+                                  const r = e.currentTarget.getBoundingClientRect();
+                                  setCtxMenu({ x: Math.min(r.left + 120, window.innerWidth - 200), y: Math.min(r.bottom, window.innerHeight - 300), clip: c });
+                                }
+                              }}
+                              onFocus={(e) => {
+                                if (e.target !== e.currentTarget) return;
+                                setFocusIdx(i);
+                                loadKillTimes(c);
+                              }}
+                              // Shift-click range-selects instead of opening; the
+                              // mousedown guard stops the browser text-select.
+                              onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+                              // Click selects the row for the details panel; double-click
+                              // or Enter opens the editor.
+                              onClick={(e) => (e.shiftKey ? handleSelect(c, true) : e.currentTarget.focus())}
+                              onDoubleClick={(e) => !e.shiftKey && selectClip(c)}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setCtxMenu({
+                                  x: Math.min(e.clientX, window.innerWidth - 200),
+                                  y: Math.min(e.clientY, window.innerHeight - 300),
+                                  clip: c,
+                                });
+                              }}
+                              // Hover a beat → muted looping preview over the still.
+                              // The delay keeps fast mouse passes from decoding video.
+                              onMouseEnter={() => {
+                                if (reduceMotion) return;
+                                if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                                hoverTimer.current = setTimeout(() => setHoverPath(c.path), 250);
+                              }}
+                              onMouseLeave={() => {
+                                if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                                setHoverPath((p) => (p === c.path ? null : p));
+                              }}
+                            >
+                              <td className="c-check" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={montageSel.has(c.path)}
+                                  aria-label={`Select ${title}`}
+                                  title="Select. Shift-click selects the range"
+                                  onChange={() => {}}
+                                  onClick={(e) => handleSelect(c, e.shiftKey)}
+                                />
+                              </td>
+                              <td>
+                                <div className="st-clip">
+                                  <div className="st-thumb">
+                                    <img
+                                      // Remount when the backend confirms the thumb, so a
+                                      // guess that 404'd (fresh clip) retries once the file exists.
+                                      key={`${c.path}#${thumbs[c.path] ? "t" : "g"}`}
+                                      src={convertFileSrc(thumbs[c.path]?.thumb ?? guessThumb(c.path))}
+                                      alt=""
+                                      loading="lazy"
+                                      onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+                                    />
+                                    {hoverPath === c.path && !reduceMotion && (
+                                      <video
+                                        src={convertFileSrc(c.path)}
+                                        muted
+                                        autoPlay
+                                        loop
+                                        playsInline
+                                        onPlaying={(e) => e.currentTarget.classList.add("ready")}
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="st-clip-text">
+                                    {libRenamePath === c.path ? (
+                                      <input
+                                        className="st-rename"
+                                        autoFocus
+                                        aria-label="Clip name"
+                                        value={libRenameValue}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={(e) => setLibRenameValue(e.target.value)}
+                                        onBlur={() => commitLibRename(c)}
+                                        onKeyDown={(e) => {
+                                          e.stopPropagation();
+                                          if (e.key === "Enter") commitLibRename(c);
+                                          if (e.key === "Escape") setLibRenamePath(null);
+                                        }}
+                                      />
+                                    ) : (
+                                      <span className="st-title">
+                                        <span title={c.name}>{title}</span>
+                                        {fav && <Star size={12} weight="fill" color="#f5c518" aria-label="Starred" style={{ flex: "0 0 auto" }} />}
+                                        {isSession(c.name) && <span className="st-tag">Full match</span>}
+                                        {blackMap[c.path] === true && <span className="st-tag warn">Black</span>}
+                                        {trimRanges[c.path] && (
+                                          <span className="st-tag" title={`Saved trim ${trimRanges[c.path][0].toFixed(1)}s → ${trimRanges[c.path][1].toFixed(1)}s. Montage uses this cut`}>Trimmed</span>
+                                        )}
+                                        {lastSeenRef.current > 0 && c.modified_ms > lastSeenRef.current && !isEdit(c.name) && (
+                                          <span className="st-tag new">New</span>
+                                        )}
+                                      </span>
+                                    )}
+                                    <span className="st-sub" title={c.name}>
+                                      {relativeTime(c.modified_ms)} · {c.name.replace(/\.[^.]+$/, "")}
+                                    </span>
+                                  </div>
+                                  <div className="st-row-actions" onClick={(e) => e.stopPropagation()}>
+                                    <button className="st-icon-btn" title="Rename" aria-label={`Rename ${title}`} onClick={() => startLibRename(c)}>
+                                      <PencilSimple size={14} />
+                                    </button>
+                                    <button
+                                      className={`st-icon-btn ${fav ? "on" : ""}`}
+                                      title="Star. Starred clips survive storage cleanup"
+                                      aria-label={`Star ${title}`}
+                                      aria-pressed={fav}
+                                      onClick={() => toggleFavorite(c)}
+                                    >
+                                      <Star size={14} weight={fav ? "fill" : "regular"} />
+                                    </button>
+                                    <button className="st-icon-btn" title="Copy file to share in Discord" aria-label={`Copy ${title} to share`} onClick={() => void copyClip(c)}>
+                                      <Copy size={14} />
+                                    </button>
+                                    <button
+                                      className="st-icon-btn"
+                                      title="More actions"
+                                      aria-label={`More actions for ${title}`}
+                                      onClick={(e) => {
+                                        const r = e.currentTarget.getBoundingClientRect();
+                                        setCtxMenu({ x: Math.min(r.left, window.innerWidth - 200), y: Math.min(r.bottom, window.innerHeight - 300), clip: c });
+                                      }}
+                                    >
+                                      <DotsThree size={16} weight="bold" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </td>
+                              <td>
+                                <span className="st-game">
+                                  <span className="st-tile" aria-hidden="true" style={{ background: `${gameColor(gameOf(c))}29`, color: gameColor(gameOf(c)) }}>
+                                    {gameInitials(gameOf(c))}
+                                  </span>
+                                  <span className="st-game-name">{gameName(gameOf(c))}</span>
+                                </span>
+                              </td>
+                              <td>
+                                {ace ? (
+                                  <span className="st-chip ace" aria-label="Ace">ACE</span>
+                                ) : kills > 0 ? (
+                                  <span className={`st-chip ${kills > 1 ? "multi" : ""}`} aria-label={`${kills} ${kills === 1 ? "kill" : "kills"}`}>{kills}K</span>
+                                ) : (
+                                  <span className="st-sub" aria-label="No kills marked">–</span>
+                                )}
+                              </td>
+                              <td className="num">{thumbs[c.path]?.duration ? formatDuration(thumbs[c.path].duration) : "–"}</td>
+                              <td className="num" style={{ color: "var(--st-muted)" }}>{formatSize(c.size_bytes)}</td>
+                              <td className="num c-saved">
+                                {new Date(c.modified_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {inspector}
               </div>
             )}
 
-            <p className="library-hints"><span>Arrow keys: browse</span><span>Enter: edit</span><span>Shift-click: select a range</span><span>Right-click / Shift+F10: actions</span><span>Share: copy for Discord</span></p>
+            <footer className="st-footer">
+              <span className="st-mono">
+                {montageSel.size > 0 ? `${montageSel.size} selected · ` : ""}
+                {clips.length} clips · {totalSize}
+              </span>
+              <span className="st-footer-keys">
+                <span><kbd>↑↓</kbd> browse</span>
+                <span><kbd>Enter</kbd> or double-click edit</span>
+                <span><kbd>Shift</kbd>-click range</span>
+                <span><kbd>Shift F10</kbd> actions</span>
+              </span>
+            </footer>
             {montageSel.size >= 1 && (
               <div className="sel-bar">
                 {montageSel.size >= 2 && (
@@ -2981,7 +3227,7 @@ function App() {
       {whatsNew && showWhatsNew && !showOnboarding && (
         <Modal label={`Updated to v${whatsNew.version}`} className="modal whatsnew-modal" onClose={() => setWhatsNew(null)}>
           <div className="modal-head">
-            <Sparkle size={19} color="#7f9bff" weight="fill" />
+            <Sparkle size={19} color="#7fe6d7" weight="fill" />
             <span className="modal-title">Updated to v{whatsNew.version}</span>
             <div className="lib-spacer" />
             <button className="modal-close" onClick={() => setWhatsNew(null)} aria-label="Close">

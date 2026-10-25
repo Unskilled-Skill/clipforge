@@ -304,17 +304,27 @@ async fn tick(
             .filter(|p| p.name().to_string_lossy().eq_ignore_ascii_case(g))
             .map(|p| p.pid().as_u32())
             .find(|&pid| crate::elevation::process_elevated(pid));
-        if let Some(pid) = elevated_pid {
+        // The admin rule decides: "never" stays quiet, "auto" restarts
+        // ClipForge elevated (when the task exists), "ask" warns once.
+        let rule = settings.admin_rule_for(g).to_string();
+        if let Some(pid) = elevated_pid.filter(|_| rule != "never") {
             state.game_elevated = true;
             if WARNED_ELEVATED_PID.swap(pid, Ordering::Relaxed) != pid {
-                crate::logs::line(&format!("{g} runs as admin; ClipForge doesn't"));
-                use tauri_plugin_notification::NotificationExt;
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title("Game runs as admin")
-                    .body("ClipForge can't record it or hear your save hotkey. Turn on Settings → Run with admin rights.")
-                    .show();
+                crate::logs::line(&format!("{g} runs as admin; ClipForge doesn't (rule: {rule})"));
+                if rule == "auto" && crate::elevation::task_ready() {
+                    crate::logs::line("Restarting ClipForge as admin to match");
+                    if let Err(error) = crate::elevation::restart_elevated(app.clone()) {
+                        crate::logs::line(&format!("Could not restart as admin: {error}"));
+                    }
+                } else {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Can't capture this game")
+                        .body("It runs as admin, so clips come out black and the save hotkey can't reach it. Open ClipForge to restart it as admin.")
+                        .show();
+                }
             }
         }
     }

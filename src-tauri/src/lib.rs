@@ -525,6 +525,7 @@ pub fn run() {
             supervisor::supervisor_state,
             elevation::is_running_elevated,
             elevation::restart_elevated,
+            elevation::ensure_admin_task,
             backup::backup_status,
             backup::backup_now,
             set_hotkeys,

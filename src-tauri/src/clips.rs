@@ -143,6 +143,16 @@ pub struct Settings {
     /// prompt): GPU priority for capture, and anti-cheat games hook.
     #[serde(default)]
     pub run_elevated: bool,
+    /// When a game runs as admin and ClipForge doesn't: "ask" (warn),
+    /// "auto" (restart ClipForge as admin) or "never" (stay quiet).
+    #[serde(default = "default_admin_rule")]
+    pub admin_rule: String,
+    /// Per-game overrides of `admin_rule`, keyed by lowercase exe.
+    #[serde(default)]
+    pub admin_rule_games: std::collections::BTreeMap<String, String>,
+    /// Upload limit Discord exports are sized for, in MB (10 / 50 / 500).
+    #[serde(default = "default_discord_mb")]
+    pub discord_target_mb: f64,
     /// Voice-chat app whose audio gets its own recording track (Discord etc.).
     #[serde(default = "default_vc_exe")]
     pub vc_exe: String,
@@ -214,6 +224,12 @@ fn default_bitrate() -> f64 {
 fn default_encoder() -> String {
     "auto".into()
 }
+fn default_admin_rule() -> String {
+    "ask".into()
+}
+fn default_discord_mb() -> f64 {
+    10.0
+}
 
 fn default_min_kills() -> u32 {
     1
@@ -249,6 +265,9 @@ impl Default for Settings {
             window_capture_games: Vec::new(),
             mic_noise_suppression: true,
             run_elevated: false,
+            admin_rule: default_admin_rule(),
+            admin_rule_games: Default::default(),
+            discord_target_mb: default_discord_mb(),
             vc_exe: default_vc_exe(),
             launch_at_login: true,
             auto_manage_buffer: true,
@@ -285,6 +304,12 @@ pub fn load_favorites(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 impl Settings {
+    /// The admin rule for one game: its override, else the default.
+    pub fn admin_rule_for(&self, exe: &str) -> &str {
+        let exe = exe.trim().to_lowercase();
+        self.admin_rule_games.get(&exe).map(String::as_str).unwrap_or(&self.admin_rule)
+    }
+
     pub fn capture_blocked(&self, exe: &str) -> bool {
         let exe = exe.trim().to_lowercase();
         matches!(exe.as_str(), "discord.exe" | "discordptb.exe" | "discordcanary.exe")
@@ -320,6 +345,25 @@ mod overlap_tests {
         assert_eq!(tracks(&[3, 4], 5), [3, 4]);
         assert_eq!(tracks(&[1, 2, 4], 5), [1, 2, 4]);
         assert_eq!(tracks(&[0, 1], 3), [1]);
+    }
+}
+
+#[cfg(test)]
+mod admin_rule_tests {
+    use super::*;
+
+    #[test]
+    fn per_game_override_beats_the_default_and_old_files_default_to_ask() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.admin_rule_for("VALORANT-Win64-Shipping.exe"), "ask");
+        settings.admin_rule_games.insert("valorant-win64-shipping.exe".into(), "auto".into());
+        assert_eq!(settings.admin_rule_for(" VALORANT-Win64-Shipping.exe "), "auto");
+        assert_eq!(settings.admin_rule_for("cs2.exe"), "ask");
+
+        let old: Settings = serde_json::from_str(r#"{"clips_dir":"C:/Clips"}"#).unwrap();
+        assert_eq!(old.admin_rule, "ask");
+        assert!(old.admin_rule_games.is_empty());
+        assert_eq!(old.discord_target_mb, 10.0);
     }
 }
 

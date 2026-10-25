@@ -285,6 +285,18 @@ pub async fn set_run_elevated(app: tauri::AppHandle, enabled: bool) -> Result<()
     .await
 }
 
+/// The admin task exists, so ClipForge can restart elevated without a prompt.
+pub fn task_ready() -> bool {
+    task_exists()
+}
+
+/// Create the admin task if it's missing (one UAC prompt), without changing
+/// `run_elevated`: for "Restart as admin" and the per-game "auto" rule.
+#[tauri::command]
+pub async fn ensure_admin_task() -> Result<(), String> {
+    crate::clips::blocking(|| if task_exists() { Ok(()) } else { create_task() }).await
+}
+
 #[tauri::command]
 pub fn is_running_elevated() -> bool {
     is_elevated()

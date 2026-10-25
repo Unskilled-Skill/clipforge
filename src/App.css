@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: "Hanken Grotesk Variable", "Segoe UI", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-md);
   color: var(--text-primary);
   background: var(--surface-base);
@@ -11,11 +11,14 @@
 }
 
 * { box-sizing: border-box; }
+/* Numbers read as UI text with even digits; key caps keep a mono face. */
+kbd { font-family: "JetBrains Mono Variable", Consolas, monospace; }
 body { margin: 0; overflow: hidden; }
 
 .mono, kbd, .lib-count, .card-meta, .trim-readout, .quality-pill,
 .duration-badge, .brand-ver, .obs-ver, .buffer-pill, .empty-hint {
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .app-frame {
@@ -31,12 +34,12 @@ body { margin: 0; overflow: hidden; }
   display: flex;
   align-items: center;
   background: var(--surface-sidebar);
-  border-bottom: 1px solid #1c1e26;
+  border-bottom: 1px solid #1e1e22;
   padding-left: 14px;
   user-select: none;
 }
 .titlebar-title {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -57,7 +60,7 @@ body { margin: 0; overflow: hidden; }
   align-items: center;
   justify-content: center;
 }
-.tb-btn:hover { background: #1c1e26; color: var(--text-primary); }
+.tb-btn:hover { background: #1e1e22; color: var(--text-primary); }
 .tb-btn.close:hover { background: #e81123; color: #fff; }
 
 .app-shell {
@@ -82,13 +85,14 @@ body { margin: 0; overflow: hidden; }
   animation: cf-splash 1.6s ease-in-out infinite;
 }
 .splash-name {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-weight: 700;
   font-size: var(--text-heading);
   letter-spacing: -0.01em;
 }
 .splash-hint {
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
@@ -104,7 +108,7 @@ body { margin: 0; overflow: hidden; }
   flex-shrink: 0;
   height: 100%;
   background: var(--surface-sidebar);
-  border-right: 1px solid #1c1e26;
+  border-right: 1px solid #1e1e22;
   padding: 20px 16px;
   display: flex;
   flex-direction: column;
@@ -137,7 +141,7 @@ body { margin: 0; overflow: hidden; }
 }
 .brand-text { display: flex; flex-direction: column; }
 .brand-name {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-weight: 700;
   font-size: var(--text-lg);
   letter-spacing: -0.01em;
@@ -160,12 +164,12 @@ body { margin: 0; overflow: hidden; }
   cursor: pointer;
   text-align: left;
 }
-.nav-item:hover { background: #16181f; color: var(--text-primary); }
+.nav-item:hover { background: #1e1e22; color: var(--text-primary); }
 .nav-item.active {
-  background: rgba(76, 110, 245, 0.14);
+  background: rgba(63, 210, 190, 0.14);
   color: var(--text-primary);
   font-weight: 600;
-  box-shadow: inset 0 0 0 1px rgba(107, 139, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(90, 217, 199, 0.22);
 }
 .nav-item.active svg { color: var(--accent-text); }
 
@@ -209,7 +213,7 @@ body { margin: 0; overflow: hidden; }
 }
 .buffer-pill.armed { color: var(--status-success); }
 /* The pill is a button now: click pauses/resumes recording. */
-.buffer-pill { width: 100%; font-family: "JetBrains Mono Variable", Consolas, monospace; }
+.buffer-pill { width: 100%; font-variant-numeric: tabular-nums; }
 .buffer-pill:hover { border-color: rgba(64, 221, 128, 0.4); }
 .buffer-pill.paused {
   color: var(--status-warning);
@@ -252,7 +256,7 @@ body { margin: 0; overflow: hidden; }
 kbd {
   font-size: var(--text-xs);
   color: var(--text-soft);
-  background: #1c1e26;
+  background: #1e1e22;
   border: 1px solid var(--border-control);
   border-bottom-width: 2px;
   border-radius: 5px;
@@ -277,7 +281,7 @@ kbd {
   transform: translateX(-50%);
   width: 760px;
   height: 340px;
-  background: radial-gradient(closest-side, rgba(76, 110, 245, 0.075), transparent);
+  background: radial-gradient(closest-side, rgba(63, 210, 190, 0.075), transparent);
   pointer-events: none;
 }
 
@@ -328,7 +332,7 @@ kbd {
 
 .lib-header {
   padding: 22px 30px 18px;
-  border-bottom: 1px solid #16181f;
+  border-bottom: 1px solid #1e1e22;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -352,7 +356,7 @@ kbd {
   gap: 12px;
 }
 .lib-title h1 {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-weight: 700;
   font-size: var(--text-display);
   letter-spacing: -0.02em;
@@ -446,7 +450,7 @@ select:focus,
 .card-rename:focus {
   outline: none;
   border-color: var(--accent-action);
-  box-shadow: 0 0 0 3px rgba(76, 110, 245, 0.16);
+  box-shadow: 0 0 0 3px rgba(63, 210, 190, 0.16);
 }
 
 .btn-ghost {
@@ -507,10 +511,10 @@ select:focus,
 }
 .chip:hover:not(.active) { border-color: #33363f; color: var(--text-soft); }
 .chip.active {
-  background: rgba(76, 110, 245, 0.16);
+  background: rgba(63, 210, 190, 0.16);
   color: var(--text-primary);
   border-color: var(--accent-action);
-  box-shadow: 0 0 12px rgba(76, 110, 245, 0.18);
+  box-shadow: 0 0 12px rgba(63, 210, 190, 0.18);
 }
 .chip-dot {
   width: 7px;
@@ -620,7 +624,7 @@ select:focus,
   transition: opacity var(--duration-press) ease;
 }
 .card:hover .card-select { opacity: 0.9; }
-.card-select.on { opacity: 1; color: #6b8bff; }
+.card-select.on { opacity: 1; color: #5ad9c7; }
 
 .black-badge {
   display: flex;
@@ -651,7 +655,7 @@ select:focus,
   transition: background 0.14s ease;
 }
 .card:hover .play-circle {
-  background: rgba(76, 110, 245, 0.85);
+  background: rgba(63, 210, 190, 0.85);
 }
 
 .duration-badge {
@@ -900,7 +904,7 @@ select:focus,
   border-top: 2px solid var(--accent-action);
   border-bottom: 2px solid var(--accent-action);
   border-radius: 0; /* Handles supply the corner shape; borders retain fixed thickness. */
-  background: rgba(76, 110, 245, 0.08);
+  background: rgba(63, 210, 190, 0.08);
   pointer-events: none;
   z-index: 1;
 }
@@ -914,8 +918,8 @@ select:focus,
   left: 0;
   width: 2px;
   margin-left: -1px;
-  background: #ff5f6d;
-  box-shadow: 0 0 6px rgba(255, 95, 109, 0.7);
+  background: #ececee;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   z-index: 4;
   will-change: transform;
@@ -940,12 +944,12 @@ select:focus,
   transform: translateX(-50%);
   width: 13px;
   height: 14px;
-  background: #ff5f6d;
+  background: #ececee;
   clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%);
   border-radius: 2px;
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
 }
-.mt-playhead-grab:hover::before { background: #ff7a86; }
+.mt-playhead-grab:hover::before { background: #fff; }
 
 /* Trim handles: 12px tabs inside the selection's edges (TimelineController
    positions them; HANDLE_PX must match the width). */
@@ -990,7 +994,8 @@ select:focus,
 .tl-zoom-level {
   min-width: 34px;
   text-align: center;
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-xs);
   color: var(--text-secondary);
 }
@@ -1018,7 +1023,7 @@ select:focus,
   margin: 10px 30px 30px;
   border: 1px dashed #262935;
   border-radius: var(--radius-dialog);
-  background: radial-gradient(circle at 50% 0%, rgba(76, 110, 245, 0.045), transparent 60%);
+  background: radial-gradient(circle at 50% 0%, rgba(63, 210, 190, 0.045), transparent 60%);
 }
 .empty-title { font-size: var(--text-lg); font-weight: 600; color: var(--text-muted); }
 .empty-hint { font-size: var(--text-sm); color: var(--text-secondary); }
@@ -1073,7 +1078,7 @@ select:focus,
   margin: 0 auto;
   border-radius: var(--radius-card);
   background: #060709;
-  border: 1px solid #1c1e26;
+  border: 1px solid #1e1e22;
   overflow: hidden;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.4);
 }
@@ -1121,7 +1126,7 @@ select:focus,
   align-items: center;
 }
 .trim-label {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1145,7 +1150,7 @@ select:focus,
 }
 .preview-btn:hover { border-color: #33363f; color: var(--text-primary); }
 .preview-btn.on {
-  background: rgba(76, 110, 245, 0.16);
+  background: rgba(63, 210, 190, 0.16);
   border-color: var(--accent-action);
   color: #9db2ff;
 }
@@ -1168,8 +1173,8 @@ select:focus,
     to right,
     transparent 0,
     transparent calc(10% - 1px),
-    #1c1e26 calc(10% - 1px),
-    #1c1e26 10%
+    #1e1e22 calc(10% - 1px),
+    #1e1e22 10%
   );
   pointer-events: none;
 }
@@ -1187,9 +1192,9 @@ select:focus,
   position: absolute;
   top: 0;
   bottom: 0;
-  background: rgba(76, 110, 245, 0.22);
-  border-left: 2px solid #6b8bff;
-  border-right: 2px solid #6b8bff;
+  background: rgba(63, 210, 190, 0.22);
+  border-left: 2px solid #5ad9c7;
+  border-right: 2px solid #5ad9c7;
   pointer-events: none;
 }
 .timeline .playhead {
@@ -1207,9 +1212,9 @@ select:focus,
   bottom: 8px;
   width: 12px;
   margin-left: -6px;
-  background: #6b8bff;
+  background: #5ad9c7;
   border-radius: 5px;
-  box-shadow: 0 2px 8px rgba(76, 110, 245, 0.5);
+  box-shadow: 0 2px 8px rgba(63, 210, 190, 0.5);
   pointer-events: none;
   display: flex;
   align-items: center;
@@ -1273,17 +1278,16 @@ select:focus,
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 42px;
-  padding: 0 16px;
+  height: 36px;
+  padding: 0 14px;
   border: none;
-  background: #5865f2;
-  border-radius: 9px;
-  color: #fff;
-  font-size: var(--text-md);
-  font-weight: 700;
-  box-shadow: 0 4px 16px rgba(88, 101, 242, 0.35);
+  background: var(--accent-action);
+  border-radius: var(--radius-control);
+  color: var(--accent-ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
 }
-.btn-discord:hover:not(:disabled) { background: #6b76f5; }
+.btn-discord:hover:not(:disabled) { background: #5ad9c7; }
 
 .toast {
   position: absolute;
@@ -1341,7 +1345,7 @@ select:focus,
   z-index: 1;
 }
 .modal-title {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-heading);
   font-weight: 700;
 }
@@ -1371,7 +1375,7 @@ select:focus,
   gap: 10px;
 }
 .set-label {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1409,7 +1413,8 @@ select:focus,
 .modal textarea.mono,
 .settings-body input.mono,
 .settings-body textarea.mono {
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-sm);
 }
 .modal textarea,
@@ -1447,15 +1452,15 @@ select:focus,
   align-items: center;
   gap: 12px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #1a1c24;
+  border-bottom: 1px solid #1e1e22;
   margin-bottom: 4px;
 }
 .set-head-icon {
   width: 34px;
   height: 34px;
   border-radius: 10px;
-  background: rgba(76, 110, 245, 0.12);
-  border: 1px solid rgba(76, 110, 245, 0.18);
+  background: rgba(63, 210, 190, 0.12);
+  border: 1px solid rgba(63, 210, 190, 0.18);
   color: var(--accent-text);
   display: flex;
   align-items: center;
@@ -1464,7 +1469,7 @@ select:focus,
 }
 .set-head-text { display: flex; flex-direction: column; gap: 2px; }
 .set-head-title {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-md);
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -1476,7 +1481,7 @@ select:focus,
 .hotkey-capture { cursor: pointer; caret-color: transparent; }
 .hotkey-capture:focus {
   border-color: var(--accent-action);
-  box-shadow: 0 0 0 2px rgba(76, 110, 245, 0.25);
+  box-shadow: 0 0 0 2px rgba(63, 210, 190, 0.25);
 }
 
 details.advanced summary {
@@ -1502,7 +1507,7 @@ details.advanced summary::after {
 }
 details.advanced[open] summary::after { transform: rotate(90deg); }
 details.advanced[open] summary .set-head {
-  border-bottom: 1px solid #1a1c24;
+  border-bottom: 1px solid #1e1e22;
   padding-bottom: 12px;
 }
 details.advanced > *:not(summary) { margin-top: 12px; }
@@ -1673,7 +1678,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: rgba(107, 139, 255, 0.85);
+  background: rgba(90, 217, 199, 0.85);
   color: #fff;
 }
 
@@ -1727,7 +1732,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   margin-left: 10px;
   padding: 2px 8px;
   border-radius: 20px;
-  background: rgba(107, 139, 255, 0.14);
+  background: rgba(90, 217, 199, 0.14);
   color: #9db2ff;
   font-size: var(--text-xs);
   font-weight: 600;
@@ -1761,8 +1766,8 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   height: 34px;
   padding: 8px;
   box-sizing: border-box;
-  background: rgba(76, 110, 245, 0.12);
-  border: 1px solid rgba(76, 110, 245, 0.18);
+  background: rgba(63, 210, 190, 0.12);
+  border: 1px solid rgba(63, 210, 190, 0.18);
   border-radius: 10px;
   flex-shrink: 0;
 }
@@ -1778,7 +1783,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 }
 .onboard-hero-mark { width: 52px; height: 52px; border-radius: var(--radius-card); }
 .onboard-hero-title {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-heading);
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -1812,7 +1817,8 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   position: absolute;
   bottom: 6px;
   left: 4px;
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-xs);
   line-height: 1;
   color: #b5bdce;
@@ -1826,15 +1832,15 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   left: 0;
   right: 0;
   height: 3px;
-  background: rgba(76, 110, 245, 0.15);
+  background: rgba(63, 210, 190, 0.15);
   z-index: 60;
 }
 /* Full-width fill scaled from the left: progress updates many times a
    second, and scaleX skips the layout that animating width would cost. */
 .export-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent-action), #6b8bff);
-  box-shadow: 0 0 10px rgba(107, 139, 255, 0.7);
+  background: linear-gradient(90deg, var(--accent-action), #5ad9c7);
+  box-shadow: 0 0 10px rgba(90, 217, 199, 0.7);
   transform-origin: left;
   transition: transform var(--duration-slow) linear;
 }
@@ -1847,11 +1853,12 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   width: 17px;
   height: 17px;
   border-radius: 50%;
-  background: #6b8bff;
+  background: #5ad9c7;
   color: #fff;
   font-size: var(--text-xs);
   font-weight: 700;
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- keyboard focus on cards ---- */
@@ -1859,7 +1866,7 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 .card:focus-visible {
   outline: none;
   border-color: var(--accent-action);
-  box-shadow: 0 0 0 2px rgba(76, 110, 245, 0.35);
+  box-shadow: 0 0 0 2px rgba(63, 210, 190, 0.35);
 }
 /* Hover-only card controls must also surface for keyboard users. */
 .card.kb-focus .card-select,
@@ -1908,11 +1915,12 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   height: 14px;
   padding: 0 3px;
   border-radius: 4px;
-  background: rgba(107, 139, 255, 0.92);
+  background: rgba(90, 217, 199, 0.92);
   color: #fff;
   font-size: var(--text-xs);
   font-weight: 700;
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1944,10 +1952,11 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   border-top: 1px solid var(--border-subtle);
 }
 .queue-count {
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-xs);
   color: #9db2ff;
-  background: rgba(76, 110, 245, 0.12);
+  background: rgba(63, 210, 190, 0.12);
   border-radius: 20px;
   padding: 3px 10px;
 }
@@ -1977,7 +1986,8 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   align-items: center;
   gap: 6px;
   margin-left: 12px;
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -2013,21 +2023,20 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   .card:hover::before { opacity: 1; transform: none; }
 }
 
-/* The editor's player floats on an aura of the clip's game color. */
+/* Studio: the player sits flat in a hairline frame. */
 .player-wrap {
-  box-shadow:
-    0 18px 44px rgba(0, 0, 0, 0.4),
-    0 0 110px -32px var(--game, transparent);
+  box-shadow: none;
+  outline: 1px solid var(--border-subtle);
 }
 .editor .mt-range {
-  background: color-mix(in srgb, var(--game, var(--accent-action)) 8%, transparent);
+  background: color-mix(in srgb, var(--accent-action) 8%, transparent);
 }
 
 /* ---- SESSION badge on full-session recordings ---- */
 .session-badge {
   padding: 3px 8px;
   border-radius: 20px;
-  background: rgba(127, 155, 255, 0.92);
+  background: rgba(127, 230, 215, 0.92);
   color: #0b1230;
   font-size: var(--text-xs);
   font-weight: 800;
@@ -2043,7 +2052,8 @@ details.advanced > *:not(summary) { margin-top: 12px; }
   font-size: var(--text-xs);
   font-weight: 800;
   letter-spacing: 0.08em;
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- dismissable error bar ---- */
@@ -2112,7 +2122,8 @@ details.advanced > *:not(summary) { margin-top: 12px; }
 
 /* ---- clip counts on filter chips ---- */
 .chip-count {
-  font-family: "JetBrains Mono Variable", Consolas, monospace;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-xs);
   color: var(--text-secondary);
   background: rgba(255, 255, 255, 0.05);
@@ -2170,7 +2181,7 @@ button.kill-count:hover { background: rgba(240, 96, 95, 0.24); }
   column-gap: 10px;
   padding: 8px 0;
   font-size: var(--text-sm);
-  border-top: 1px solid #1c1e26;
+  border-top: 1px solid #1e1e22;
 }
 .health-row:first-child { border-top: none; }
 .health-row.ok svg { color: var(--status-success); }
@@ -2213,7 +2224,7 @@ button.kill-count:hover { background: rgba(240, 96, 95, 0.24); }
 /* ---- hotkey rebinding ---- */
 .hotkey-capture.recording {
   border-color: var(--accent-action);
-  box-shadow: 0 0 0 3px rgba(76, 110, 245, 0.16);
+  box-shadow: 0 0 0 3px rgba(63, 210, 190, 0.16);
   color: #9fb4ff;
 }
 .hotkey-problem { color: #f5c46b; }
@@ -2237,7 +2248,7 @@ button.hotkey-rows:focus-visible { outline: 2px solid var(--accent-action); outl
 .session-head { display: flex; align-items: center; gap: 12px; }
 .session-title {
   margin: 0;
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-heading);
   font-weight: 600;
 }
@@ -2254,7 +2265,7 @@ button.hotkey-rows:focus-visible { outline: 2px solid var(--accent-action); outl
 .buffer-pill.armed .buffer-dot { background: #ff5a4e; }
 .rec-summary { display: flex; flex-direction: column; gap: 3px; }
 .rec-ready {
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-heading);
   font-weight: 700;
   color: var(--text-primary);
@@ -2314,7 +2325,7 @@ button.hotkey-rows:focus-visible { outline: 2px solid var(--accent-action); outl
 }
 .export-title {
   margin: 0;
-  font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif;
+  font-family: "Geist Variable", "Segoe UI", sans-serif;
   font-size: var(--text-lg);
   font-weight: 600;
 }
@@ -2336,7 +2347,7 @@ button.hotkey-rows:focus-visible { outline: 2px solid var(--accent-action); outl
 }
 .export-tools .btn-trim { justify-content: center; padding: 0 10px; }
 .editor-meta { font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap; }
-.editor-title { font-family: "Bricolage Grotesque Variable", "Hanken Grotesk Variable", sans-serif; font-size: var(--text-heading); font-weight: 700; }
+.editor-title { font-family: "Geist Variable", "Segoe UI", sans-serif; font-size: var(--text-heading); font-weight: 700; }
 /* Narrow windows: the panel drops under the player. */
 
 
@@ -2383,15 +2394,15 @@ button.hotkey-rows:focus-visible { outline: 2px solid var(--accent-action); outl
 .highlight-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; background: #263822; color: #c6f59a; border-radius: 6px; font-size: var(--text-sm); font-weight: 700; }
 .game-tag, .new-badge { font-size: var(--text-xs); }
 .lib-count, .kbd-hints, .mt-label { color: var(--text-secondary); }
-.card-quick-share, .card-menu { position: absolute; bottom: 10px; z-index: 4; display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid #414653; background: #16181f; color: var(--text-primary); border-radius: 7px; font-size: var(--text-sm); }
+.card-quick-share, .card-menu { position: absolute; bottom: 10px; z-index: 4; display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid #414653; background: #1e1e22; color: var(--text-primary); border-radius: 7px; font-size: var(--text-sm); }
 .card-quick-share { left: 10px; }
 .card-menu { right: 10px; }
 .card-star { left: auto; right: 54px; z-index: 4; }
-.card-quick-share:hover, .card-menu:hover { background: #303748; }
+.card-quick-share:hover, .card-menu:hover { background: #26262b; }
 .library-hints { color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.7; margin: 12px 0 20px; }
 .session-actions { position: relative; flex-shrink: 0; }
 .session-actions > summary { cursor: pointer; color: var(--text-secondary); font-size: var(--text-sm); padding: 8px; }
-.session-actions .session-clear { position: absolute; right: 0; top: 100%; z-index: 8; background: #1c1e26; }
+.session-actions .session-clear { position: absolute; right: 0; top: 100%; z-index: 8; background: #1e1e22; }
 .more-share > summary, .advanced-settings > summary { cursor: pointer; color: #bec8ef; font-size: var(--text-md); padding: 12px 0; }
 .more-share[open] > summary { margin-bottom: 8px; }
 .more-share .share-card { border: 0; border-radius: 0; background: none; padding: 0 0 16px; }
@@ -2399,22 +2410,22 @@ button.hotkey-rows:focus-visible { outline: 2px solid var(--accent-action); outl
 
 
 
-.mt-handle:focus-visible, .kill-marker:focus-visible { outline: 3px solid #e7edff; outline-offset: 3px; }
+.mt-handle:focus-visible, .kill-marker:focus-visible { outline: 2px solid #ececee; outline-offset: 2px; }
 .kill-marker { border: 0; padding: 0; display: grid; place-items: center; }
 .setup-bar.disk-bar { color: #f4d59b; background: #282217; border-bottom-color: #5a4a2c; }
 .setup-bar.disk-bar.critical { color: #ffb4b4; background: #321d20; border-bottom-color: #714047; }
 .settings-index { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 30px 16px; }
-.settings-index a { padding: 8px 12px; color: #c0c9e4; border-radius: 7px; background: #1c1e26; text-decoration: none; }
-.settings-index a:hover, .settings-index a:focus-visible { background: #303748; color: #fff; }
+.settings-index a { padding: 8px 12px; color: #cfcfd6; border-radius: 7px; background: #1e1e22; text-decoration: none; }
+.settings-index a:hover, .settings-index a:focus-visible { background: #26262b; color: #fff; }
 .set-group { scroll-margin-top: 16px; }
 .field-hint, .set-head-desc, .toggle-desc { line-height: 1.6; }
 .advanced-settings { min-width: 180px; flex: 1; }
 .advanced-settings .set-col { margin-top: 8px; }
-.update-dot { width: 7px; height: 7px; border-radius: 50%; background: #a7bbff; }
+.update-dot { width: 7px; height: 7px; border-radius: 50%; background: #7fe6d7; }
 .toast { flex-wrap: wrap; max-width: calc(100vw - 40px); }
-.toast .btn-ghost { color: #e7edff; }
-::selection { background: #3d528a; color: #fff; }
-:focus-visible { outline: 2px solid #a7bbff; outline-offset: 3px; }
+.toast .btn-ghost { color: #ececee; }
+::selection { background: #1f4440; color: #fff; }
+:focus-visible { outline: 2px solid #7fe6d7; outline-offset: 3px; }
 
 @media (max-width: 899px) {
 
@@ -2426,9 +2437,9 @@ button.hotkey-rows:focus-visible { outline: 2px solid var(--accent-action); outl
 .card-meta { font-size: var(--text-xs); color: var(--text-secondary); flex-wrap: wrap; }
 .kbd-hints { max-width: 100ch; line-height: 1.6; font-size: var(--text-sm); white-space: normal; margin: 8px 0 0; }
 .library-hints { padding-inline: 30px; flex-shrink: 0; }
-button.kill-count { color: #c6f59a; background: #263822; }
-.kill-marker { color: #112018; background: #b6df93; box-shadow: none; }
-.kill-marker:hover, button.kill-count:hover { background: #c6f59a; color: #112018; box-shadow: none; }
+button.kill-count { color: #8deadc; background: #1c3b37; }
+.kill-marker { color: #06221f; background: #3fd2be; box-shadow: none; }
+.kill-marker:hover, button.kill-count:hover { background: #7fe6d7; color: #06221f; box-shadow: none; }
 
 
 
@@ -2445,7 +2456,7 @@ button.kill-count { color: #c6f59a; background: #263822; }
 /* Follow-up critique: explain dependencies, keep identity and disclose healthy detail. */
 .editor-title { border: 0; padding: 0; background: none; color: var(--text-primary); text-align: left; cursor: text; min-width: 0; }
 .audio-note { color: #bec8da; font-size: var(--text-sm); line-height: 1.5; margin: 0; }
-.health-details > summary { cursor: pointer; color: #c0c9e4; padding: 10px 0; font-size: var(--text-sm); }
+.health-details > summary { cursor: pointer; color: #cfcfd6; padding: 10px 0; font-size: var(--text-sm); }
 .health-details .health-list { margin-top: 8px; }
 .brand-ver, .obs-ver { color: var(--text-secondary); font-size: var(--text-xs); }
 .card:focus-within .card-rename-btn { opacity: 1; }

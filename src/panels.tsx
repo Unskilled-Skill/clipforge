@@ -24,6 +24,7 @@ import {
   BookOpen,
   CheckCircle,
   Circle,
+  DiscordLogo,
   FilmSlate,
   GameController,
   HardDrives,
@@ -218,7 +219,7 @@ export function AppPickerModal(props: {
   return (
     <Modal label={title} className="modal app-picker" zIndex={200} onClose={onClose}>
       <div className="modal-head">
-        <GameController size={19} color="#7f9bff" weight="fill" />
+        <GameController size={19} color="#7fe6d7" weight="fill" />
         <span className="modal-title">{title}</span>
         <div className="lib-spacer" />
         <button className="modal-close" onClick={onClose} aria-label="Close">
@@ -302,7 +303,7 @@ export function VcPickerModal(props: {
   return (
     <Modal label="Pick voice-chat app" className="modal app-picker" zIndex={200} onClose={onClose}>
       <div className="modal-head">
-        <GameController size={19} color="#7f9bff" weight="fill" />
+        <GameController size={19} color="#7fe6d7" weight="fill" />
         <span className="modal-title">Pick voice-chat app</span>
         <div className="lib-spacer" />
         <button className="modal-close" onClick={onClose} aria-label="Close">
@@ -663,6 +664,33 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
   );
 }
 
+const ADMIN_RULES: [string, string][] = [["ask", "Ask"], ["auto", "Restart automatically"], ["never", "Never"]];
+
+function SegRadios<T extends string | number>(props: { label: string; value: T; options: [T, string][]; onPick: (v: T) => void }) {
+  return (
+    <div className="seg" role="radiogroup" aria-label={props.label} onKeyDown={(e) => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+      e.preventDefault(); e.stopPropagation();
+      const radios = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+      const index = radios.indexOf(document.activeElement as HTMLButtonElement);
+      const next = e.key === "Home" ? 0 : e.key === "End" ? radios.length - 1 : (index + (["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 1) + radios.length) % radios.length;
+      radios[next]?.focus(); radios[next]?.click();
+    }}>
+      {props.options.map(([v, label]) => (
+        <button key={String(v)} type="button" role="radio" aria-checked={props.value === v} tabIndex={props.value === v ? 0 : -1}
+          className={props.value === v ? "on" : ""} onClick={() => props.onPick(v)}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const SETTINGS_SECTIONS: [string, string][] = [
+  ["capture", "Capture"], ["automation", "Auto-clip"], ["export", "Export"], ["hotkeys", "Hotkeys"],
+  ["audio", "Audio"], ["games", "Games"], ["storage", "Storage"], ["advanced", "Advanced"], ["health", "Health"],
+];
+
 export function SettingsPage(props: {
   onTestSetup: () => void;
   settings: Settings;
@@ -711,6 +739,54 @@ export function SettingsPage(props: {
   const [blockedExe, setBlockedExe] = useState("");
   const [elevating, setElevating] = useState(false);
   const [elevateError, setElevateError] = useState<string | null>(null);
+  // The section list highlights whichever section is at the top of the scroll.
+  const [activeSection, setActiveSection] = useState("capture");
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // A clicked section stays highlighted while its jump scrolls: the last
+  // sections can't reach the top, so the scroll position alone would miss them.
+  const pinnedUntil = useRef(0);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const onScroll = () => {
+      if (Date.now() < pinnedUntil.current) return;
+      const top = body.getBoundingClientRect().top + 40;
+      let current = SETTINGS_SECTIONS[0][0];
+      for (const [id] of SETTINGS_SECTIONS) {
+        const el = document.getElementById(`settings-${id}`);
+        if (el && el.getBoundingClientRect().top <= top) current = id;
+      }
+      setActiveSection(current);
+    };
+    body.addEventListener("scroll", onScroll, { passive: true });
+    return () => body.removeEventListener("scroll", onScroll);
+  }, []);
+  function goToSection(id: string) {
+    const target = document.getElementById(`settings-${id}`);
+    const disclosure = target?.closest("details");
+    if (disclosure) disclosure.open = true;
+    pinnedUntil.current = Date.now() + 700;
+    target?.scrollIntoView({ block: "start" });
+    setActiveSection(id);
+    const heading = target?.querySelector<HTMLElement>("h2");
+    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  }
+  // "auto" needs the admin task (one UAC prompt the first time). A game
+  // override set to "default" drops back to the general rule.
+  async function setAdminRule(exe: string | null, rule: string) {
+    setElevateError(null);
+    try {
+      if (rule === "auto") await invoke("ensure_admin_task");
+      const games = { ...settings.admin_rule_games };
+      if (exe) {
+        if (rule === "default") delete games[exe];
+        else games[exe] = rule;
+      }
+      await saveSettings({ ...settings, admin_rule: exe ? settings.admin_rule : rule, admin_rule_games: games });
+    } catch (error) {
+      setElevateError(`Could not set up restarting as admin: ${String(error)}`);
+    }
+  }
   const [blacklistBusy, setBlacklistBusy] = useState(false);
   const [blacklistError, setBlacklistError] = useState<string | null>(null);
   // Seconds since the Overwolf companion app checked in; null = never.
@@ -778,28 +854,21 @@ export function SettingsPage(props: {
         </button>
       </header>
       {props.saveFeedback}
-      <nav className="settings-index" aria-label="Settings sections">
-        {[
-          { label: "Capture", links: [["capture", "Recording quality"], ["automation", "Automation"], ["hotkeys", "Hotkeys"]] },
-          { label: "Audio & games", links: [["audio", "Audio"], ["games", "Games"], ["advanced", "Advanced"]] },
-          { label: "Storage & sharing", links: [["storage", "Storage"], ["sharing", "Sharing"]] },
-          { label: "Health", links: [["health", "Diagnostics"]] },
-        ].map((group) => <details className="settings-nav-group" key={group.label}>
-          <summary>{group.label}</summary>
-          <div>{group.links.map(([id, label]) => <a key={id} href={`#settings-${id}`} onClick={(e) => {
-            e.preventDefault();
-            const target = document.getElementById(`settings-${id}`);
-            const disclosure = target?.closest("details");
-            if (disclosure) disclosure.open = true;
-            const menu = e.currentTarget.closest("details");
-            if (menu) menu.open = false;
-            target?.scrollIntoView({ block: "start" });
-            const heading = target?.querySelector<HTMLElement>("h2");
-            if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
-          }}>{label}</a>)}</div>
-        </details>)}
+      <div className="settings-layout">
+      <nav className="settings-sections" aria-label="Settings sections">
+        {SETTINGS_SECTIONS.map(([id, label]) => (
+          <a
+            key={id}
+            href={`#settings-${id}`}
+            className={activeSection === id ? "active" : ""}
+            aria-current={activeSection === id ? "true" : undefined}
+            onClick={(e) => { e.preventDefault(); goToSection(id); }}
+          >
+            {label}
+          </a>
+        ))}
       </nav>
-      <div className="settings-body">
+      <div className="settings-body" ref={bodyRef}>
         <section id="settings-capture" className="set-group">
           <div className="set-head">
             <div className="set-head-icon"><FilmSlate size={16} weight="fill" /></div>
@@ -947,18 +1016,46 @@ export function SettingsPage(props: {
               <span className="knob" />
             </button>
           </div>
+          <div className="set-col admin-rule">
+            <span className="field-label">When a game runs as admin</span>
+            <span className="field-hint">
+              Its picture is hidden from ClipForge, so clips come out black and the save hotkey can't reach it.
+              ClipForge can restart as admin to match. Windows asks for permission once.
+            </span>
+            <SegRadios label="When a game runs as admin" value={settings.admin_rule} options={ADMIN_RULES} onPick={(v) => void setAdminRule(null, v)} />
+            <div className="admin-games">
+              <span className="field-label">Per game</span>
+              {Object.entries(settings.admin_rule_games).map(([exe, rule]) => (
+                <div className="admin-game" key={exe}>
+                  <span className="mono">{exe}</span>
+                  <select className="audio-select" value={rule} aria-label={`Admin rule for ${exe}`} onChange={(e) => void setAdminRule(exe, e.target.value)}>
+                    {ADMIN_RULES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    <option value="default">Use default</option>
+                  </select>
+                </div>
+              ))}
+              {settings.game_exes.some((g) => !(g.toLowerCase() in settings.admin_rule_games)) && (
+                <select className="audio-select" aria-label="Add a per-game rule" value="" onChange={(e) => { if (e.target.value) void setAdminRule(e.target.value, "auto"); }}>
+                  <option value="">Add a game…</option>
+                  {settings.game_exes
+                    .filter((g) => !(g.toLowerCase() in settings.admin_rule_games))
+                    .map((g) => <option key={g} value={g.toLowerCase()}>{g}</option>)}
+                </select>
+              )}
+            </div>
+          </div>
           <div className="toggle-card">
             <div className="toggle-text">
-              <span className="toggle-title">Run with admin rights</span>
+              <span className="toggle-title">Always start as administrator</span>
               <span className="toggle-desc">
-                Improve capture priority and compatibility. Windows asks for permission.
+                Starts ClipForge as admin at login, so admin games never block capture and capture gets GPU priority.
               </span>
             </div>
             <button
               className={`switch ${settings.run_elevated ? "on" : ""}`}
               role="switch"
               aria-checked={settings.run_elevated}
-              aria-label="Run with admin rights"
+              aria-label="Always start as administrator"
               disabled={elevating}
               onClick={async () => {
                 const enabled = !settings.run_elevated;
@@ -1044,6 +1141,30 @@ export function SettingsPage(props: {
               <span className="knob" />
             </button>
           </div>
+        </section>
+
+        <section id="settings-export" className="set-group">
+          <div className="set-head">
+            <div className="set-head-icon"><DiscordLogo size={16} weight="fill" /></div>
+            <div className="set-head-text">
+              <h2 className="set-head-title">Export</h2>
+              <span className="set-head-desc">Discord exports are sized to fit and copied, ready to paste</span>
+            </div>
+          </div>
+          <div className="set-col">
+            <span className="field-label">Discord upload limit</span>
+            <SegRadios
+              label="Discord upload limit"
+              value={settings.discord_target_mb}
+              options={[[10, "10 MB · Free"], [50, "50 MB · Nitro Basic"], [500, "500 MB · Nitro"]]}
+              onPick={(v) => saveSettings({ ...settings, discord_target_mb: v })}
+            />
+            <span className="field-hint">The bitrate is set so each export lands just under this limit. You can change it per export too.</span>
+          </div>
+          <span className="field-hint">
+            Upload links (catbox, Streamable) are under{" "}
+            <a href="#settings-sharing" onClick={(e) => { e.preventDefault(); goToSection("advanced"); document.getElementById("settings-sharing")?.scrollIntoView({ block: "start" }); }}>Advanced › Sharing</a>.
+          </span>
         </section>
 
         <section id="settings-hotkeys" className="set-group">
@@ -1390,6 +1511,7 @@ export function SettingsPage(props: {
         <HealthPanel onTestSetup={props.onTestSetup} />
 
       </div>
+      </div>
     </div>
   );
 }
@@ -1432,7 +1554,7 @@ export function OnboardingModal(props: {
   return (
     <Modal label="ClipForge tutorial" className="modal onboarding-modal" onClose={onFinish}>
       <div className="modal-head">
-        <BookOpen size={19} color="#7f9bff" weight="fill" />
+        <BookOpen size={19} color="#7fe6d7" weight="fill" />
         <span className="modal-title">
           {onboardStep === 0 && "Welcome to ClipForge"}
           {onboardStep === 1 && "One-time setup"}

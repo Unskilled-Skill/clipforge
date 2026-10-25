@@ -19,6 +19,9 @@ const mockSettings = {
   window_capture_games: [],
   mic_noise_suppression: true,
   run_elevated: false,
+  admin_rule: "ask",
+  admin_rule_games: { "valorant-win64-shipping.exe": "auto" },
+  discord_target_mb: 10,
   vc_exe: "discord.exe",
   launch_at_login: true,
   auto_manage_buffer: true,
@@ -173,6 +176,7 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return null;
     case "set_run_elevated":
     case "restart_elevated":
+    case "ensure_admin_task":
       return null;
     case "open_logs":
       return null;
