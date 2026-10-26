@@ -333,7 +333,7 @@ pub fn apply_all(settings: &crate::clips::Settings) -> Result<(), String> {
         }
     };
     RELOAD_PENDING.store(!applied, Ordering::Relaxed);
-    ENGINE.set_vc_exe(&settings.vc_exe)?;
+    ENGINE.set_audio(&crate::engine::AudioConfig::from_settings(settings))?;
     ENGINE.set_mic_noise_suppression(settings.mic_noise_suppression)?;
     Ok(())
 }

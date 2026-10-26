@@ -7,7 +7,7 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { confirmDialog, invoke, listen, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
 import { blacklistApp, isDiscordApp } from "./app-blacklist";
-import type { BackupStatus, CaptureTest, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
+import type { AudioDevice, AudioDevices, BackupStatus, CaptureTest, Diagnostics, GameSource, ObsStatus, RunningApp, Settings, SetupStatus, SupervisorState } from "./types";
 import { captureTestLabel } from "./types";
 
 // Backend save echoes must not replace text being edited before its blur save.
@@ -31,11 +31,18 @@ import {
   HardDrives,
   Heartbeat,
   Keyboard,
+  Headset,
   Lightning,
+  Microphone,
+  Monitor,
+  MusicNotes,
+  Plus,
+  SpeakerHigh,
   Waveform,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import type { Icon } from "@phosphor-icons/react";
 
 /// RAM the replay buffer reserves, matching the backend's cap
 /// (setup::replay_ram_mb): bitrate + 25% + audio, min 512 MB.
@@ -295,26 +302,27 @@ export function AppPickerModal(props: {
 }
 
 export function VcPickerModal(props: {
-  currentVc: string;
+  title: string;
+  hint: string;
+  added: string[];
   runningApps: RunningApp[];
   onPick: (exe: string) => Promise<void>;
   onClose: () => void;
 }) {
-  const { currentVc, runningApps, onPick, onClose } = props;
+  const { title, hint, added, runningApps, onPick, onClose } = props;
+  const isAdded = (exe: string) => added.some((a) => a.toLowerCase() === exe.toLowerCase());
   return (
-    <Modal label="Pick voice-chat app" className="modal app-picker" zIndex={200} onClose={onClose}>
+    <Modal label={title} className="modal app-picker" zIndex={200} onClose={onClose}>
       <div className="modal-head">
         <GameController size={19} color="#7fe6d7" weight="fill" />
-        <span className="modal-title">Pick voice-chat app</span>
+        <span className="modal-title">{title}</span>
         <div className="lib-spacer" />
         <button className="modal-close" onClick={onClose} aria-label="Close">
           <X size={16} />
         </button>
       </div>
       <div className="modal-body">
-        <span className="field-label">
-          Choose the app whose audio goes on the voice-chat track.
-        </span>
+        <span className="field-label">{hint}</span>
         <div className="app-list">
           {runningApps.length === 0 && (
             <span className="field-label">No running windowed apps found.</span>
@@ -326,10 +334,10 @@ export function VcPickerModal(props: {
               </span>
               <button
                 className="setup-btn"
-                disabled={currentVc.toLowerCase() === a.exe}
+                disabled={isAdded(a.exe)}
                 onClick={() => onPick(a.exe)}
               >
-                {currentVc.toLowerCase() === a.exe ? "current" : "Use"}
+                {isAdded(a.exe) ? "Added" : "Add"}
               </button>
             </div>
           ))}
@@ -687,6 +695,68 @@ function SegRadios<T extends string | number>(props: { label: string; value: T; 
   );
 }
 
+const AUDIO_TRACKS: { i: number; name: string; desc: string; Icon: Icon }[] = [
+  { i: 0, name: "Mix", desc: "The full clip sound", Icon: SpeakerHigh },
+  { i: 1, name: "Game", desc: "Only the game you're playing", Icon: GameController },
+  { i: 2, name: "Voice", desc: "Your voice-chat apps", Icon: Headset },
+  { i: 3, name: "Desktop", desc: "Everything your PC plays", Icon: Monitor },
+  { i: 4, name: "Mic", desc: "Just your microphone", Icon: Microphone },
+  { i: 5, name: "Other apps", desc: "Music and apps you add below", Icon: MusicNotes },
+];
+
+/// Voice-chat apps, falling back to the older single-app setting.
+export function voiceAppsOf(s: Settings): string[] {
+  const list = (s.vc_exes ?? []).map((a) => a.trim()).filter(Boolean);
+  return list.length ? list : s.vc_exe?.trim() ? [s.vc_exe.trim()] : [];
+}
+
+/// Toggle a default export track. The mix already holds every other track and
+/// desktop holds game, voice and other apps, so those never stack (no doubled sound).
+function toggleExportTrack(current: number[], track: number): number[] {
+  if (current.includes(track)) {
+    const rest = current.filter((t) => t !== track);
+    return rest.length ? rest : [0];
+  }
+  const clashes = track === 0 ? [1, 2, 3, 4, 5] : track === 3 ? [0, 1, 2, 5] : [1, 2, 5].includes(track) ? [0, 3] : [0];
+  return [...current.filter((t) => !clashes.includes(t)), track].sort();
+}
+
+function deviceOptions(list: AudioDevice[] | undefined, current: string) {
+  const known = list ?? [];
+  return (
+    <>
+      {known.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+      {current !== "default" && !known.some((d) => d.id === current) && <option value={current}>Unplugged device</option>}
+    </>
+  );
+}
+
+function AppList(props: { title: string; hint: string; apps: string[]; empty: string; onAdd: () => void; onRemove: (exe: string) => void }) {
+  return (
+    <div className="app-list-setting">
+      <div className="app-list-head">
+        <span className="toggle-text">
+          <span className="toggle-title">{props.title}</span>
+          <span className="toggle-desc">{props.hint}</span>
+        </span>
+        <button className="btn-ghost" onClick={props.onAdd}><Plus size={13} /> Add app</button>
+      </div>
+      {props.apps.length === 0 ? (
+        <span className="field-hint">{props.empty}</span>
+      ) : (
+        <div className="app-chips">
+          {props.apps.map((exe) => (
+            <span key={exe} className="app-chip mono">
+              {exe}
+              <button aria-label={`Remove ${exe}`} onClick={() => props.onRemove(exe)}><X size={11} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Games with built-in auto-clip. `minimum`: kills per round, or kills close
 // together; games that only report events have none.
 const AUTO_CLIP_GAMES: { id: string; name: string; source: string; minimum?: "round" | "streak" }[] = [
@@ -736,17 +806,21 @@ export function SettingsPage(props: {
   connect: (s: Settings) => Promise<void>;
   connecting: boolean;
   onTutorial: () => void;
-  onPickVc: () => Promise<void>;
+  onPickApp: (target: "voice" | "other") => Promise<void>;
 }) {
   const {
     settings, setSettings, saveSettings, applyClipsDir, resetSettings, resetting,
     hkSave, hkShort, setHkSave, setHkShort, applyHotkeys,
     gameSources, sourceBusy, sourceTest, kindChoice, setKindChoice,
     addGameSource, testGameSource, removeGame, openAppPicker, addGameFromFolder,
-    sup, onTutorial, onPickVc,
+    sup, onTutorial, onPickApp,
   } = props;
   const [watchedDraft, setWatchedDraft] = useState(settings.game_exes.join("\n"));
-  const [vcDraft, setVcDraft, finishVcDraft] = useSettingDraft(settings.vc_exe);
+  const voiceApps = voiceAppsOf(settings);
+  const [devices, setDevices] = useState<AudioDevices | null>(null);
+  useEffect(() => {
+    invoke<AudioDevices>("list_audio_devices").then(setDevices).catch(() => setDevices({ inputs: [], outputs: [] }));
+  }, []);
   const [clipsDraft, setClipsDraft, finishClipsDraft] = useSettingDraft(settings.clips_dir);
   const editingWatched = useRef(false);
   useEffect(() => {
@@ -1243,28 +1317,61 @@ export function SettingsPage(props: {
             <div className="set-head-icon"><Waveform size={16} weight="fill" /></div>
             <div className="set-head-text">
               <h2 className="set-head-title">Split audio</h2>
-              <span className="set-head-desc">Five tracks per clip — game, voice, desktop, mic, mix</span>
+              <span className="set-head-desc">Every clip records six tracks; pick what the mix holds and what exports keep</span>
             </div>
           </div>
-          <span className="field-hint">
-            Choose which tracks to keep when exporting. Set your voice-chat app below.
-          </span>
-          <label className="set-col">
-            <span className="field-label">Voice-chat app (.exe)</span>
-            <div className="set-row">
-              <input
-                className="mono"
-                aria-label="Voice-chat app (.exe)" name="voice-chat-executable" autoComplete="off" spellCheck={false}
-                value={vcDraft}
-                onChange={(e) => setVcDraft(e.target.value)}
-                onBlur={() => { finishVcDraft(); void saveSettings({ ...settings, vc_exe: vcDraft }); }}
-                placeholder="discord.exe"
-              />
-              <button className="btn-ghost" onClick={onPickVc}>
-                Pick app
-              </button>
-            </div>
+          <label className="set-col audio-mix">
+            <span className="field-label">Mix track</span>
+            <SegRadios label="Mix track" value={settings.audio_mix}
+              options={[["everything", "Everything I hear"], ["game_voice_mic", "Game + voice + mic"]]}
+              onPick={(v) => saveSettings({ ...settings, audio_mix: v })} />
+            <span className="field-hint">
+              {settings.audio_mix === "everything"
+                ? "All PC sound plus your mic, as you heard it."
+                : "Leaves music, videos and notifications out of the mix. They stay on their own tracks."}
+            </span>
           </label>
+          <div className="audio-tracks" role="group" aria-label="Tracks kept when exporting">
+            <span className="field-hint">Tracks kept by default when you export or share a clip. You can change it per clip in the editor.</span>
+            {AUDIO_TRACKS.map(({ i, name, desc, Icon }) => (
+              <label key={i} className="audio-track">
+                <Icon size={16} weight="fill" />
+                <span className="toggle-text">
+                  <span className="toggle-title">{name}</span>
+                  <span className="toggle-desc">{desc}</span>
+                </span>
+                <span className="audio-track-keep">Export</span>
+                <input type="checkbox" checked={settings.export_tracks.includes(i)} aria-label={`Keep ${name} when exporting`}
+                  onChange={() => saveSettings({ ...settings, export_tracks: toggleExportTrack(settings.export_tracks, i) })} />
+              </label>
+            ))}
+          </div>
+          <div className="audio-devices">
+            <label className="set-col">
+              <span className="field-label">Microphone</span>
+              <select className="audio-select wide" value={settings.mic_device}
+                onChange={(e) => saveSettings({ ...settings, mic_device: e.target.value })}>
+                <option value="default">Windows default</option>
+                {deviceOptions(devices?.inputs, settings.mic_device)}
+              </select>
+            </label>
+            <label className="set-col">
+              <span className="field-label">Speakers / headset</span>
+              <select className="audio-select wide" value={settings.output_device}
+                onChange={(e) => saveSettings({ ...settings, output_device: e.target.value })}>
+                <option value="default">Windows default</option>
+                {deviceOptions(devices?.outputs, settings.output_device)}
+              </select>
+            </label>
+          </div>
+          <AppList title="Voice-chat apps" hint="Recorded together on the Voice track."
+            apps={voiceApps} empty="No voice-chat app yet. Add Discord, TeamSpeak or similar."
+            onAdd={() => onPickApp("voice")}
+            onRemove={(exe) => saveSettings({ ...settings, vc_exes: voiceApps.filter((a) => a !== exe), vc_exe: "" })} />
+          <AppList title="Other apps" hint="Music, browser and so on, recorded on the Other apps track."
+            apps={settings.other_apps} empty="None. Add Spotify or a browser to keep it on its own track."
+            onAdd={() => onPickApp("other")}
+            onRemove={(exe) => saveSettings({ ...settings, other_apps: settings.other_apps.filter((a) => a !== exe) })} />
           <div className="toggle-card">
             <div className="toggle-text">
               <span className="toggle-title">Mic noise suppression</span>

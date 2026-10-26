@@ -24,6 +24,12 @@ const mockSettings = {
   admin_rule_games: { "valorant-win64-shipping.exe": "auto" },
   discord_target_mb: 10,
   vc_exe: "discord.exe",
+  vc_exes: [],
+  other_apps: [],
+  audio_mix: "everything",
+  mic_device: "default",
+  output_device: "default",
+  export_tracks: [0],
   launch_at_login: true,
   auto_manage_buffer: true,
   hotkey_save: "alt+f10",
@@ -106,6 +112,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       Object.assign(mockSettings, structuredClone(_args?.settings));
       mockSettings.game_exes = mockSettings.game_exes.map(exe => exe.trim().toLowerCase()).filter(exe => exe && !mockSettings.game_blacklist.some((blocked: string) => blocked === exe) && !/^discord(ptb|canary)?\.exe$/.test(exe));
       return null;
+    case "list_audio_devices":
+      return { inputs: [{ id: "{mic-1}", name: "Mic In (Elgato Wave:3)" }, { id: "{mic-2}", name: "Headset Microphone (Arctis Nova 7X)" }], outputs: [{ id: "{out-1}", name: "Headphones (Arctis Nova 7X)" }, { id: "{out-2}", name: "Speakers (Realtek Audio)" }] };
     case "list_game_icons":
       return {};
     case "load_settings":

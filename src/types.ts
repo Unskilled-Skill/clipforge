@@ -7,6 +7,16 @@ export interface ObsStatus {
   obs_version: string | null;
 }
 
+export interface AudioDevice {
+  id: string;
+  name: string;
+}
+
+export interface AudioDevices {
+  inputs: AudioDevice[];
+  outputs: AudioDevice[];
+}
+
 export interface Settings {
   clips_dir: string;
   game_exes: string[];
@@ -18,6 +28,12 @@ export interface Settings {
   admin_rule_games: Record<string, string>;
   discord_target_mb: number;
   vc_exe: string;
+  vc_exes: string[];
+  other_apps: string[];
+  audio_mix: "everything" | "game_voice_mic";
+  mic_device: string;
+  output_device: string;
+  export_tracks: number[];
   launch_at_login: boolean;
   auto_manage_buffer: boolean;
   hotkey_save: string;

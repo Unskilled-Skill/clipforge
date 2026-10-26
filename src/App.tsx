@@ -35,6 +35,7 @@ import {
   Headset,
   MagnifyingGlass,
   Microphone,
+  MusicNotes,
   Monitor,
   PencilSimple,
   Play,
@@ -48,7 +49,7 @@ import {
   Waveform,
   X,
 } from "@phosphor-icons/react";
-import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal } from "./panels";
+import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
 import { TimelineController } from "./timeline/controller";
 import { Filmstrip, KillMarkers, Ruler } from "./timeline/parts";
 import type {
@@ -189,13 +190,13 @@ type TrackMeta = { i: number; label: string; Icon: typeof SpeakerHigh };
 
 /// Tracks that contain each other's sound, so keeping both plays it twice.
 /// The mix (track 1) holds everything; desktop is all system sound, which
-/// includes the game and voice chat tracks (5-track layout).
+/// includes the game, voice chat and other-apps tracks (5/6-track layout).
 function trackOverlaps(count: number, track: number): number[] {
   const all = Array.from({ length: count }, (_, i) => i);
   if (track === 0) return all.filter((i) => i !== 0);
   if (count >= 5) {
-    if (track === 3) return [0, 1, 2];
-    if (track === 1 || track === 2) return [0, 3];
+    if (track === 3) return count >= 6 ? [0, 1, 2, 5] : [0, 1, 2];
+    if (track === 1 || track === 2 || track === 5) return [0, 3];
   }
   return [0];
 }
@@ -212,7 +213,7 @@ function keepTrack(prev: Set<number>, track: number, count: number): Set<number>
 function withoutOverlaps(keep: Set<number>, count: number): Set<number> {
   const next = new Set([...keep].filter((t) => t < Math.max(count, 1)));
   if (next.size > 1) next.delete(0);
-  if (count >= 5 && next.has(3) && (next.has(1) || next.has(2))) next.delete(3);
+  if (count >= 5 && next.has(3) && (next.has(1) || next.has(2) || next.has(5))) next.delete(3);
   return next.size ? next : new Set([0]);
 }
 
@@ -224,6 +225,7 @@ function trackLabels(count: number): TrackMeta[] {
       { i: 2, label: "voice", Icon: Headset },
       { i: 3, label: "desktop", Icon: Monitor },
       { i: 4, label: "mic", Icon: Microphone },
+      ...(count >= 6 ? [{ i: 5, label: "other apps", Icon: MusicNotes }] : []),
     ];
   }
   if (count === 3) {
@@ -479,7 +481,7 @@ function App() {
   >({});
   const [kindChoice, setKindChoice] = useState<Record<string, string>>({});
   const [showAppPicker, setShowAppPicker] = useState(false);
-  const [vcPicker, setVcPicker] = useState(false);
+  const [vcPicker, setVcPicker] = useState<"voice" | "other" | null>(null);
   const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
   const [appVersion, setAppVersion] = useState("");
   const [launchingObs, setLaunchingObs] = useState(false);
@@ -1028,7 +1030,7 @@ function App() {
     setDuration(0);
     setPreviewing(false);
     const mem = audioMemory[clip.path];
-    setAudioKeep(new Set(mem?.keep ?? [0]));
+    setAudioKeep(new Set(mem?.keep ?? settings?.export_tracks ?? [0]));
     setTrackGain(mem?.gain ?? {});
     setAudioTracks(1);
     setTrackWaves([]);
@@ -1105,7 +1107,10 @@ function App() {
     setExporting(true);
     setError(null);
     try {
-      await invoke<string>("export_discord", { input: clip.path, targetMb: mb, start: 0, end: 0, audioTracks: null });
+      // Default export tracks from Settings › Split audio; the backend skips
+      // tracks an older clip doesn't have.
+      const tracks = (settings?.export_tracks?.length ? settings.export_tracks : [0]).map((t) => [t, 1]);
+      await invoke<string>("export_discord", { input: clip.path, targetMb: mb, start: 0, end: 0, audioTracks: tracks });
       showToast("Exported and copied to clipboard — Ctrl+V in Discord");
       await refreshClips();
     } catch (e) {
@@ -3580,15 +3585,20 @@ function App() {
 
       {vcPicker && (
         <VcPickerModal
-          currentVc={settings.vc_exe}
+          title={vcPicker === "voice" ? "Add voice-chat app" : "Add other app"}
+          hint={vcPicker === "voice" ? "Its audio goes on the Voice track." : "Its audio goes on the Other apps track."}
+          added={vcPicker === "voice" ? voiceAppsOf(settings) : settings.other_apps}
           runningApps={runningApps}
           onPick={async (exe) => {
-            try { await saveSettings({ ...settings, vc_exe: exe }); }
+            const next = vcPicker === "voice"
+              ? { ...settings, vc_exes: [...voiceAppsOf(settings), exe], vc_exe: "" }
+              : { ...settings, other_apps: [...settings.other_apps, exe] };
+            try { await saveSettings(next); }
             catch { return; }
-            setVcPicker(false);
-            showToast(`Voice-chat audio set to ${exe}`);
+            setVcPicker(null);
+            showToast(`Added ${exe}`);
           }}
-          onClose={() => setVcPicker(false)}
+          onClose={() => setVcPicker(null)}
         />
       )}
 
@@ -3629,10 +3639,10 @@ function App() {
             setOnboardStep(0);
             setShowOnboarding(true);
           }}
-          onPickVc={async () => {
+          onPickApp={async (target) => {
             try {
               setRunningApps(await invoke<RunningApp[]>("list_running_apps"));
-              setVcPicker(true);
+              setVcPicker(target);
             } catch (e) {
               setError(String(e));
             }

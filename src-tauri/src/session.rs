@@ -184,7 +184,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let settings = crate::clips::Settings { clips_dir: dir.to_string_lossy().replace('\\', "/"), ..Default::default() };
         let video = crate::engine::video_config(30, 720);
-        ENGINE.ensure_started(video, "discord.exe").unwrap();
+        // Two voice apps and an other-app source, with the game-only mix.
+        let audio = crate::engine::AudioConfig {
+            game_only_mix: true,
+            voice_apps: vec!["discord.exe".into(), "teamspeak.exe".into()],
+            other_apps: vec!["spotify.exe".into()],
+            ..Default::default()
+        };
+        ENGINE.ensure_started(video, &audio).unwrap();
         let (output, video) = crate::setup::desired_config(&settings, &ENGINE.video_encoders());
         println!("encoder: {}", output.encoder);
         ENGINE.configure(output, video).unwrap();
@@ -205,6 +212,7 @@ mod tests {
         assert!(raw > 10_000, "nothing recorded");
         assert!((3.5..7.0).contains(&duration), "unexpected length {duration}");
         assert_eq!(crate::clips::read_markers(&done), vec![1.5, 3.0]);
+        assert_eq!(crate::clips::list_audio_tracks(done.clone()).unwrap(), 6);
         assert!(!path.exists(), "fragmented original removed");
     }
 

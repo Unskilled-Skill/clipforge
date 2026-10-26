@@ -219,7 +219,7 @@ mod tests {
             return;
         }
         let video = crate::engine::video_config(60, 0);
-        crate::engine::ENGINE.ensure_started(video, "discord.exe").unwrap();
+        crate::engine::ENGINE.ensure_started(video, &crate::engine::AudioConfig::default()).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(6));
         let s = state();
         crate::engine::ENGINE.shutdown();

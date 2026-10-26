@@ -1,6 +1,7 @@
 mod autoclip;
 mod gamesources;
 mod gameicons;
+mod audiodevices;
 mod screenkills;
 mod session;
 mod matchdata;
@@ -532,6 +533,7 @@ pub fn run() {
             elevation::restart_elevated,
             elevation::ensure_admin_task,
             gameicons::list_game_icons,
+            audiodevices::list_audio_devices,
             backup::backup_status,
             backup::backup_now,
             set_hotkeys,

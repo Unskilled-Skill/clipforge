@@ -154,8 +154,27 @@ pub struct Settings {
     #[serde(default = "default_discord_mb")]
     pub discord_target_mb: f64,
     /// Voice-chat app whose audio gets its own recording track (Discord etc.).
+    /// Superseded by `vc_exes`; still read when that list is empty.
     #[serde(default = "default_vc_exe")]
     pub vc_exe: String,
+    /// Voice-chat apps, all recorded together on the Voice track.
+    #[serde(default)]
+    pub vc_exes: Vec<String>,
+    /// Apps recorded on their own "Other apps" track (music, browser).
+    #[serde(default)]
+    pub other_apps: Vec<String>,
+    /// What the Mix track holds: "everything" (all PC sound + mic) or
+    /// "game_voice_mic" (keeps music and notifications out of clips).
+    #[serde(default = "default_audio_mix")]
+    pub audio_mix: String,
+    /// WASAPI endpoint ids; "default" follows the Windows default device.
+    #[serde(default = "default_device")]
+    pub mic_device: String,
+    #[serde(default = "default_device")]
+    pub output_device: String,
+    /// Tracks kept by default when exporting (0 = mix ... 5 = other apps).
+    #[serde(default = "default_export_tracks")]
+    pub export_tracks: Vec<u32>,
     /// Register the app to start (hidden, in the tray) at Windows login.
     #[serde(default = "default_true")]
     pub launch_at_login: bool,
@@ -225,6 +244,15 @@ fn default_bitrate() -> f64 {
 }
 fn default_encoder() -> String {
     "auto".into()
+}
+fn default_audio_mix() -> String {
+    "everything".into()
+}
+fn default_device() -> String {
+    "default".into()
+}
+fn default_export_tracks() -> Vec<u32> {
+    vec![0]
 }
 fn default_admin_rule() -> String {
     "ask".into()
@@ -299,6 +327,12 @@ impl Default for Settings {
             admin_rule_games: Default::default(),
             discord_target_mb: default_discord_mb(),
             vc_exe: default_vc_exe(),
+            vc_exes: Vec::new(),
+            other_apps: Vec::new(),
+            audio_mix: default_audio_mix(),
+            mic_device: default_device(),
+            output_device: default_device(),
+            export_tracks: default_export_tracks(),
             launch_at_login: true,
             auto_manage_buffer: true,
             hotkey_save: default_hotkey_save(),
@@ -334,6 +368,16 @@ pub fn load_favorites(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 impl Settings {
+    /// Voice-chat apps to record: the list, or the older single app.
+    pub fn voice_apps(&self) -> Vec<String> {
+        let list: Vec<String> = self.vc_exes.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect();
+        if list.is_empty() && !self.vc_exe.trim().is_empty() {
+            vec![self.vc_exe.trim().to_string()]
+        } else {
+            list
+        }
+    }
+
     /// The auto-clip rule for a game id (see `auto_clip_game_id`).
     pub fn clip_rule(&self, game: &str) -> GameClipRule {
         self.auto_clip_games.get(game).copied().unwrap_or(GameClipRule {
@@ -395,6 +439,23 @@ mod overlap_tests {
 impl GameClipRule {
     fn normalized(self) -> Self {
         Self { min_kills: self.min_kills.clamp(1, 5), ..self }
+    }
+}
+
+#[cfg(test)]
+mod audio_settings_tests {
+    use super::*;
+
+    #[test]
+    fn older_settings_keep_their_voice_app_and_record_everything() {
+        let old: Settings = serde_json::from_str(r#"{"clips_dir":"C:/Clips","vc_exe":"teamspeak.exe"}"#).unwrap();
+        assert_eq!(old.voice_apps(), vec!["teamspeak.exe".to_string()]);
+        assert_eq!(old.audio_mix, "everything");
+        assert_eq!((old.mic_device.as_str(), old.output_device.as_str()), ("default", "default"));
+        assert_eq!(old.export_tracks, vec![0]);
+        let mut s = Settings::default();
+        s.vc_exes = vec!["discord.exe".into(), " teamspeak.exe ".into(), "".into()];
+        assert_eq!(s.voice_apps(), vec!["discord.exe".to_string(), "teamspeak.exe".to_string()]);
     }
 }
 
@@ -1279,7 +1340,7 @@ fn drop_overlapping_tracks(keep: &mut Vec<(u32, f32)>, count: u32) {
     if keep.len() > 1 {
         keep.retain(|(t, _)| *t != 0);
     }
-    if count >= 5 && keep.iter().any(|(t, _)| *t == 1 || *t == 2) {
+    if count >= 5 && keep.iter().any(|(t, _)| *t == 1 || *t == 2 || *t == 5) {
         keep.retain(|(t, _)| *t != 3);
     }
 }

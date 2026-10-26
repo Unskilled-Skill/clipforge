@@ -1,9 +1,10 @@
 //! Embedded capture engine: libobs running inside ClipForge.
 //!
 //! Replaces the external OBS Studio + obs-websocket setup. One scene holds
-//! the game hook, and audio sources are routed to the five recording tracks
+//! the game hook, and audio sources are routed to the six recording tracks
 //! the export dropdown promises:
-//!   1 = full mix, 2 = game, 3 = voice chat, 4 = desktop, 5 = mic.
+//!   1 = mix, 2 = game, 3 = voice chat, 4 = desktop, 5 = mic, 6 = other apps.
+//! The mix is either everything (desktop + mic) or game + voice + mic only.
 //! The replay buffer output encodes with this GPU's best hardware encoder.
 //!
 //! Every call here blocks (libobs runs on its own actor thread), so async
@@ -32,7 +33,32 @@ const GAME: u32 = 1 << 1;
 const VC: u32 = 1 << 2;
 const DESKTOP: u32 = 1 << 3;
 const MIC: u32 = 1 << 4;
-const TRACKS: usize = 5;
+const OTHER: u32 = 1 << 5;
+const TRACKS: usize = 6;
+
+/// What goes on the audio tracks (Settings › Split audio).
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct AudioConfig {
+    /// Mix = game + voice + mic, without the rest of the PC's sound.
+    pub game_only_mix: bool,
+    /// WASAPI endpoint ids; "default" follows Windows.
+    pub mic_device: String,
+    pub output_device: String,
+    pub voice_apps: Vec<String>,
+    pub other_apps: Vec<String>,
+}
+
+impl AudioConfig {
+    pub fn from_settings(s: &crate::clips::Settings) -> Self {
+        Self {
+            game_only_mix: s.audio_mix == "game_voice_mic",
+            mic_device: s.mic_device.clone(),
+            output_device: s.output_device.clone(),
+            voice_apps: s.voice_apps(),
+            other_apps: s.other_apps.iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect(),
+        }
+    }
+}
 
 /// Placeholder target so the game hook idles until a game is detected.
 const NO_GAME: &str = "clipforge-no-game.invalid";
@@ -67,9 +93,14 @@ struct Inner {
     /// Window id the capture currently targets (None = idle).
     target: Option<String>,
     game_audio: ObsSceneItemRef<ObsSourceRef>,
-    vc_audio: ObsSourceRef,
-    _desktop: ObsSourceRef,
-    _mic: ObsSourceRef,
+    /// One application-audio source per voice app / other app.
+    vc_audio: Vec<ObsSourceRef>,
+    other_audio: Vec<ObsSourceRef>,
+    desktop: ObsSourceRef,
+    mic: ObsSourceRef,
+    audio: AudioConfig,
+    /// Bumped per rebuild of the app sources, so new ones get fresh names.
+    audio_generation: u32,
     /// RNNoise on the mic: strips keyboard clatter and fan hum. Toggled, not removed.
     mic_denoise: ObsFilterRef,
     replay: Option<ObsReplayBufferOutputRef>,
@@ -81,7 +112,6 @@ struct Inner {
     output: Option<OutputConfig>,
     video: VideoConfig,
     game: Option<String>,
-    vc_exe: String,
     active: bool,
 }
 
@@ -207,6 +237,11 @@ fn game_capture_settings(window: Option<&str>) -> serde_json::Value {
     })
 }
 
+fn device_settings(device: &str) -> serde_json::Value {
+    let id = if device.trim().is_empty() { "default" } else { device };
+    serde_json::json!({ "device_id": id })
+}
+
 fn process_audio_settings(exe: &str) -> serde_json::Value {
     serde_json::json!({ "window": format!("::{exe}"), "priority": PRIORITY_EXE })
 }
@@ -327,7 +362,7 @@ impl Engine {
     }
 
     /// Start libobs and build the capture scene (idempotent).
-    pub fn ensure_started(&self, video: VideoConfig, vc_exe: &str) -> Result<(), String> {
+    pub fn ensure_started(&self, video: VideoConfig, audio: &AudioConfig) -> Result<(), String> {
         let mut guard = self.inner.lock().map_err(err)?;
         if guard.is_some() {
             return Ok(());
@@ -349,26 +384,20 @@ impl Engine {
         // Hidden until it has a game to hook: an active hook aimed at nothing
         // logs "could not open process" every 2s.
         game_capture.set_visible(false).map_err(err)?;
-        // Desktop audio: mix + desktop track. Mic: mix + mic track.
-        let desktop = source(&mut scene, "wasapi_output_capture", "Desktop", serde_json::json!({ "device_id": "default" }))?;
-        set_mixers(&desktop, MIX | DESKTOP)?;
-        let mic = source(&mut scene, "wasapi_input_capture", "Mic", serde_json::json!({ "device_id": "default" }))?;
-        set_mixers(&mic, MIX | MIC)?;
+        // Devices and mixer routing are set by `set_audio` below.
+        let desktop = source(&mut scene, "wasapi_output_capture", "Desktop", device_settings(&audio.output_device))?;
+        let mic = source(&mut scene, "wasapi_input_capture", "Mic", device_settings(&audio.mic_device))?;
         let denoise_settings = data(&scene, serde_json::json!({ "method": "rnnoise" }))?;
         let mic_denoise = ctx
             .obs_filter(FilterInfo::new("noise_suppress_filter", "Noise Suppression", Some(denoise_settings), None))
             .map_err(err)?;
         mic.apply_filter(&mic_denoise).map_err(err)?;
         set_enabled(&mic_denoise, false)?;
-        // Game and voice chat isolated on their own tracks. They already come
-        // through desktop audio, so they stay out of the mix (no doubling).
-        // Hidden while no game runs: application capture of an exe that isn't
-        // running retries (and logs) continuously; hiding deactivates it.
+        // The game on its own track. Hidden while no game runs: application
+        // capture of an exe that isn't running retries (and logs)
+        // continuously; hiding deactivates it.
         let game_audio = add_item(&mut scene, "wasapi_process_output_capture", "GameAudio", process_audio_settings(NO_GAME))?;
-        set_mixers(game_audio.inner_source(), GAME)?;
         game_audio.set_visible(false).map_err(err)?;
-        let vc_audio = source(&mut scene, "wasapi_process_output_capture", "VCAudio", process_audio_settings(vc_exe))?;
-        set_mixers(&vc_audio, VC)?;
         // Frozen/black picture watch (see picture.rs).
         let fps = video.fps;
         scene
@@ -383,9 +412,12 @@ impl Engine {
             window_capture: None,
             target: None,
             game_audio,
-            vc_audio,
-            _desktop: desktop,
-            _mic: mic,
+            vc_audio: Vec::new(),
+            other_audio: Vec::new(),
+            desktop,
+            mic,
+            audio: AudioConfig::default(),
+            audio_generation: 0,
             mic_denoise,
             replay: None,
             session: None,
@@ -393,11 +425,11 @@ impl Engine {
             output: None,
             video,
             game: None,
-            vc_exe: vc_exe.to_string(),
             active: false,
         });
         *self.error.lock().map_err(err)? = None;
-        Ok(())
+        drop(guard);
+        self.set_audio(audio)
     }
 
     /// Point the hook and the game-audio track at `game` (None = idle).
@@ -465,16 +497,63 @@ impl Engine {
         set_enabled(&inner.mic_denoise, on)
     }
 
-    pub fn set_vc_exe(&self, vc_exe: &str) -> Result<(), String> {
+    /// Apply the audio setup: devices, what the mix holds, and one
+    /// application source per voice / other app. Cheap when nothing changed.
+    pub fn set_audio(&self, audio: &AudioConfig) -> Result<(), String> {
         let mut guard = self.inner.lock().map_err(err)?;
         let inner = guard.as_mut().ok_or("capture engine not running")?;
-        if inner.vc_exe != vc_exe {
-            inner
-                .vc_audio
-                .update_settings(data(&inner.scene, process_audio_settings(vc_exe))?)
-                .map_err(err)?;
-            inner.vc_exe = vc_exe.to_string();
+        if inner.audio == *audio && inner.audio_generation > 0 {
+            return Ok(());
         }
+        let first = inner.audio_generation == 0;
+        let old = std::mem::replace(&mut inner.audio, audio.clone());
+        if first || old.output_device != audio.output_device {
+            inner.desktop.update_settings(data(&inner.scene, device_settings(&audio.output_device))?).map_err(err)?;
+        }
+        if first || old.mic_device != audio.mic_device {
+            inner.mic.update_settings(data(&inner.scene, device_settings(&audio.mic_device))?).map_err(err)?;
+        }
+        // Everything: desktop sound already holds game, voice and other
+        // apps, so only it (and the mic) feed the mix. Game-only: the
+        // desktop track stays, but the mix is built from the game, voice
+        // and mic sources, leaving music and notifications out.
+        let to_mix = |on: bool| if on { MIX } else { 0 };
+        set_mixers(&inner.desktop, DESKTOP | to_mix(!audio.game_only_mix))?;
+        set_mixers(&inner.mic, MIC | MIX)?;
+        set_mixers(inner.game_audio.inner_source(), GAME | to_mix(audio.game_only_mix))?;
+
+        if first || old.voice_apps != audio.voice_apps || old.other_apps != audio.other_apps {
+            for src in inner.vc_audio.drain(..).chain(inner.other_audio.drain(..)) {
+                if let Ok(items) = inner.scene.items_for_source(&src) {
+                    for item in items {
+                        let _ = inner.scene.remove_item(item.as_ref());
+                    }
+                }
+            }
+            inner.audio_generation += 1;
+            let generation = inner.audio_generation;
+            for (i, exe) in audio.voice_apps.iter().enumerate() {
+                let src = source(&mut inner.scene, "wasapi_process_output_capture", &format!("Voice {generation}-{i}"), process_audio_settings(exe))?;
+                inner.vc_audio.push(src);
+            }
+            for (i, exe) in audio.other_apps.iter().enumerate() {
+                let src = source(&mut inner.scene, "wasapi_process_output_capture", &format!("Other {generation}-{i}"), process_audio_settings(exe))?;
+                inner.other_audio.push(src);
+            }
+        } else if inner.audio_generation == 0 {
+            inner.audio_generation = 1;
+        }
+        for src in &inner.vc_audio {
+            set_mixers(src, VC | to_mix(audio.game_only_mix))?;
+        }
+        for src in &inner.other_audio {
+            set_mixers(src, OTHER)?;
+        }
+        crate::logs::line(&format!(
+            "audio: mix={} voice={:?} other={:?} mic={} out={}",
+            if audio.game_only_mix { "game+voice+mic" } else { "everything" },
+            audio.voice_apps, audio.other_apps, audio.mic_device, audio.output_device
+        ));
         Ok(())
     }
 
@@ -762,7 +841,7 @@ fn build_replay(ctx: &mut ObsContext, scene: &ObsSceneRef, cfg: &OutputConfig) -
         "directory": cfg.dir.replace('/', "\\"),
         "format": "Replay %CCYY-%MM-%DD %hh-%mm-%ss",
         // mp4 plays in the in-app <video> preview (mkv doesn't) and holds
-        // all five audio tracks. Written in one go at save time.
+        // all six audio tracks. Written in one go at save time.
         "extension": "mp4",
         "allow_spaces": true,
     }))?;

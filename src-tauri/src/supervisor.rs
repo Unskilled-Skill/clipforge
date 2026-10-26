@@ -210,7 +210,7 @@ async fn start_engine(app: &AppHandle, settings: &crate::clips::Settings, state:
     }
     crate::obs::blocking(move || {
         let video = crate::engine::video_config(settings.video_fps, settings.video_height);
-        ENGINE.ensure_started(video, &settings.vc_exe)?;
+        ENGINE.ensure_started(video, &crate::engine::AudioConfig::from_settings(&settings))?;
         crate::setup::apply_all(&settings)
     })
     .await?;
