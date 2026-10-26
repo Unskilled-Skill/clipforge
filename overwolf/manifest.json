@@ -4,7 +4,7 @@
   "meta": {
     "name": "ClipForge Events",
     "author": "Unskilled-Skill",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "minimum-overwolf-version": "0.170.0",
     "description": "Sends your in-game kills to ClipForge so it can auto-clip them.",
     "icon": "icons/icon.png",
