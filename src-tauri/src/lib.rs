@@ -503,6 +503,7 @@ pub fn run() {
             clips::toggle_favorite,
             clips::run_storage_cleanup,
             clips::list_audio_tracks,
+            clips::clip_fps,
             clips::audio_track_roles,
             clips::gen_waveform,
             clips::gen_waveforms,

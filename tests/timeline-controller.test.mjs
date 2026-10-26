@@ -32,3 +32,14 @@ test('only the owning pointer can change and commit a trim',t=>{
  const f=fixture(t);f.surface.emit('pointerdown',1);f.surface.emit('pointerdown',2,300);f.surface.emit('pointermove',2,400);f.advanceFrame();
  f.surface.emit('pointermove',1,100);f.advanceFrame();f.surface.emit('pointerup',1,100);assert.deepEqual(f.commits,[[10,60,'start']]);
 });
+test('arrow steps move one whole frame each and a held key never queues a backlog',async t=>{
+ const f=fixture(t);f.ctl.setDuration(60);const video=f.ctl['video'];
+ f.ctl.step(1,30);assert.ok(Math.abs(video.currentTime-1.5/30)<1e-9,'first press shows frame 1');
+ video.seeking=true;f.ctl.step(1,30);f.ctl.step(1,30);
+ assert.ok(Math.abs(video.currentTime-1.5/30)<1e-9,'no new seek while one is in flight');
+ video.seeking=false;await new Promise(r=>setTimeout(r,40));f.advanceFrame();
+ assert.ok(Math.abs(video.currentTime-3.5/30)<1e-9,'lands on frame 3, skipping the in-between seek');
+ f.ctl.step(-1,30);await new Promise(r=>setTimeout(r,40));f.advanceFrame();
+ assert.ok(Math.abs(video.currentTime-2.5/30)<1e-9,'left steps back a frame');
+ video.paused=false;f.ctl.step(1);assert.equal(video.paused,true,'stepping pauses playback');
+});

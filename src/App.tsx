@@ -321,6 +321,8 @@ function App() {
   const [mixerOpen, setMixerOpen] = useState(false);
   const [audioNotice, setAudioNotice] = useState("");
   const [trackRoles, setTrackRoles] = useState<TrackRole[]>(["mix"]);
+  // Frame rate of the open clip, so arrow keys step exactly one frame.
+  const [clipFps, setClipFps] = useState(30);
   const audioTracks = trackRoles.length;
   const [audioKeep, setAudioKeep] = useState<Set<number>>(new Set([0]));
   // Per-track export gain, 1 = unchanged. Applied in the ffmpeg mix.
@@ -1038,6 +1040,10 @@ function App() {
     invoke<number[]>("load_markers", { input: clip.path })
       .then((m) => setKillMarkers(m ?? []))
       .catch(() => {});
+    setClipFps(settings?.video_fps || 30);
+    invoke<number>("clip_fps", { input: clip.path })
+      .then((fps) => { if (fps > 0) setClipFps(fps); })
+      .catch(() => {});
     invoke<TrackRole[]>("audio_track_roles", { input: clip.path })
       .then((roles) => {
         setTrackRoles(roles.length ? roles : ["mix"]);
@@ -1391,12 +1397,15 @@ function App() {
     if (!selected || commandsOpen) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      // Dropdowns (export size, audio) use the arrow keys themselves.
+      // Fields and dropdowns use these keys themselves; so do sliders and
+      // radio groups for arrows. A focused button only keeps Space (it
+      // presses the button), so arrows still step after clicking one.
       if (
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement ||
-        (e.key !== "Escape" && target.closest("button, summary, [role=slider], [role=radio]"))
+        (e.key !== "Escape" && target.closest("[role=slider], [role=radio], [role=tab], [role=menu]")) ||
+        (e.key === " " && target.closest("button, summary"))
       )
         return;
       const video = videoRef.current;
@@ -1407,13 +1416,18 @@ function App() {
           video.paused ? video.play() : video.pause();
           break;
         case "ArrowLeft":
+        case "ArrowRight": {
           e.preventDefault();
-          video.currentTime = Math.max(0, video.currentTime - (e.shiftKey ? 1 : 1 / 60));
+          const dir = e.key === "ArrowRight" ? 1 : -1;
+          if (timeline) {
+            if (e.shiftKey) timeline.step(dir);
+            else timeline.step(dir, clipFps);
+          } else {
+            video.pause();
+            video.currentTime = Math.min(duration, Math.max(0, video.currentTime + dir * (e.shiftKey ? 1 : 1 / clipFps)));
+          }
           break;
-        case "ArrowRight":
-          e.preventDefault();
-          video.currentTime = Math.min(duration, video.currentTime + (e.shiftKey ? 1 : 1 / 60));
-          break;
+        }
         case "[":
           setTrimStart(Math.min(Math.round(video.currentTime * 10) / 10, trimEnd - 0.5));
           break;
@@ -1427,7 +1441,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, duration, trimStart, trimEnd, commandsOpen]);
+  }, [selected, duration, trimStart, trimEnd, commandsOpen, timeline, clipFps]);
 
   // Library / settings keyboard shortcuts: Esc backs out (settings → library,
   // selection → clear), Ctrl+A selects everything visible, Delete recycles

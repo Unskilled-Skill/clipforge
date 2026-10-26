@@ -119,6 +119,10 @@ struct Inner {
 
 pub struct Engine {
     inner: Mutex<Option<Inner>>,
+    /// Mirrors `inner.is_some()` without the lock: startup, saves and
+    /// buffer stops hold the lock for seconds, and UI status checks must
+    /// never wait on them (a wait on the window thread froze the app).
+    running: std::sync::atomic::AtomicBool,
     /// Startup failure, shown to the user instead of a silent dead buffer.
     pub error: Mutex<Option<String>>,
 }
@@ -134,7 +138,7 @@ pub struct EngineInfo {
 }
 
 /// The one engine per process (libobs is process-global).
-pub static ENGINE: Engine = Engine { inner: Mutex::new(None), error: Mutex::new(None) };
+pub static ENGINE: Engine = Engine { inner: Mutex::new(None), running: std::sync::atomic::AtomicBool::new(false), error: Mutex::new(None) };
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -360,7 +364,7 @@ pub async fn bootstrap(progress: impl Fn(&'static str, u32) + Send + Sync + 'sta
 
 impl Engine {
     pub fn is_running(&self) -> bool {
-        self.inner.lock().map(|g| g.is_some()).unwrap_or(false)
+        self.running.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Start libobs and build the capture scene (idempotent).
@@ -429,6 +433,7 @@ impl Engine {
             game: None,
             active: false,
         });
+        self.running.store(true, std::sync::atomic::Ordering::Release);
         *self.error.lock().map_err(err)? = None;
         drop(guard);
         self.set_audio(audio)
@@ -577,7 +582,9 @@ impl Engine {
             inner.video = video;
             crate::picture::set_fps(video.fps);
         }
+        crate::logs::line(&format!("replay buffer: building ({} @ {} kbps, tracks {:?})", output.encoder, output.bitrate_kbps, output.tracks));
         inner.replay = Some(build_replay(&mut inner.ctx, &inner.scene, &output)?);
+        crate::logs::line("replay buffer: built");
         inner.output = Some(output);
         Ok(true)
     }
@@ -819,6 +826,7 @@ impl Engine {
                 let _ = inner.scene.runtime().run_with_obs_result(|| unsafe { crate::picture::uninstall() });
             }
             guard.take();
+            self.running.store(false, std::sync::atomic::Ordering::Release);
         }
     }
 }

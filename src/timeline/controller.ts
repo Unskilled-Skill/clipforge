@@ -86,6 +86,10 @@ class Seeker {
   get busy() {
     return this.pending != null;
   }
+  /** Where the video is headed: a queued seek, or the one in flight. */
+  get target(): number | null {
+    return this.pending ?? (this.video.seeking ? this.last : null);
+  }
   private commit(t: number) {
     this.lastAt = performance.now();
     this.last = t;
@@ -286,6 +290,22 @@ export class TimelineController {
     dimRight.style.transform = `scaleX(${(W - e) / W})`;
   }
 
+  /** Keyboard stepping. Pauses, moves on from where the previous step was
+   * headed (not where the decoder has got to), and seeks latest-wins, so a
+   * held arrow key never builds a backlog. With `fps`, steps whole frames
+   * and lands mid-frame, so every press shows a new picture. */
+  step(amount: number, fps?: number) {
+    if (!this.video.paused) this.video.pause();
+    const from = this.seeker.target ?? this.video.currentTime;
+    const end = this.duration || this.video.duration || 0;
+    const t = fps ? (Math.floor(from * fps + 1e-3) + amount + 0.5) / fps : from + amount;
+    const to = Math.min(Math.max(0, t), Math.max(0, end - 0.001));
+    this.seeker.queue(to);
+    this.paintPlayhead(to);
+    this.follow(to);
+    this.loop();
+  }
+
   private paintPlayhead(t: number) {
     this.el.playhead.style.transform = `translateX(${this.x(t)}px)`;
   }
@@ -312,7 +332,7 @@ export class TimelineController {
       if (this.mode === "scrub") this.scrubTo(this.timeAt(cx));
       else this.drag(cx);
     } else if (!this.mode) {
-      const t = this.video.currentTime;
+      const t = this.seeker.target ?? this.video.currentTime;
       this.paintPlayhead(t);
       if (!this.video.paused) this.follow(t);
     }

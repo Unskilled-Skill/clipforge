@@ -588,7 +588,7 @@ select:focus,
 .mt-handle.end { border-radius: 2px 6px 6px 2px; }
 .mt-handle:hover,
 .mt-tracks[data-dragging="start"] .mt-handle.start,
-.mt-tracks[data-dragging="end"] .mt-handle.end { background: #6a86ff; }
+.mt-tracks[data-dragging="end"] .mt-handle.end { background: color-mix(in srgb, var(--accent-action) 75%, white); }
 .mt-tracks[data-snapped="1"] .mt-handle { background: #ffd166; }
 .mt-handle .grip {
   width: 2px;

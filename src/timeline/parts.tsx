@@ -100,7 +100,10 @@ export function Filmstrip({
     const { el, frames } = img;
     const srcW = el.naturalWidth / frames;
     const srcH = el.naturalHeight;
-    const tileW = Math.max(24, (cssH * srcW) / srcH);
+    // Whole tiles only: stretch the natural tile width a little so they
+    // fill the timeline exactly, instead of a cut-off frame at the end.
+    const natural = Math.max(24, (cssH * srcW) / srcH);
+    const tileW = view.width / Math.max(1, Math.round(view.width / natural));
     const first = Math.floor(view.scrollLeft / tileW);
     const last = Math.ceil((view.scrollLeft + cssW) / tileW);
     for (let k = first; k < last; k++) {

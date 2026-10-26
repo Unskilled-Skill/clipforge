@@ -415,11 +415,16 @@ pub fn load_recording_metadata(input: String) -> Option<RecordingMetadata> {
     read(&input)
 }
 #[tauri::command]
-pub fn list_recording_metadata(inputs: Vec<String>) -> HashMap<String, RecordingMetadata> {
-    inputs
-        .into_iter()
-        .filter_map(|input| read(&input).map(|data| (input, data)))
-        .collect()
+pub async fn list_recording_metadata(inputs: Vec<String>) -> HashMap<String, RecordingMetadata> {
+    // One file read per clip: off the window thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        inputs
+            .into_iter()
+            .filter_map(|input| read(&input).map(|data| (input, data)))
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 pub fn slice(data: RecordingMetadata, start: f64, end: f64) -> RecordingMetadata {

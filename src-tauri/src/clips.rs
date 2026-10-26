@@ -500,6 +500,13 @@ mod audio_settings_tests {
     }
 
     #[test]
+    fn frame_rates_parse() {
+        assert_eq!(parse_rate("60/1"), Some(60.0));
+        assert!((parse_rate("30000/1001").unwrap() - 29.97).abs() < 0.01);
+        assert_eq!(parse_rate("0/0"), None);
+    }
+
+    #[test]
     fn track_roles_come_from_names_or_the_old_layouts() {
         let named = |n: &[&str]| n.iter().map(|s| Some(s.to_string())).collect::<Vec<_>>();
         assert_eq!(roles_from_names(&named(&["mix", "game", "mic"])), vec!["mix", "game", "mic"]);
@@ -1194,6 +1201,27 @@ fn clip_duration(ffmpeg: &PathBuf, path: &str) -> Result<f64, String> {
 }
 
 /// Duration of a clip for callers outside this module (marker math).
+/// Video frame rate of a clip (e.g. 30, 60), for frame-exact stepping.
+#[tauri::command]
+pub async fn clip_fps(input: String) -> Result<f64, String> {
+    blocking(move || {
+        let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
+        let out = hidden_cmd(ffmpeg.with_file_name("ffprobe.exe"))
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", "-of", "csv=p=0", &input])
+            .output()
+            .map_err(|e| e.to_string())?;
+        parse_rate(String::from_utf8_lossy(&out.stdout).trim()).ok_or_else(|| "could not read frame rate".to_string())
+    })
+    .await
+}
+
+/// "30000/1001" or "60" → frames per second.
+fn parse_rate(raw: &str) -> Option<f64> {
+    let (n, d) = raw.split_once('/').unwrap_or((raw, "1"));
+    let fps = n.trim().parse::<f64>().ok()? / d.trim().parse::<f64>().ok()?;
+    (fps.is_finite() && fps > 1.0 && fps < 1000.0).then_some(fps)
+}
+
 pub fn probe_clip_duration(path: &str) -> Result<f64, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     clip_duration(&ffmpeg, path)
@@ -1443,9 +1471,12 @@ pub async fn audio_track_roles(input: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn list_audio_tracks(input: String) -> Result<u32, String> {
-    let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
-    Ok(audio_stream_count(&ffmpeg, &input))
+pub async fn list_audio_tracks(input: String) -> Result<u32, String> {
+    blocking(move || {
+        let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
+        Ok(audio_stream_count(&ffmpeg, &input))
+    })
+    .await
 }
 
 /// Tracks contain each other's sound: the mix holds everything, and desktop

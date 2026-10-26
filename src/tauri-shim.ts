@@ -138,6 +138,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
     }
     case "list_audio_tracks":
       return 5;
+    case "clip_fps":
+      return 60;
     case "audio_track_roles":
       return ["mix", "game", "voice", "desktop", "mic"];
     case "load_markers":
