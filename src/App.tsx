@@ -1909,12 +1909,14 @@ function App() {
   const clipGroups = (() => {
     const items = visibleClips.map((c, i) => ({ c, i }));
     if (sortBy !== "newest" && sortBy !== "oldest") {
-      return [{ key: "all", label: "", meta: "", items }];
+      return [{ key: "all", date: "", label: "", meta: "", sub: "", dayItems: items, items }];
     }
     const dayKey = (ms: number) => new Date(ms).toDateString();
     const today = dayKey(Date.now());
     const yesterday = dayKey(Date.now() - 86400000);
-    const groups: { key: string; label: string; meta: string; items: typeof items }[] = [];
+    // One header per day; a day with several matches (or games) lists each
+    // as a sub-row under it. Cleanup acts on the whole day.
+    const groups: { key: string; date: string; label: string; meta: string; sub: string; dayItems: typeof items; items: typeof items }[] = [];
     for (const it of items) {
       const date = dayKey(it.c.modified_ms);
       const matchId=recordingMetadata[it.c.path]?.matches.length === 1 ? recordingMetadata[it.c.path].matches[0].info.id : "";
@@ -1931,19 +1933,29 @@ function App() {
                   day: "numeric",
                   month: "long",
                 });
-        g = { key, label, meta: "", items: [] };
+        g = { key, date, label, meta: "", sub: "", dayItems: [], items: [] };
         groups.push(g);
       }
       g.items.push(it);
     }
-    for (const g of groups) {
-      const names = [...new Set(g.items.map(({ c }) => gameName(gameOf(c))))];
+    const summary = (list: typeof items, match?: string) => {
+      const names = [...new Set(list.map(({ c }) => gameName(gameOf(c))))];
       const gamesText = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
-      const n = g.items.length;
-      const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
-      g.meta = `${gamesText} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
-      const metadata=recordingMetadata[g.items[0].c.path];
-      if (metadata?.matches.length===1) g.meta=`${gamesText} · ${matchLabel(metadata.matches[0].info)} · ${n} ${n===1?"clip":"clips"} · ${size}`;
+      const n = list.length;
+      const size = formatSize(list.reduce((a, { c }) => a + c.size_bytes, 0));
+      return `${gamesText}${match ? ` · ${match}` : ""} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
+    };
+    for (const g of groups) {
+      const metadata = recordingMetadata[g.items[0].c.path];
+      g.meta = summary(g.items, metadata?.matches.length === 1 ? matchLabel(metadata.matches[0].info) : undefined);
+    }
+    for (const date of new Set(groups.map((g) => g.date))) {
+      const day = groups.filter((g) => g.date === date);
+      day[0].dayItems = day.flatMap((g) => g.items);
+      if (day.length === 1) continue;
+      for (const g of day) g.sub = g.meta;
+      day[0].meta = summary(day[0].dayItems);
+      for (const g of day.slice(1)) g.label = "";
     }
     return groups;
   })();
@@ -2065,7 +2077,7 @@ function App() {
               <span>
                 <strong>This clip is black</strong>
                 The game’s picture was hidden from capture, usually because the game runs as admin and ClipForge doesn’t.
-                {sup?.game_elevated ? " That’s the case right now." : " Settings › Auto-clip decides what ClipForge does when that happens."}
+                {sup?.game_elevated ? " That’s the case right now." : " Settings › Automation decides what ClipForge does when that happens."}
               </span>
               {sup?.game_elevated ? (
                 <button className="st-primary st-solo" onClick={async () => {
@@ -2602,17 +2614,24 @@ function App() {
                     {clipGroups.map((g) => (
                       <Fragment key={g.key}>
                         {g.label && (
-                          <tr className="st-group">
+                          <tr className={`st-group ${g.sub ? "st-group-day" : ""}`}>
                             <td colSpan={compactLibrary ? 4 : 7}>
                               <div className="st-group-inner">
                                 <strong>{g.label}</strong>
                                 <span className="st-group-meta">{g.meta}</span>
-                                {g.items.some(({ c }) => !favorites.includes(c.path)) && (
-                                  <details className="session-actions"><summary aria-label={`Cleanup options for ${g.label}`}>Cleanup</summary><button className="session-clear" onClick={() => clearUnstarred(g.label, g.items.map(({ c }) => c))}>
+                                {g.dayItems.some(({ c }) => !favorites.includes(c.path)) && (
+                                  <details className="session-actions"><summary aria-label={`Cleanup options for ${g.label}`}>Cleanup</summary><button className="session-clear" onClick={() => clearUnstarred(g.label, g.dayItems.map(({ c }) => c))}>
                                     Keep starred, clear the rest
                                   </button></details>
                                 )}
                               </div>
+                            </td>
+                          </tr>
+                        )}
+                        {g.sub && (
+                          <tr className="st-group st-group-sub">
+                            <td colSpan={compactLibrary ? 4 : 7}>
+                              <div className="st-group-inner"><span className="st-group-meta">{g.sub}</span></div>
                             </td>
                           </tr>
                         )}

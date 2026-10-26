@@ -65,8 +65,9 @@ const mockThumbs = Object.fromEntries(
 // Sample context for visual verification only; native builds read persisted sources.
 function mockRecordingMetadata(input: string): RecordingMetadata | null {
   const i=Number(input.match(/mock-(\d+)/)?.[1]??-1);
-  if (![0,5,10,12,13].includes(i)) return null;
-  // Match data comes from CS2's Game State Integration.
+  // Match data comes from CS2's Game State Integration: the CS2 clips
+  // (every fifth from 3) and the CS2 full session (13).
+  if (![3,8,13].includes(i)) return null;
   const info: MatchInfo={id:"demo-cs2",game:"cs2.exe",source:"cs2-gsi",map:"de_nuke",mode:"Competitive",score:{won:13,lost:9},result:"won",round_results:{"4":"won","9":"won","13":"lost","17":"won"}};
   const bounds=[0,9,20,30,39.066667];
   const rounds=i>=12 ? [4,9,13,17].map((number,j)=>({match_id:info.id,number,start:bounds[j],end:bounds[j+1],result:info.round_results[String(number)]})) : [{match_id:info.id,number:9,start:0,end:mockThumbs[input]?.duration??34,result:info.round_results["9"]}];

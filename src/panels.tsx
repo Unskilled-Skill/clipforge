@@ -702,7 +702,7 @@ const ROUND_MINIMUMS: [number, string][] = [[1, "Every kill"], [2, "Rounds with 
 const STREAK_MINIMUMS: [number, string][] = [[1, "Every kill"], [2, "2+ kills close together"], [3, "3+ kills close together"], [4, "4+ kills close together"], [5, "5 kills close together"]];
 
 const SETTINGS_SECTIONS: [string, string][] = [
-  ["capture", "Capture"], ["automation", "Auto-clip"], ["export", "Export"], ["hotkeys", "Hotkeys"],
+  ["capture", "Capture"], ["automation", "Automation"], ["export", "Export"], ["hotkeys", "Hotkeys"],
   ["audio", "Audio"], ["games", "Games"], ["storage", "Storage"], ["advanced", "Advanced"], ["health", "Health"],
 ];
 
