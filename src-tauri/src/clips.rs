@@ -191,9 +191,6 @@ pub struct Settings {
     /// every kill). Games that don't report a kill count ignore it.
     #[serde(default = "default_min_kills")]
     pub auto_clip_min_kills: u32,
-    /// Accept kill events from the Overwolf companion app (needs Overwolf).
-    #[serde(default)]
-    pub overwolf_events: bool,
     /// Replay buffer length — how far back a clip reaches.
     #[serde(default = "default_replay_seconds")]
     pub replay_seconds: f64,
@@ -281,7 +278,6 @@ impl Default for Settings {
             auto_clip_delay_s: default_auto_clip_delay(),
             auto_clip_min_kills: default_min_kills(),
             session_recording: false,
-            overwolf_events: false,
             replay_seconds: default_replay_seconds(),
             video_fps: default_fps(),
             video_height: 0,

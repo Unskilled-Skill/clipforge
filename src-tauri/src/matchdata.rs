@@ -89,77 +89,6 @@ fn number(v: &Value) -> Option<u32> {
         .filter(|n| *n <= 10000)
         .map(|n| n as u32)
 }
-fn object(v: &Value) -> Value {
-    if let Some(s) = v.as_str() {
-        serde_json::from_str(s).unwrap_or(Value::Null)
-    } else {
-        v.clone()
-    }
-}
-fn outcome(s: &str) -> Option<String> {
-    match s {
-        "victory" | "win" | "won" => Some("won".into()),
-        "defeat" | "lose" | "lost" => Some("lost".into()),
-        "draw" | "tie" => Some("draw".into()),
-        _ => None,
-    }
-}
-
-pub fn valorant_map(raw: &str) -> String {
-    match raw {
-        "Infinity" => "Abyss",
-        "Triad" => "Haven",
-        "Duality" => "Bind",
-        "Bonsai" => "Split",
-        "Port" => "Icebox",
-        "Foxtrot" => "Breeze",
-        "Canyon" => "Fracture",
-        "Pitt" => "Pearl",
-        "Jam" => "Lotus",
-        "Juliett" => "Sunset",
-        "Rook" => "Corrode",
-        "Range" => "Practice Range",
-        _ => raw,
-    }
-    .into()
-}
-/// Companion sends a merged whitelist of match_info fields, never player names.
-pub fn valorant_update(info: &Value) -> Update {
-    let mode = object(&info["game_mode"]);
-    let score = object(&info["score"]);
-    let map = text(&info["map"]).map(|s| valorant_map(&s));
-    let phase = info["round_phase"].as_str().unwrap_or("");
-    let game_mode = if mode["custom"].as_bool() == Some(true) {
-        Some("Custom".into())
-    } else if mode["ranked"].as_str() == Some("1") || mode["ranked"].as_u64() == Some(1) {
-        Some("Competitive".into())
-    } else {
-        text(&mode["mode"]).map(|s| match s.as_str() {
-            "bomb"
-                if mode["ranked"].as_str() == Some("2") || mode["ranked"].as_u64() == Some(2) =>
-            {
-                "Unrated".into()
-            }
-            "bomb" => "Bomb".into(),
-            "quick bomb" => "Spike Rush".into(),
-            "swift" => "Swiftplay".into(),
-            _ => s,
-        })
-    };
-    Update {
-        external_id: text(&info["pseudo_match_id"]).or_else(|| text(&info["match_id"])),
-        active: map.is_some(),
-        map,
-        mode: game_mode,
-        round: number(&info["round_number"]).filter(|n| *n > 0),
-        score: number(&score["won"])
-            .zip(number(&score["lost"]))
-            .map(|(won, lost)| Score { won, lost }),
-        result: info["match_outcome"].as_str().and_then(outcome),
-        ended: phase == "game_end" || info["match_outcome"].as_str().and_then(outcome).is_some(),
-        ..Default::default()
-    }
-}
 
 pub fn cs2_update(json: &Value) -> Option<Update> {
     if json["auth"]["token"] != "clipforge-gsi-v1"
@@ -545,34 +474,6 @@ mod tests {
             active: true,
             ..Default::default()
         }
-    }
-    #[test]
-    fn valorant_parses_documented_strings_and_unknown_fields_stay_unknown() {
-        let u = valorant_update(
-            &json!({"map":"Jam","round_number":"9","score":"{\"won\":5,\"lost\":3}","game_mode":"{\"mode\":\"bomb\",\"custom\":false,\"ranked\":\"1\"}","match_outcome":"victory"}),
-        );
-        assert_eq!(u.map.as_deref(), Some("Lotus"));
-        assert_eq!(u.round, Some(9));
-        assert_eq!(u.mode.as_deref(), Some("Competitive"));
-        assert_eq!(u.score, Some(Score { won: 5, lost: 3 }));
-        assert_eq!(u.result.as_deref(), Some("won"));
-        let missing = valorant_update(&json!({}));
-        assert!(!missing.active);
-        assert_eq!(missing.round, None);
-        assert_eq!(missing.result, None);
-        assert_eq!(missing.score, None);
-        assert_eq!(
-            valorant_update(&json!({"game_mode":{"mode":"bomb"}}))
-                .mode
-                .as_deref(),
-            Some("Bomb")
-        );
-        assert_eq!(
-            valorant_update(&json!({"game_mode":{"mode":"bomb","ranked":"2"}}))
-                .mode
-                .as_deref(),
-            Some("Unrated")
-        );
     }
     #[test]
     fn cs2_scores_are_local_perspective_and_spectated_scores_are_never_used() {

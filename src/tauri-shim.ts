@@ -36,7 +36,6 @@ const mockSettings = {
   auto_clip_delay_s: 8,
   auto_clip_min_kills: 1,
   session_recording: false,
-  overwolf_events: false,
   replay_seconds: 180,
   video_fps: 60,
   video_height: 0,
@@ -66,8 +65,8 @@ const mockThumbs = Object.fromEntries(
 function mockRecordingMetadata(input: string): RecordingMetadata | null {
   const i=Number(input.match(/mock-(\d+)/)?.[1]??-1);
   if (![0,5,10,12,13].includes(i)) return null;
-  const cs=i===13;
-  const info: MatchInfo={id:cs?"demo-cs2":"demo-valorant",game:cs?"cs2.exe":"valorant-win64-shipping.exe",source:cs?"cs2-gsi":"valorant-overwolf",map:cs?"de_nuke":"Lotus",mode:"Competitive",score:{won:13,lost:9},result:"won",round_results:{"4":"won","9":"won","13":"lost","17":"won"}};
+  // Match data comes from CS2's Game State Integration.
+  const info: MatchInfo={id:"demo-cs2",game:"cs2.exe",source:"cs2-gsi",map:"de_nuke",mode:"Competitive",score:{won:13,lost:9},result:"won",round_results:{"4":"won","9":"won","13":"lost","17":"won"}};
   const bounds=[0,9,20,30,39.066667];
   const rounds=i>=12 ? [4,9,13,17].map((number,j)=>({match_id:info.id,number,start:bounds[j],end:bounds[j+1],result:info.round_results[String(number)]})) : [{match_id:info.id,number:9,start:0,end:mockThumbs[input]?.duration??34,result:info.round_results["9"]}];
   return {version:1,is_session:i>=12,matches:[{start:0,end:i>=12?39.066667:mockThumbs[input]?.duration??34,info}],rounds};
@@ -160,8 +159,6 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       return "D:/RECORDINGS/Clips/mock-out.mp4";
     case "rename_clip":
       return `D:/RECORDINGS/Clips/${(_args as { newName: string }).newName}.mp4`;
-    case "overwolf_status":
-      return 3;
     case "setup_status":
       return { obs_installed: true, ffmpeg_installed: true };
     case "obs_diagnostics":

@@ -791,15 +791,6 @@ export function SettingsPage(props: {
   }
   const [blacklistBusy, setBlacklistBusy] = useState(false);
   const [blacklistError, setBlacklistError] = useState<string | null>(null);
-  // Seconds since the Overwolf companion app checked in; null = never.
-  const [overwolfSeen, setOverwolfSeen] = useState<number | null>(null);
-  useEffect(() => {
-    if (!settings.overwolf_events) return;
-    const poll = () => invoke<number | null>("overwolf_status").then(setOverwolfSeen).catch(() => {});
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => clearInterval(id);
-  }, [settings.overwolf_events]);
   async function updateBlacklist(next: Settings) {
     setBlacklistBusy(true);
     setBlacklistError(null);
@@ -1123,28 +1114,6 @@ export function SettingsPage(props: {
               </span>
             </label>
           )}
-          <div className="toggle-card">
-            <div className="toggle-text">
-              <span className="toggle-title">Overwolf game events</span>
-              <span className="toggle-desc">
-                Valorant, Fortnite, Apex, Siege, Overwatch and Marvel Rivals.
-                Needs Overwolf and the ClipForge Overwolf app. ClipForge still does the recording.
-                {settings.overwolf_events &&
-                  (overwolfSeen !== null && overwolfSeen < 180
-                    ? " Connected."
-                    : " Not connected. Open Overwolf.")}
-              </span>
-            </div>
-            <button
-              className={`switch ${settings.overwolf_events ? "on" : ""}`}
-              role="switch"
-              aria-checked={settings.overwolf_events}
-              aria-label="Overwolf game events"
-              onClick={() => saveSettings({ ...settings, overwolf_events: !settings.overwolf_events })}
-            >
-              <span className="knob" />
-            </button>
-          </div>
         </section>
 
         <section id="settings-export" className="set-group">
