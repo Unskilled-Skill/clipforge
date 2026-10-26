@@ -944,29 +944,27 @@ input, textarea { caret-color: var(--st-accent); }
 .st-settings #settings-audio > label.audio-mix { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 24px; padding: 12px 0 16px; }
 .st-settings #settings-audio > label.audio-mix > .seg { grid-column: 2; grid-row: 1 / 3; }
 .st-settings #settings-audio > label.audio-mix > .field-hint { grid-column: 1; }
-.audio-tracks { display: flex; flex-direction: column; padding-bottom: 12px; }
-.audio-tracks > .field-hint { padding: 0 0 6px; }
-.audio-track { display: flex; align-items: center; gap: 14px; min-height: 46px; padding: 6px 0; border-top: 1px solid var(--st-line); cursor: pointer; }
-.audio-track > svg { flex: 0 0 auto; color: var(--st-muted); }
-.audio-track .toggle-text { flex: 1; min-width: 0; }
-.audio-track-keep { font-size: 11.5px; color: var(--st-text-3); }
-.audio-track input[type="checkbox"] {
-  appearance: none; flex: 0 0 auto; width: 16px; height: 16px; margin: 0; border-radius: 4px;
-  border: 1px solid #3a3a41; background: #141416 center / 11px 11px no-repeat; cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
+.audio-sources { display: flex; flex-direction: column; padding: 4px 0 12px; }
+.audio-sources > .field-label { padding-bottom: 6px; }
+.audio-source { display: flex; align-items: center; gap: 14px; min-height: 50px; padding: 6px 0; border-top: 1px solid var(--st-line); }
+.audio-source > svg { flex: 0 0 auto; color: var(--st-muted); }
+.audio-source .toggle-text { flex: 0 0 200px; min-width: 0; }
+.audio-source > select { flex: 0 1 300px; min-width: 0; margin-left: auto; }
+.audio-source > .app-chips { flex: 1; justify-content: flex-end; }
+.audio-source-auto { margin-left: auto; font-size: 12px; color: var(--st-text-3); }
+.audio-source .btn-ghost { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; }
+.audio-export { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-top: 1px solid var(--st-line); border-bottom: 1px solid var(--st-line); margin-bottom: 12px; }
+.audio-export .toggle-text { flex: 1; min-width: 0; }
+.audio-export-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.audio-export-chips button {
+  height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--st-line); background: none;
+  color: var(--st-text-2); font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-.audio-track input[type="checkbox"]:checked {
-  background-color: var(--st-accent); border-color: var(--st-accent);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2306221F' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
-}
-.audio-track input[type="checkbox"]:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
-.audio-devices { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 4px 0 16px; }
-.audio-devices .set-col { min-width: 0; }
-.audio-devices select { width: 100%; min-width: 0; }
-.app-list-setting { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--st-line); }
-.app-list-head { display: flex; align-items: center; gap: 14px; }
-.app-list-head .toggle-text { flex: 1; min-width: 0; }
-.app-list-head .btn-ghost { display: inline-flex; align-items: center; gap: 6px; }
+.audio-export-chips button:hover:not(:disabled) { border-color: #5a5a63; color: var(--st-text); }
+.audio-export-chips button[aria-pressed="true"] { background: var(--st-accent); border-color: var(--st-accent); color: #06221f; font-weight: 600; }
+.audio-export-chips button:disabled { opacity: 0.4; cursor: default; }
+.audio-export-chips button:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
 .app-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .app-chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 10px; border-radius: 6px; background: #1c1c20; border: 1px solid var(--st-line); font-size: 12px; color: var(--st-text-2); }
 .app-chip button { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 0; border-radius: 4px; background: none; color: var(--st-muted); cursor: pointer; }
