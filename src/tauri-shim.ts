@@ -30,6 +30,7 @@ const mockSettings = {
   mic_device: "default",
   output_device: "default",
   export_tracks: [0],
+  record_tracks: [0, 1, 2, 3, 4],
   launch_at_login: true,
   auto_manage_buffer: true,
   hotkey_save: "alt+f10",
@@ -137,6 +138,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
     }
     case "list_audio_tracks":
       return 5;
+    case "audio_track_roles":
+      return ["mix", "game", "voice", "desktop", "mic"];
     case "load_markers":
       // Every third mock clip has kill markers, for editor design work.
       return (_args as { input: string }).input.match(/mock-(\d+)/)?.[1] &&

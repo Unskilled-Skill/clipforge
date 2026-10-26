@@ -34,6 +34,7 @@ export interface Settings {
   mic_device: string;
   output_device: string;
   export_tracks: number[];
+  record_tracks: number[];
   launch_at_login: boolean;
   auto_manage_buffer: boolean;
   hotkey_save: string;

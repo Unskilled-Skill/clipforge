@@ -303,6 +303,7 @@ pub fn desired_config(settings: &crate::clips::Settings, encoders: &[String]) ->
         seconds: seconds as i64,
         ram_mb: replay_ram_mb(seconds, bitrate_mbps),
         dir: settings.clips_dir.clone(),
+        tracks: settings.recorded_tracks(),
     };
     (output, video)
 }

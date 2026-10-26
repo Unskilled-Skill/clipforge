@@ -45,3 +45,10 @@ test('search matches the same readable names and moments displayed on cards', ()
   assert.ok(matchesClipSearch('My clutch.mp4', 'Other', 2, '2K'));
   assert.ok(!matchesClipSearch('My clutch.mp4', 'Other', 2, '3K'));
 });
+
+test('edits are titled by their source and what was done', () => {
+  assert.equal(momentTitle('Valorant 2026-10-23 02-17-14_discord.mp4', 0), 'Valorant · Discord export');
+  assert.equal(momentTitle('CS2 3K 2026-10-25 22-30-00_trim_12-75_discord.mp4', 0), 'Counter-Strike 2 · 3 kills · Trim 0:12–1:15 · Discord export');
+  assert.equal(momentTitle('Apex 2026-10-26 14-08-41_gif.gif', 0), 'Apex Legends · GIF');
+  assert.equal(momentTitle('Montage_20261026.mp4', 0), 'Montage');
+});

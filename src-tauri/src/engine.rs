@@ -75,6 +75,8 @@ pub struct OutputConfig {
     pub seconds: i64,
     pub ram_mb: i64,
     pub dir: String,
+    /// Recorded track ids (0 = mix ... 5 = other apps), ascending.
+    pub tracks: Vec<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -859,14 +861,19 @@ fn build_replay(ctx: &mut ObsContext, scene: &ObsSceneRef, cfg: &OutputConfig) -
         ))
         .map_err(|e| format!("Encoder {} unavailable: {e}", cfg.encoder))?;
 
-    for track in 0..TRACKS {
+    // Only the wanted tracks get an encoder, packed into the file's first
+    // streams; each is named after what it holds, so players and the editor
+    // know a skipped track from a moved one.
+    for (slot, &track) in cfg.tracks.iter().filter(|t| **t < TRACKS).enumerate() {
         let aenc = data(scene, serde_json::json!({ "rate_control": "CBR", "bitrate": 160 }))?;
-        replay
-            .create_and_set_audio_encoder(
-                AudioEncoderInfo::new(ObsAudioEncoderType::FFMPEG_AAC, format!("ClipForge Audio {}", track + 1), Some(aenc), None),
-                track,
-            )
-            .map_err(err)?;
+        let name = crate::clips::TRACK_ROLES[track];
+        let enc = libobs_wrapper::encoders::audio::ObsAudioEncoder::new_from_info(
+            AudioEncoderInfo::new(ObsAudioEncoderType::FFMPEG_AAC, name, Some(aenc), None),
+            track,
+            replay.runtime().clone(),
+        )
+        .map_err(err)?;
+        replay.set_audio_encoder(enc, slot).map_err(err)?;
     }
     Ok(replay)
 }

@@ -186,63 +186,60 @@ function GameMark({ game, icons }: { game: string; icons: Record<string, string>
 // from the count keeps the labels matching the real audio per track.
 type ShareLink = { host: string; url: string; start: number; end: number; at: number };
 
-type TrackMeta = { i: number; label: string; Icon: typeof SpeakerHigh };
+type TrackMeta = { i: number; role?: string; label: string; Icon: typeof SpeakerHigh };
 
-/// Tracks that contain each other's sound, so keeping both plays it twice.
-/// The mix (track 1) holds everything; desktop is all system sound, which
-/// includes the game, voice chat and other-apps tracks (5/6-track layout).
-function trackOverlaps(count: number, track: number): number[] {
-  const all = Array.from({ length: count }, (_, i) => i);
-  if (track === 0) return all.filter((i) => i !== 0);
-  if (count >= 5) {
-    if (track === 3) return count >= 6 ? [0, 1, 2, 5] : [0, 1, 2];
-    if (track === 1 || track === 2 || track === 5) return [0, 3];
-  }
-  return [0];
+/// What each audio stream of a clip holds, in stream order. Clips skip
+/// tracks that were switched off or had nothing to record, so a stream's
+/// position alone doesn't say what it is.
+type TrackRole = "mix" | "game" | "voice" | "desktop" | "mic" | "other" | "track";
+
+/// Track ids used by settings (export_tracks, record_tracks) → role.
+const ROLE_OF_ID: TrackRole[] = ["mix", "game", "voice", "desktop", "mic", "other"];
+
+const ROLE_META: Record<TrackRole, { label: string; Icon: typeof SpeakerHigh }> = {
+  mix: { label: "mix", Icon: SpeakerHigh },
+  game: { label: "game", Icon: GameController },
+  voice: { label: "voice", Icon: Headset },
+  desktop: { label: "desktop", Icon: Monitor },
+  mic: { label: "mic", Icon: Microphone },
+  other: { label: "other apps", Icon: MusicNotes },
+  track: { label: "track", Icon: Waveform },
+};
+
+/// Roles whose sound another role also holds: the mix holds everything,
+/// desktop holds the game, voice chat and other apps.
+function roleOverlaps(role: TrackRole): TrackRole[] {
+  if (role === "mix") return ["game", "voice", "desktop", "mic", "other", "track"];
+  if (role === "desktop") return ["mix", "game", "voice", "other"];
+  if (role === "game" || role === "voice" || role === "other") return ["mix", "desktop"];
+  return ["mix"];
 }
 
-/// Check `track` and uncheck everything that would double its sound.
-function keepTrack(prev: Set<number>, track: number, count: number): Set<number> {
-  const next = new Set(prev);
+/// Check stream `track` and uncheck everything that would double its sound.
+function keepTrack(prev: Set<number>, track: number, roles: TrackRole[]): Set<number> {
+  const clash = roleOverlaps(roles[track] ?? "track");
+  const next = new Set([...prev].filter((t) => !clash.includes(roles[t] ?? "track")));
   next.add(track);
-  for (const o of trackOverlaps(count, track)) next.delete(o);
   return next;
 }
 
 /// Drop broad tracks (mix, then desktop) that overlap a kept specific one.
-function withoutOverlaps(keep: Set<number>, count: number): Set<number> {
-  const next = new Set([...keep].filter((t) => t < Math.max(count, 1)));
-  if (next.size > 1) next.delete(0);
-  if (count >= 5 && next.has(3) && (next.has(1) || next.has(2) || next.has(5))) next.delete(3);
+function withoutOverlaps(keep: Set<number>, roles: TrackRole[]): Set<number> {
+  const next = new Set([...keep].filter((t) => t < Math.max(roles.length, 1)));
+  if (next.size > 1) for (const t of [...next]) if (roles[t] === "mix") next.delete(t);
+  if ([...next].some((t) => ["game", "voice", "other"].includes(roles[t]))) for (const t of [...next]) if (roles[t] === "desktop") next.delete(t);
   return next.size ? next : new Set([0]);
 }
 
-function trackLabels(count: number): TrackMeta[] {
-  if (count >= 5) {
-    return [
-      { i: 0, label: "mix", Icon: SpeakerHigh },
-      { i: 1, label: "game", Icon: GameController },
-      { i: 2, label: "voice", Icon: Headset },
-      { i: 3, label: "desktop", Icon: Monitor },
-      { i: 4, label: "mic", Icon: Microphone },
-      ...(count >= 6 ? [{ i: 5, label: "other apps", Icon: MusicNotes }] : []),
-    ];
-  }
-  if (count === 3) {
-    return [
-      { i: 0, label: "mix", Icon: SpeakerHigh },
-      { i: 1, label: "desktop", Icon: Monitor },
-      { i: 2, label: "mic", Icon: Microphone },
-    ];
-  }
-  if (count === 2) {
-    return [
-      { i: 0, label: "mix", Icon: SpeakerHigh },
-      { i: 1, label: "mic", Icon: Microphone },
-    ];
-  }
-  if (count <= 1) return [{ i: 0, label: "audio", Icon: SpeakerHigh }];
-  return Array.from({ length: count }, (_, i) => ({ i, label: `track ${i + 1}`, Icon: Waveform }));
+/// Settings track ids → this clip's stream indices (ids it lacks drop out).
+function streamsForIds(ids: number[], roles: TrackRole[]): number[] {
+  const streams = ids.map((id) => roles.indexOf(ROLE_OF_ID[id])).filter((i) => i >= 0);
+  return streams.length ? streams : [0];
+}
+
+function trackLabels(roles: TrackRole[]): TrackMeta[] {
+  if (roles.length <= 1) return [{ i: 0, label: "audio", Icon: SpeakerHigh }];
+  return roles.map((role, i) => ({ i, role, ...ROLE_META[role], label: role === "track" ? `track ${i + 1}` : ROLE_META[role].label }));
 }
 
 function App() {
@@ -323,7 +320,8 @@ function App() {
   const [reorderNotice, setReorderNotice] = useState("");
   const [mixerOpen, setMixerOpen] = useState(false);
   const [audioNotice, setAudioNotice] = useState("");
-  const [audioTracks, setAudioTracks] = useState(1);
+  const [trackRoles, setTrackRoles] = useState<TrackRole[]>(["mix"]);
+  const audioTracks = trackRoles.length;
   const [audioKeep, setAudioKeep] = useState<Set<number>>(new Set([0]));
   // Per-track export gain, 1 = unchanged. Applied in the ffmpeg mix.
   const [trackGain, setTrackGain] = useState<Record<number, number>>({});
@@ -378,11 +376,9 @@ function App() {
   const [killTimes, setKillTimes] = useState<Record<string, number[]>>({});
   const inspectorVideo = useRef<HTMLVideoElement>(null);
   const [libExportMb, setLibExportMb] = useState(10);
-  const [inspectorTab, setInspectorTab] = useState<"details" | "audio" | "shares">("details");
   const [inspectorPath, setInspectorPath] = useState<string | null>(null);
   const [inspectorMedia, setInspectorMedia] = useState<{ path: string; tracks: number | null; links: ShareLink[]; error: boolean } | null>(null);
   useEffect(() => {
-    setInspectorTab("details");
     if (!inspectorPath || selected || showSettings || sessionClip) return;
     let cancelled = false;
     setInspectorMedia(null);
@@ -1030,9 +1026,9 @@ function App() {
     setDuration(0);
     setPreviewing(false);
     const mem = audioMemory[clip.path];
-    setAudioKeep(new Set(mem?.keep ?? settings?.export_tracks ?? [0]));
+    setAudioKeep(new Set(mem?.keep ?? [0]));
     setTrackGain(mem?.gain ?? {});
-    setAudioTracks(1);
+    setTrackRoles(["mix"]);
     setTrackWaves([]);
     perTrackOk.current = false;
     configuredTracks.current = new Set();
@@ -1042,12 +1038,13 @@ function App() {
     invoke<number[]>("load_markers", { input: clip.path })
       .then((m) => setKillMarkers(m ?? []))
       .catch(() => {});
-    invoke<number>("list_audio_tracks", { input: clip.path })
-      .then((count) => {
-        setAudioTracks(count);
-        // A remembered selection from before overlap handling may double
-        // sound (mix + game): keep the specific tracks, drop the broad ones.
-        setAudioKeep((prev) => withoutOverlaps(prev, count));
+    invoke<TrackRole[]>("audio_track_roles", { input: clip.path })
+      .then((roles) => {
+        setTrackRoles(roles.length ? roles : ["mix"]);
+        // New clips start from the default export tracks (Settings › Split
+        // audio). A remembered selection from before overlap handling may
+        // double sound (mix + game): keep the specific tracks.
+        setAudioKeep((prev) => withoutOverlaps(mem?.keep ? prev : new Set(streamsForIds(settings?.export_tracks ?? [0], roles)), roles));
       })
       .catch(() => {});
     invoke<{ track: number; waveform: string }[]>("gen_waveforms", { input: clip.path })
@@ -1107,9 +1104,10 @@ function App() {
     setExporting(true);
     setError(null);
     try {
-      // Default export tracks from Settings › Split audio; the backend skips
-      // tracks an older clip doesn't have.
-      const tracks = (settings?.export_tracks?.length ? settings.export_tracks : [0]).map((t) => [t, 1]);
+      // Default export tracks from Settings › Split audio, matched to the
+      // tracks this clip actually has.
+      const roles = await invoke<TrackRole[]>("audio_track_roles", { input: clip.path });
+      const tracks = streamsForIds(settings?.export_tracks ?? [0], roles).map((t) => [t, 1]);
       await invoke<string>("export_discord", { input: clip.path, targetMb: mb, start: 0, end: 0, audioTracks: tracks });
       showToast("Exported and copied to clipboard — Ctrl+V in Discord");
       await refreshClips();
@@ -2007,13 +2005,7 @@ function App() {
     const span = times.length > 1 ? times[times.length - 1] - times[0] : 0;
     return (
       <aside className="st-insp" aria-label="Clip details">
-        <div className="st-insp-tabs" role="tablist" aria-label="Clip information" onKeyDown={e => {
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
-          e.preventDefault(); const tabs = ["details", "audio", "shares"] as const;
-          const next = e.key === "Home" ? 0 : e.key === "End" ? 2 : (tabs.indexOf(inspectorTab) + (e.key === "ArrowRight" ? 1 : 2)) % 3;
-          setInspectorTab(tabs[next]); (e.currentTarget.children[next] as HTMLButtonElement)?.focus();
-        }}>{(["details", "audio", "shares"] as const).map(tab => <button key={tab} id={`inspector-${tab}-tab`} role="tab" aria-selected={inspectorTab === tab} aria-controls={`inspector-${tab}`} tabIndex={inspectorTab === tab ? 0 : -1} onClick={() => setInspectorTab(tab)}>{tab === "details" ? "Details" : tab === "audio" ? "Audio" : "Shares"}</button>)}</div>
-        {inspectorTab === "details" ? <div className="st-insp-body" role="tabpanel" id="inspector-details" aria-labelledby="inspector-details-tab">
+        <div className="st-insp-body">
           <video
             key={c.path}
             ref={inspectorVideo}
@@ -2051,6 +2043,15 @@ function App() {
               <dt>Saved</dt>
               <dd>{relativeTime(c.modified_ms)}</dd>
             </div>
+            {inspectorMedia?.path === c.path && !!inspectorMedia.tracks && (
+              <div className="st-insp-audio">
+                <dt>Audio</dt>
+                <dd>
+                  {inspectorMedia.tracks} {inspectorMedia.tracks === 1 ? "track" : "tracks"}
+                  <button className="st-link" onClick={() => { selectClip(c); setMixerOpen(true); }}>Edit mix</button>
+                </dd>
+              </div>
+            )}
           </dl>
 
           {times.length > 0 && (
@@ -2073,6 +2074,13 @@ function App() {
                   <span className="st-insp-kill-time">{formatDuration(t)}.{Math.floor((t % 1) * 10)}</span>
                 </button>
               ))}
+            </div>
+          )}
+
+          {inspectorMedia?.path === c.path && inspectorMedia.links.length > 0 && (
+            <div className="st-insp-links">
+              <span className="st-insp-label">Shared links</span>
+              <ul className="st-inspector-links">{inspectorMedia.links.map(link => <li key={link.url}><div><strong>{link.host}</strong><span title={link.url}>{link.url}</span><small>{formatDuration(link.start) || "0:00"} → {formatDuration(link.end) || "full clip"}</small></div><button className="st-ghost" aria-label={`Copy ${link.host} link`} onClick={() => invoke("copy_link", { url: link.url }).then(() => showToast("Link copied")).catch(e => setError(String(e)))}><Copy size={14} /></button></li>)}</ul>
             </div>
           )}
 
@@ -2147,19 +2155,7 @@ function App() {
               <Trash size={14} /> Move to Recycle Bin
             </button>
           </div>
-        </div> : <div className="st-insp-body st-insp-secondary" role="tabpanel" id={`inspector-${inspectorTab}`} aria-labelledby={`inspector-${inspectorTab}-tab`}>
-          <div className="st-insp-title"><span>{title}</span><span className="st-sub">{inspectorTab === "audio" ? "Recorded audio" : "Saved share links"}</span></div>
-          {inspectorMedia?.path !== c.path ? <p role="status">Loading…</p> : inspectorTab === "audio" ? <>
-            {inspectorMedia.tracks === null ? <p>Audio tracks could not be read. Open the editor to try again.</p> : inspectorMedia.tracks === 0 ? <p>No audio tracks were found in this recording.</p> : <>
-              <p>{inspectorMedia.tracks} audio {inspectorMedia.tracks === 1 ? "track" : "tracks"}. Choose what to keep and adjust each track’s volume in the editor.</p>
-              <ul className="st-inspector-tracks">{trackLabels(inspectorMedia.tracks).map(({i,label,Icon}) => <li key={i}><Icon size={16} /><span>{label}</span><small>Track {i + 1}</small></li>)}</ul>
-            </>}
-            <button className="st-primary st-solo" onClick={() => { selectClip(c); setMixerOpen(true); }}><Waveform size={15} /> Edit audio mix</button>
-          </> : <>
-            {inspectorMedia.error ? <p role="alert">Saved links could not be loaded. Open sharing in the editor to try again.</p> : inspectorMedia.links.length === 0 ? <p>No saved links for this clip yet. Create a link from the editor’s sharing options.</p> : <ul className="st-inspector-links">{inspectorMedia.links.map(link => <li key={link.url}><div><strong>{link.host}</strong><span title={link.url}>{link.url}</span><small>{formatDuration(link.start) || "0:00"} → {formatDuration(link.end) || "full clip"}</small></div><button className="st-ghost" aria-label={`Copy ${link.host} link`} onClick={() => invoke("copy_link", { url: link.url }).then(() => showToast("Link copied")).catch(e => setError(String(e)))}><Copy size={14} /></button></li>)}</ul>}
-            <button className="st-primary st-solo" onClick={() => { selectClip(c); requestAnimationFrame(() => { const disclosure = document.querySelector<HTMLDetailsElement>(".more-share"); if (disclosure) { disclosure.open = true; disclosure.scrollIntoView({ block: "nearest" }); } }); }}><LinkSimple size={15} /> Open sharing in editor</button>
-          </>}
-        </div>}
+        </div>
       </aside>
     );
   })();
@@ -2996,7 +2992,7 @@ function App() {
               </button>
             </div>
 
-            <div className={`editor-stage ${audioTracks >= 5 ? "many-tracks" : ""}`}>
+            <div className={`editor-stage ${audioTracks >= 4 ? "many-tracks" : ""}`}>
             <div className="player-wrap">
               <video
                 ref={videoRef}
@@ -3056,7 +3052,7 @@ function App() {
                 </div>
               )}
               {audioTracks > 1 &&
-                trackLabels(audioTracks).map((t) => (
+                trackLabels(trackRoles).map((t) => (
                   <audio
                     key={`${selected.path}#track${t.i}`}
                     ref={(el) => {
@@ -3307,7 +3303,7 @@ function App() {
                   </button>
                 </div>
               </div>
-              {duration > 0 && mixerOpen && <p className="audio-note" role="status">{audioNotice || (audioTracks >= 5 ? "Mix keeps all audio. Game or Voice replaces Mix/Desktop; add Mic to keep your reaction." : "Mix keeps all audio. Individual tracks replace the mix to avoid duplicate sound.")}</p>}
+              {duration > 0 && mixerOpen && <p className="audio-note" role="status">{audioNotice || (trackRoles.includes("desktop") && trackRoles.includes("game") ? "Mix keeps all audio. Game or Voice replaces Mix/Desktop; add Mic to keep your reaction." : "Mix keeps all audio. Individual tracks replace the mix to avoid duplicate sound.")}</p>}
               {duration > 0 && (
                 <div className="multitrack" id="clip-multitrack" tabIndex={mixerOpen ? 0 : -1} aria-label={mixerOpen ? "Audio mixer and timeline; scroll for more tracks" : "Video timeline"}>
                   <div className="mt-labels">
@@ -3316,7 +3312,7 @@ function App() {
                       <FilmSlate size={14} weight="fill" />
                       video
                     </div>
-                    {trackLabels(audioTracks).map((t) => {
+                    {trackLabels(trackRoles).map((t) => {
                       const on = audioKeep.has(t.i);
                       return (
                         <label
@@ -3325,8 +3321,8 @@ function App() {
                           title={
                             t.i === 0
                               ? "Keep in export. The mix already contains every other track."
-                              : audioTracks >= 5 && t.i === 3
-                                ? "Keep in export. Desktop already contains game and voice chat."
+                              : t.role === "desktop"
+                                ? "Keep in export. Desktop already contains game, voice chat and other apps."
                                 : "Keep in export"
                           }
                         >
@@ -3335,11 +3331,11 @@ function App() {
                             aria-label={`Include ${t.label} in export`}
                             checked={on}
                             onChange={(e) => {
-                              const next = e.target.checked ? keepTrack(audioKeep, t.i, audioTracks) : new Set([...audioKeep].filter((i) => i !== t.i));
-                              const removed = trackLabels(audioTracks).filter((track) => audioKeep.has(track.i) && !next.has(track.i));
-                              const kept = trackLabels(audioTracks).filter((track) => next.has(track.i)).map((track) => track.label);
+                              const next = e.target.checked ? keepTrack(audioKeep, t.i, trackRoles) : new Set([...audioKeep].filter((i) => i !== t.i));
+                              const removed = trackLabels(trackRoles).filter((track) => audioKeep.has(track.i) && !next.has(track.i));
+                              const kept = trackLabels(trackRoles).filter((track) => next.has(track.i)).map((track) => track.label);
                               setAudioKeep(next);
-                              setAudioNotice(`${removed.length ? `${removed.map((track) => track.label).join(" and ")} removed to avoid duplicate sound. ` : ""}Export audio: ${kept.join(", ") || "none (silent video)"}.${next.size === 1 && next.has(1) && audioTracks >= 5 ? " Add voice or mic to keep reactions." : ""}`);
+                              setAudioNotice(`${removed.length ? `${removed.map((track) => track.label).join(" and ")} removed to avoid duplicate sound. ` : ""}Export audio: ${kept.join(", ") || "none (silent video)"}.${next.size === 1 && trackRoles[[...next][0]] === "game" ? " Add voice or mic to keep reactions." : ""}`);
                             }}
                           />
                           <t.Icon size={14} weight="fill" className="mt-label-icon" />
@@ -3374,7 +3370,7 @@ function App() {
                             poster={thumbs[selected.path] ? convertFileSrc(thumbs[selected.path].thumb) : null}
                           />
                         </div>
-                        {trackLabels(audioTracks).map((t) => {
+                        {trackLabels(trackRoles).map((t) => {
                           const wave = trackWaves.find((w) => w.track === t.i);
                           return (
                             <div key={t.i} className={`mt-lane mt-audio ${audioKeep.has(t.i) ? "" : "off"}`}>

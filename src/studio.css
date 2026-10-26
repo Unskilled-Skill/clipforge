@@ -393,7 +393,7 @@
 .st-lib-body { flex: 1; min-height: 0; display: flex; }
 .st-lib-body > .st-scroll { flex: 1; min-width: 0; }
 .st-insp {
-  flex: 0 0 344px;
+  flex: 0 0 clamp(344px, 25vw, 480px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -674,15 +674,7 @@
 .st-recent-sessions button:hover, .st-recent-sessions button.active { background: var(--st-active); }
 .st-recent-sessions button > span { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .st-recent-sessions small { font-size: 11px; color: var(--st-muted); }
-.st-insp-tabs { display: flex; align-items: center; gap: 2px; flex: 0 0 38px; padding: 4px 10px; border-bottom: 1px solid var(--st-line); }
-.st-insp-tabs button { border: 0; background: none; padding: 6px 10px; border-radius: 4px; color: var(--st-muted); font: inherit; font-size: 12px; cursor: pointer; }
-.st-insp-tabs button[aria-selected="true"] { background: var(--st-active); color: var(--st-text); }
-.st-insp-secondary p { color: var(--st-text-3); font-size: 12.5px; line-height: 1.65; margin: 0; }
-.st-insp-secondary > button { align-self: flex-start; }
-.st-inspector-tracks, .st-inspector-links { list-style: none; margin: 0; padding: 0; }
-.st-inspector-tracks li { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--st-line); font-size: 13px; text-transform: capitalize; }
-.st-inspector-tracks small { margin-left: auto; color: var(--st-muted); font-size: 11px; }
-.st-inspector-tracks svg { color: var(--st-accent); }
+.st-inspector-links { list-style: none; margin: 0; padding: 0; }
 .st-inspector-links li { display: flex; gap: 8px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--st-line); }
 .st-inspector-links li > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
 .st-inspector-links strong { font-weight: 500; font-size: 13px; }
@@ -970,3 +962,29 @@ input, textarea { caret-color: var(--st-accent); }
 .app-chip button { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 0; border-radius: 4px; background: none; color: var(--st-muted); cursor: pointer; }
 .app-chip button:hover { background: var(--st-line); color: var(--st-text); }
 .st-settings #settings-audio > label.audio-mix > .seg button { white-space: nowrap; }
+
+/* Details panel: audio track count spans the facts grid, with a link to the mixer. */
+.st-insp-facts > .st-insp-audio { grid-column: 1 / -1; }
+.st-insp-audio dd { display: flex; align-items: baseline; gap: 10px; }
+.st-insp-links { display: flex; flex-direction: column; gap: 8px; }
+
+/* Split audio: each track row ends in a remove button; missing tracks
+   can be added back from the row below. */
+.audio-sources > .field-hint { padding: 0 0 8px; }
+.audio-source-remove {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin-left: 2px;
+  border: 0; border-radius: 6px; background: none; color: var(--st-muted); cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.audio-source-remove:hover { background: var(--st-line); color: var(--st-text); }
+.audio-source-remove:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 1px; }
+.audio-source > .audio-source-auto { margin-right: 4px; }
+.audio-source-empty { color: #e0b25c; }
+.audio-add-track { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 12px 0 4px; border-top: 1px solid var(--st-line); }
+.audio-add-track > .field-label { margin-right: 6px; }
+.audio-add-track .btn-ghost { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; }
+
+/* Rows are for clicking: shift-click and drags never select text (the
+   selection tint also darkened game icons). Rename fields still select. */
+.st-table, .st-side { user-select: none; -webkit-user-select: none; }
+.st-table input[type="text"], .st-table input:not([type]) { user-select: text; -webkit-user-select: text; }

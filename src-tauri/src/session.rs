@@ -121,6 +121,7 @@ fn finish(path: &Path, clips_dir: &str, markers: &[f64]) -> Result<String, Strin
             .args(["-hide_banner", "-y", "-i"])
             .arg(path)
             .args(["-map", "0", "-c", "copy", "-movflags", "+faststart"])
+            .args(crate::clips::track_name_args(&crate::clips::track_roles(&ffmpeg, &path.to_string_lossy())))
             .arg(&target)
             .output()
             .is_ok_and(|o| o.status.success())
@@ -182,7 +183,14 @@ mod tests {
         let dir = std::env::temp_dir().join("clipforge-session-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let settings = crate::clips::Settings { clips_dir: dir.to_string_lossy().replace('\\', "/"), ..Default::default() };
+        // Game track switched off, other apps on: the file skips the game
+        // track and names the rest.
+        let settings = crate::clips::Settings {
+            clips_dir: dir.to_string_lossy().replace('\\', "/"),
+            other_apps: vec!["spotify.exe".into()],
+            record_tracks: vec![2, 3, 4, 5],
+            ..Default::default()
+        };
         let video = crate::engine::video_config(30, 720);
         // Two voice apps and an other-app source, with the game-only mix.
         let audio = crate::engine::AudioConfig {
@@ -212,7 +220,8 @@ mod tests {
         assert!(raw > 10_000, "nothing recorded");
         assert!((3.5..7.0).contains(&duration), "unexpected length {duration}");
         assert_eq!(crate::clips::read_markers(&done), vec![1.5, 3.0]);
-        assert_eq!(crate::clips::list_audio_tracks(done.clone()).unwrap(), 6);
+        let roles = crate::clips::track_roles(&crate::clips::find_ffmpeg().unwrap(), &done);
+        assert_eq!(roles, vec!["mix", "voice", "desktop", "mic", "other"]);
         assert!(!path.exists(), "fragmented original removed");
     }
 

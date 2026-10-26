@@ -37,6 +37,7 @@ import {
   Monitor,
   MusicNotes,
   Plus,
+  SpeakerHigh,
   Waveform,
   WarningCircle,
   X,
@@ -726,12 +727,25 @@ function deviceOptions(list: AudioDevice[] | undefined, current: string) {
   );
 }
 
-function AppSource(props: { Icon: Icon; title: string; desc: string; apps: string[]; onAdd: () => void; onRemove: (exe: string) => void }) {
-  const { Icon } = props;
+// Track ids as in Settings (0 = mix ... 5 = other apps), in list order.
+const TRACK_ORDER = [1, 4, 3, 2, 5];
+const TRACK_INFO: Record<number, { title: string; desc: string; Icon: Icon }> = {
+  1: { title: "Game", desc: "The game you're playing", Icon: GameController },
+  2: { title: "Voice chat", desc: "Discord, TeamSpeak…", Icon: Headset },
+  3: { title: "Desktop", desc: "Everything your PC plays", Icon: Monitor },
+  4: { title: "Mic", desc: "Your microphone", Icon: Microphone },
+  5: { title: "Other apps", desc: "Music, browser…", Icon: MusicNotes },
+};
+
+function AppSource(props: { id: number; apps: string[]; remove: ReactNode; onAdd: () => void; onRemove: (exe: string) => void }) {
+  const { Icon, title, desc } = TRACK_INFO[props.id];
   return (
     <div className="audio-source">
       <Icon size={16} weight="fill" />
-      <span className="toggle-text"><span className="toggle-title">{props.title}</span><span className="toggle-desc">{props.desc}</span></span>
+      <span className="toggle-text">
+        <span className="toggle-title">{title}</span>
+        <span className={`toggle-desc ${props.apps.length ? "" : "audio-source-empty"}`}>{props.apps.length ? desc : "Add an app to record this track"}</span>
+      </span>
       <div className="app-chips">
         {props.apps.map((exe) => (
           <span key={exe} className="app-chip mono">
@@ -739,8 +753,9 @@ function AppSource(props: { Icon: Icon; title: string; desc: string; apps: strin
             <button aria-label={`Remove ${exe}`} onClick={() => props.onRemove(exe)}><X size={11} /></button>
           </span>
         ))}
-        <button className="btn-ghost" onClick={props.onAdd}><Plus size={13} /> Add</button>
+        <button className="btn-ghost" onClick={props.onAdd}><Plus size={13} /> App</button>
       </div>
+      {props.remove}
     </div>
   );
 }
@@ -805,6 +820,14 @@ export function SettingsPage(props: {
   } = props;
   const [watchedDraft, setWatchedDraft] = useState(settings.game_exes.join("\n"));
   const voiceApps = voiceAppsOf(settings);
+  // Track ids recorded; mirrors Settings::recorded_tracks in Rust.
+  const recordTracks = settings.record_tracks ?? [0, 1, 2, 3, 4];
+  const wants = (id: number) => recordTracks.includes(id);
+  const recorded = [0, 1, 2, 3, 4, 5].filter((id) => id === 0 || (wants(id) && (id !== 2 || voiceApps.length > 0) && (id !== 5 || settings.other_apps.length > 0)));
+  const toggleRecord = (id: number) => saveSettings({
+    ...settings,
+    record_tracks: wants(id) ? recordTracks.filter((t) => t !== id) : [...recordTracks, id].sort(),
+  });
   const [devices, setDevices] = useState<AudioDevices | null>(null);
   useEffect(() => {
     invoke<AudioDevices>("list_audio_devices").then(setDevices).catch(() => setDevices({ inputs: [], outputs: [] }));
@@ -1319,37 +1342,62 @@ export function SettingsPage(props: {
                 : "Leaves music, videos and notifications out of the clip sound."}
             </span>
           </label>
-          <div className="audio-sources" role="group" aria-label="Sound sources">
-            <span className="field-label">Each sound below also gets its own track</span>
+          <div className="audio-sources" role="group" aria-label="Recorded tracks">
+            <span className="field-label">Tracks</span>
+            <span className="field-hint">Each track is a sound you can mute or keep on its own later. Add only the ones you want.</span>
             <div className="audio-source">
-              <GameController size={16} weight="fill" />
-              <span className="toggle-text"><span className="toggle-title">Game</span><span className="toggle-desc">The game you're playing</span></span>
-              <span className="audio-source-auto">Automatic</span>
+              <SpeakerHigh size={16} weight="fill" />
+              <span className="toggle-text"><span className="toggle-title">Mix</span><span className="toggle-desc">The full clip sound</span></span>
+              <span className="audio-source-auto">Always recorded</span>
             </div>
-            <div className="audio-source">
-              <Microphone size={16} weight="fill" />
-              <span className="toggle-text"><span className="toggle-title">Mic</span><span className="toggle-desc">Your microphone</span></span>
-              <select className="audio-select" aria-label="Microphone" value={settings.mic_device}
-                onChange={(e) => saveSettings({ ...settings, mic_device: e.target.value })}>
-                <option value="default">Windows default</option>
-                {deviceOptions(devices?.inputs, settings.mic_device)}
-              </select>
-            </div>
-            <div className="audio-source">
-              <Monitor size={16} weight="fill" />
-              <span className="toggle-text"><span className="toggle-title">Desktop</span><span className="toggle-desc">Everything your PC plays</span></span>
-              <select className="audio-select" aria-label="Speakers or headset" value={settings.output_device}
-                onChange={(e) => saveSettings({ ...settings, output_device: e.target.value })}>
-                <option value="default">Windows default</option>
-                {deviceOptions(devices?.outputs, settings.output_device)}
-              </select>
-            </div>
-            <AppSource Icon={Headset} title="Voice chat" desc="Discord, TeamSpeak…" apps={voiceApps}
-              onAdd={() => onPickApp("voice")}
-              onRemove={(exe) => saveSettings({ ...settings, vc_exes: voiceApps.filter((a) => a !== exe), vc_exe: "" })} />
-            <AppSource Icon={MusicNotes} title="Other apps" desc="Music, browser…" apps={settings.other_apps}
-              onAdd={() => onPickApp("other")}
-              onRemove={(exe) => saveSettings({ ...settings, other_apps: settings.other_apps.filter((a) => a !== exe) })} />
+            {TRACK_ORDER.filter(wants).map((id) => {
+              const remove = <button className="audio-source-remove" aria-label={`Remove the ${TRACK_INFO[id].title} track`} title="Remove track" onClick={() => toggleRecord(id)}><X size={14} /></button>;
+              if (id === 2 || id === 5) {
+                const apps = id === 2 ? voiceApps : settings.other_apps;
+                return (
+                  <AppSource key={id} id={id} apps={apps} remove={remove}
+                    onAdd={() => onPickApp(id === 2 ? "voice" : "other")}
+                    onRemove={(exe) => saveSettings(id === 2
+                      ? { ...settings, vc_exes: voiceApps.filter((a) => a !== exe), vc_exe: "" }
+                      : { ...settings, other_apps: settings.other_apps.filter((a) => a !== exe) })} />
+                );
+              }
+              const { Icon, title, desc } = TRACK_INFO[id];
+              return (
+                <div key={id} className="audio-source">
+                  <Icon size={16} weight="fill" />
+                  <span className="toggle-text"><span className="toggle-title">{title}</span><span className="toggle-desc">{desc}</span></span>
+                  {id === 1 && <span className="audio-source-auto">Detected automatically</span>}
+                  {id !== 1 && (
+                    <select className="audio-select" aria-label={id === 4 ? "Microphone" : "Speakers or headset"}
+                      value={id === 4 ? settings.mic_device : settings.output_device}
+                      onChange={(e) => saveSettings(id === 4 ? { ...settings, mic_device: e.target.value } : { ...settings, output_device: e.target.value })}>
+                      <option value="default">Windows default</option>
+                      {deviceOptions(id === 4 ? devices?.inputs : devices?.outputs, id === 4 ? settings.mic_device : settings.output_device)}
+                    </select>
+                  )}
+                  {remove}
+                </div>
+              );
+            })}
+            {TRACK_ORDER.some((id) => !wants(id)) && (
+              <div className="audio-add-track">
+                <span className="field-label">Add track</span>
+                {TRACK_ORDER.filter((id) => !wants(id)).map((id) => {
+                  const { Icon, title } = TRACK_INFO[id];
+                  return (
+                    <button key={id} className="btn-ghost" onClick={async () => {
+                      await saveSettings({ ...settings, record_tracks: [...recordTracks, id].sort() });
+                      // An app track is empty until it has an app: pick one now.
+                      if (id === 2 && voiceApps.length === 0) await onPickApp("voice");
+                      if (id === 5 && settings.other_apps.length === 0) await onPickApp("other");
+                    }}>
+                      <Plus size={12} /><Icon size={14} weight="fill" /> {title}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="audio-export">
             <span className="toggle-text">
@@ -1357,11 +1405,9 @@ export function SettingsPage(props: {
               <span className="toggle-desc">Default when sharing; change it per clip in the editor</span>
             </span>
             <div className="audio-export-chips" role="group" aria-label="Tracks kept when exporting">
-              {AUDIO_TRACKS.map(({ i, name }) => {
-                const empty = (i === 2 && voiceApps.length === 0) || (i === 5 && settings.other_apps.length === 0);
+              {AUDIO_TRACKS.filter(({ i }) => recorded.includes(i)).map(({ i, name }) => {
                 return (
-                  <button key={i} type="button" aria-pressed={settings.export_tracks.includes(i)} disabled={empty}
-                    title={empty ? "Add an app first" : undefined}
+                  <button key={i} type="button" aria-pressed={settings.export_tracks.includes(i)}
                     onClick={() => saveSettings({ ...settings, export_tracks: toggleExportTrack(settings.export_tracks, i) })}>
                     {name}
                   </button>

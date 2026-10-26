@@ -175,6 +175,10 @@ pub struct Settings {
     /// Tracks kept by default when exporting (0 = mix ... 5 = other apps).
     #[serde(default = "default_export_tracks")]
     pub export_tracks: Vec<u32>,
+    /// Tracks the user wants recorded (0 = mix ... 5 = other apps). The mix
+    /// is always recorded; voice and other apps only once apps are added.
+    #[serde(default = "default_record_tracks")]
+    pub record_tracks: Vec<u32>,
     /// Register the app to start (hidden, in the tray) at Windows login.
     #[serde(default = "default_true")]
     pub launch_at_login: bool,
@@ -253,6 +257,10 @@ fn default_device() -> String {
 }
 fn default_export_tracks() -> Vec<u32> {
     vec![0]
+}
+fn default_record_tracks() -> Vec<u32> {
+    // Other apps (5) only once the user adds that track.
+    (0..5).collect()
 }
 fn default_admin_rule() -> String {
     "ask".into()
@@ -333,6 +341,7 @@ impl Default for Settings {
             mic_device: default_device(),
             output_device: default_device(),
             export_tracks: default_export_tracks(),
+            record_tracks: default_record_tracks(),
             launch_at_login: true,
             auto_manage_buffer: true,
             hotkey_save: default_hotkey_save(),
@@ -369,6 +378,23 @@ pub fn load_favorites(app: AppHandle) -> Result<Vec<String>, String> {
 
 impl Settings {
     /// Voice-chat apps to record: the list, or the older single app.
+    /// Tracks actually recorded: the mix, plus every wanted track that has
+    /// something to hold (no empty voice / other-apps tracks).
+    pub fn recorded_tracks(&self) -> Vec<usize> {
+        (0..6u32)
+            .filter(|t| {
+                *t == 0
+                    || (self.record_tracks.contains(t)
+                        && match t {
+                            2 => !self.voice_apps().is_empty(),
+                            5 => self.other_apps.iter().any(|a| !a.trim().is_empty()),
+                            _ => true,
+                        })
+            })
+            .map(|t| t as usize)
+            .collect()
+    }
+
     pub fn voice_apps(&self) -> Vec<String> {
         let list: Vec<String> = self.vc_exes.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect();
         if list.is_empty() && !self.vc_exe.trim().is_empty() {
@@ -421,7 +447,8 @@ mod overlap_tests {
 
     fn tracks(keep: &[u32], count: u32) -> Vec<u32> {
         let mut k: Vec<(u32, f32)> = keep.iter().map(|t| (*t, 1.0)).collect();
-        drop_overlapping_tracks(&mut k, count);
+        let roles: Vec<String> = super::roles_from_names(&vec![None; count as usize]);
+        drop_overlapping_tracks(&mut k, &roles);
         k.into_iter().map(|(t, _)| t).collect()
     }
 
@@ -456,6 +483,33 @@ mod audio_settings_tests {
         let mut s = Settings::default();
         s.vc_exes = vec!["discord.exe".into(), " teamspeak.exe ".into(), "".into()];
         assert_eq!(s.voice_apps(), vec!["discord.exe".to_string(), "teamspeak.exe".to_string()]);
+    }
+
+    #[test]
+    fn empty_tracks_are_not_recorded() {
+        let mut s = Settings::default();
+        s.vc_exe = String::new();
+        assert_eq!(s.recorded_tracks(), vec![0, 1, 3, 4]);
+        s.vc_exes = vec!["discord.exe".into()];
+        s.other_apps = vec!["spotify.exe".into()];
+        assert_eq!(s.recorded_tracks(), vec![0, 1, 2, 3, 4]);
+        s.record_tracks.push(5);
+        assert_eq!(s.recorded_tracks(), vec![0, 1, 2, 3, 4, 5]);
+        s.record_tracks = vec![2, 4];
+        assert_eq!(s.recorded_tracks(), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn track_roles_come_from_names_or_the_old_layouts() {
+        let named = |n: &[&str]| n.iter().map(|s| Some(s.to_string())).collect::<Vec<_>>();
+        assert_eq!(roles_from_names(&named(&["mix", "game", "mic"])), vec!["mix", "game", "mic"]);
+        assert_eq!(roles_from_names(&named(&["ClipForge Audio 1", "ClipForge Audio 3"])), vec!["mix", "voice"]);
+        assert_eq!(roles_from_names(&[None, None, None, None, None]), vec!["mix", "game", "voice", "desktop", "mic"]);
+        assert_eq!(roles_from_names(&[None, None, None]), vec!["mix", "desktop", "mic"]);
+        assert_eq!(roles_from_names(&[None]), vec!["mix"]);
+        let mut keep = vec![(0, 1.0), (1, 1.0), (2, 1.0)];
+        drop_overlapping_tracks(&mut keep, &["mix", "game", "desktop"].map(String::from));
+        assert_eq!(keep, vec![(1, 1.0)]);
     }
 }
 
@@ -900,6 +954,7 @@ pub async fn convert_for_preview(path: String) -> Result<(), String> {
             .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", &encoder])
             .args(h264_quality_args(&encoder))
             .args(["-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart"])
+            .args(track_name_args(&track_roles(&ffmpeg, &path)))
             .arg(&tmp)
             .output()
             .map_err(|e| e.to_string())?;
@@ -1327,21 +1382,82 @@ fn audio_stream_count(ffmpeg: &PathBuf, path: &str) -> u32 {
         .unwrap_or(1)
 }
 
+/// What each recording track holds, by its id (0 = mix ... 5 = other apps).
+/// Clips name each audio stream after it, since empty tracks are skipped.
+pub const TRACK_ROLES: [&str; 6] = ["mix", "game", "voice", "desktop", "mic", "other"];
+
+fn roles_from_names(names: &[Option<String>]) -> Vec<String> {
+    let role = |name: &str| {
+        if TRACK_ROLES.contains(&name) {
+            return Some(name.to_string());
+        }
+        // Clips from before the names: "ClipForge Audio 3" = track 3.
+        let n: usize = name.strip_prefix("ClipForge Audio ")?.parse().ok()?;
+        TRACK_ROLES.get(n.checked_sub(1)?).map(|r| r.to_string())
+    };
+    let named: Option<Vec<String>> = names.iter().map(|n| n.as_deref().and_then(role)).collect();
+    if let Some(named) = named.filter(|n| !n.is_empty()) {
+        return named;
+    }
+    // Unnamed: the fixed layouts older versions recorded.
+    let positional: &[&str] = match names.len() {
+        n if n >= 5 => &TRACK_ROLES[..n.min(6)],
+        3 => &["mix", "desktop", "mic"],
+        2 => &["mix", "mic"],
+        _ => &["mix"],
+    };
+    (0..names.len()).map(|i| positional.get(i).unwrap_or(&"track").to_string()).collect()
+}
+
+/// Roles of a file's audio streams, in stream order.
+pub fn track_roles(ffmpeg: &PathBuf, path: &str) -> Vec<String> {
+    let ffprobe = ffmpeg.with_file_name("ffprobe.exe");
+    let names: Vec<Option<String>> = hidden_cmd(ffprobe)
+        .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index:stream_tags=name,title", "-of", "json", path])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| v["streams"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|s| {
+            let tags = &s["tags"];
+            tags["name"].as_str().or(tags["title"].as_str()).map(String::from)
+        })
+        .collect();
+    roles_from_names(&names)
+}
+
+/// ffmpeg drops the track names when it rewrites a file: re-apply them.
+pub fn track_name_args(roles: &[String]) -> Vec<String> {
+    roles.iter().enumerate().flat_map(|(i, r)| [format!("-metadata:s:a:{i}"), format!("title={r}")]).collect()
+}
+
+#[tauri::command]
+pub async fn audio_track_roles(input: String) -> Result<Vec<String>, String> {
+    blocking(move || {
+        let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
+        Ok(track_roles(&ffmpeg, &input))
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn list_audio_tracks(input: String) -> Result<u32, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     Ok(audio_stream_count(&ffmpeg, &input))
 }
 
-/// Tracks contain each other's sound: the mix (0) holds everything, and in
-/// the 5-track layout desktop (3) holds game (1) and voice chat (2). Keeping
-/// both would play that sound twice, so keep the specific tracks.
-fn drop_overlapping_tracks(keep: &mut Vec<(u32, f32)>, count: u32) {
+/// Tracks contain each other's sound: the mix holds everything, and desktop
+/// holds the game, voice chat and other apps. Keeping both would play that
+/// sound twice, so keep the specific tracks. `keep` holds stream indices.
+fn drop_overlapping_tracks(keep: &mut Vec<(u32, f32)>, roles: &[String]) {
+    let role = |t: u32| roles.get(t as usize).map(String::as_str).unwrap_or("");
     if keep.len() > 1 {
-        keep.retain(|(t, _)| *t != 0);
+        keep.retain(|(t, _)| role(*t) != "mix");
     }
-    if count >= 5 && keep.iter().any(|(t, _)| *t == 1 || *t == 2 || *t == 5) {
-        keep.retain(|(t, _)| *t != 3);
+    if keep.iter().any(|(t, _)| matches!(role(*t), "game" | "voice" | "other")) {
+        keep.retain(|(t, _)| role(*t) != "desktop");
     }
 }
 
@@ -1397,7 +1513,8 @@ pub async fn encode_selection(
     const MIN_VIDEO_KBPS: f64 = 200.0;
     // 6% container overhead margin
     let total_kbits = target_mb * 8192.0 * 0.94;
-    let count = audio_stream_count(&ffmpeg, &input);
+    let roles = track_roles(&ffmpeg, &input);
+    let count = roles.len() as u32;
     let audio_kbps = if count > 0 { AUDIO_KBPS } else { 0.0 };
     let video_kbps = total_kbits / duration - audio_kbps;
     let video_kbps = max_video_kbps.map_or(video_kbps, |cap| video_kbps.min(cap));
@@ -1419,7 +1536,7 @@ pub async fn encode_selection(
         .collect();
     keep.sort_by_key(|(t, _)| *t);
     keep.dedup_by_key(|(t, _)| *t);
-    drop_overlapping_tracks(&mut keep, count);
+    drop_overlapping_tracks(&mut keep, &roles);
     if keep.is_empty() && count > 0 {
         keep.push((0, 1.0));
     }
@@ -1938,11 +2055,14 @@ fn shorten_clip_blocking(path: &str, keep_last: f64) -> Result<(), String> {
             &format!("{start:.2}"),
             "-i",
             path,
+            "-map",
+            "0",
             "-c",
             "copy",
             "-movflags",
             "+faststart",
         ])
+        .args(track_name_args(&track_roles(&ffmpeg, path)))
         .arg(&tmp)
         .output()
         .map_err(|e| e.to_string())?;
@@ -1995,6 +2115,7 @@ fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, Str
     let output = input_path
         .with_file_name(format!("{stem}_trim_{}-{}.{ext}", start as u64, end as u64));
 
+    let names = track_name_args(&track_roles(&ffmpeg, &input));
     let mut cmd = ffmpeg_cmd(ffmpeg);
     cmd.args([
         "-y",
@@ -2009,6 +2130,7 @@ fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, Str
         "-c",
         "copy",
     ]);
+    cmd.args(names);
     if ext == "mp4" {
         // mp4-muxer-only option; mkv rejects it.
         cmd.args(["-movflags", "+faststart"]);

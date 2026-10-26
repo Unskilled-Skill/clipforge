@@ -27,7 +27,31 @@ export function killBadge(count: number, name = "") {
   const kills = clipKillCount(name, count);
   return kills > 1 ? `${kills}K` : kills === 1 ? "1 kill" : null;
 }
-export function momentTitle(name: string, kills: number) {
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+// Edits are named after their source plus a suffix per step
+// ("…_trim_12-30_discord.mp4"): title them by source and what was done.
+function editTitle(name: string, kills: number): string | null {
+  let stem = name.replace(/\.[^.]+$/, "");
+  if (/^Montage_/.test(stem)) return "Montage";
+  const steps: string[] = [];
+  for (;;) {
+    let m: RegExpMatchArray | null;
+    if ((m = stem.match(/^(.*)_discord$/))) steps.unshift("Discord export");
+    else if ((m = stem.match(/^(.*)_trim_(\d+)-(\d+)$/))) steps.unshift(`Trim ${clock(+m[2])}–${clock(+m[3])}`);
+    else if ((m = stem.match(/^(.*)_gif$/))) steps.unshift("GIF");
+    else if ((m = stem.match(/^(.*)_frame_(\d+)$/))) steps.unshift(`Frame at ${clock(+m[2])}`);
+    else break;
+    stem = m[1];
+  }
+  if (!steps.length) return null;
+  const source = momentTitle(`${stem}.mp4`, kills).replace(/ · Saved clip$/, "");
+  return `${source} · ${steps.join(" · ")}`;
+}
+
+export function momentTitle(name: string, kills: number): string {
+  const edit = editTitle(name, kills);
+  if (edit) return edit;
   const match = recording(name);
   if (!match) return name.replace(/\.[^.]+$/, "");
   const label = match[2]?.toUpperCase();
