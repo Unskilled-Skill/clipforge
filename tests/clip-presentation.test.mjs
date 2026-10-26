@@ -7,6 +7,13 @@ test('game names use their familiar spelling', () => {
   assert.equal(gameName('Rainbowsix'), 'Rainbow Six Siege');
   assert.equal(gameName('MyGame'), 'MyGame');
 });
+
+test('capture status displays executable names as games and keeps unknown apps readable', () => {
+  assert.equal(gameName('valorant-win64-shipping.exe'), 'Valorant');
+  assert.equal(gameName('Hunger-Win64-Shipping.exe'), 'Hunger');
+  assert.equal(gameName('r5apex_dx12.exe'), 'Apex Legends');
+  assert.equal(gameName('unknown-app.exe'), 'unknown-app');
+});
 test('recording titles surface moments without hiding custom names', () => {
   assert.equal(momentTitle('Cs2 2026-07-01 20-10-00.mp4', 3), 'Counter-Strike 2 · 3 kills');
   assert.equal(momentTitle('My best round.mp4', 3), 'My best round');

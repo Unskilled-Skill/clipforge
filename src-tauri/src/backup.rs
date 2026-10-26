@@ -133,6 +133,7 @@ pub fn status(app: &AppHandle) -> BackupStatus {
 fn copy_one(src: &Path, dst: &Path) -> std::io::Result<()> {
     if dst.exists() {
         if same_contents(src, dst)? {
+            crate::matchdata::copy_whole(&src.to_string_lossy(),&dst.to_string_lossy());
             return std::fs::write(receipt_path(dst), copy_identity(src, dst)?);
         }
         return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
@@ -146,6 +147,7 @@ fn copy_one(src: &Path, dst: &Path) -> std::io::Result<()> {
     let result = std::fs::rename(&tmp, dst);
     if result.is_err() { let _ = std::fs::remove_file(&tmp); }
     result?;
+    crate::matchdata::copy_whole(&src.to_string_lossy(),&dst.to_string_lossy());
     std::fs::write(receipt_path(dst), copy_identity(src, dst)?)
 }
 

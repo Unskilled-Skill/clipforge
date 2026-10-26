@@ -10,7 +10,7 @@
 //! all.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
 
@@ -22,7 +22,7 @@ const START_ABOVE_BYTES: u64 = 8 << 30;
 const STOP_BELOW_BYTES: u64 = 3 << 30;
 
 /// When the running session started (bookmarks are relative to it).
-static STARTED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+static STARTED: std::sync::Mutex<Option<(Instant, String)>> = std::sync::Mutex::new(None);
 /// Low-disk refusal already logged for this game run.
 static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -72,7 +72,7 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
             .await;
             match started {
                 Ok(()) => {
-                    *STARTED.lock().unwrap() = Some(Instant::now());
+                    *STARTED.lock().unwrap() = Some((Instant::now(), game.to_string()));
                     crate::autoclip::begin_session();
                 }
                 Err(e) => crate::logs::line(&format!("session recording failed to start: {e}")),
@@ -87,12 +87,22 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
         let started = STARTED.lock().unwrap().take();
         let kills = crate::autoclip::end_session();
         let clips_dir = settings.clips_dir.clone();
+        let app=app.clone();
         tauri::async_runtime::spawn(async move {
             let markers: Vec<f64> = started
-                .map(|s| kills.iter().map(|k| k.saturating_duration_since(s).as_secs_f64()).collect())
+                .as_ref().map(|(s,_)| kills.iter().map(|k| k.saturating_duration_since(*s).as_secs_f64()).collect())
                 .unwrap_or_default();
             match crate::obs::blocking(move || finish(&path, &clips_dir, &markers)).await {
-                Ok(done) => crate::logs::line(&format!("session saved: {done}")),
+                Ok(done) => {
+                    if let Some((start,game))=started {
+                        if let Ok(duration)=crate::clips::probe_clip_duration(&done) {
+                            if duration.is_finite() && duration > 0.0 { crate::matchdata::write_recording(&done,&game,start,start+Duration::from_secs_f64(duration),true); }
+                        }
+                    }
+                    crate::logs::line(&format!("session saved: {done}"));
+                    use tauri::Emitter;
+                    let _=app.emit("match-metadata-changed",());
+                },
                 Err(e) => crate::logs::line(&format!("session finish failed (left in .sessions): {e}")),
             }
         });

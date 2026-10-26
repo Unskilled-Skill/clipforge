@@ -3,9 +3,14 @@ const GAMES: Record<string, string> = {
   apex: "Apex Legends", r5apex: "Apex Legends", rocketleague: "Rocket League",
   valorant: "Valorant", overwatch: "Overwatch", marathon: "Marathon",
   arenabreakout: "Arena Breakout", fortnite: "Fortnite", hunt: "Hunt: Showdown",
-  lol: "League of Legends", deeprock: "Deep Rock Galactic",
+  lol: "League of Legends", "league of legends": "League of Legends", deeprock: "Deep Rock Galactic",
+  hunger: "Hunger", r5apex_dx12: "Apex Legends", fortniteclient: "Fortnite",
+  rainbowsix_dx11: "Rainbow Six Siege", rainbowsix_be: "Rainbow Six Siege",
 };
-export function gameName(raw: string) { return GAMES[raw.toLowerCase()] ?? raw; }
+export function gameName(raw: string) {
+  const name = raw.replace(/\.exe$/i, "").replace(/-win(?:32|64)-shipping$/i, "");
+  return GAMES[name.toLowerCase()] ?? name;
+}
 // Only names written by the recorder establish highlight labels. A custom
 // title containing "ACE" does not, and five markers alone are not an ace.
 function recording(name: string) {

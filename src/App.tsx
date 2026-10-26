@@ -1,9 +1,12 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { gameName, momentTitle, killBadge, clipKillCount, matchesClipSearch } from "./clip-presentation";
 import { moveItem } from "./clip-selection";
 import { createSettingsWriter } from "./settings-save";
 import { useMediaQuery } from "./use-media-query";
 import { SetupCheck } from "./SetupCheck";
+import { StudioCommands, type StudioCommand } from "./StudioCommands";
+import { isSessionRecording, recentSessions, latestClipForExport } from "./studio-data";
+import { matchLabel, recordingMatchLabel, roundLabel } from "./match-presentation";
 import { isDiscordApp } from "./app-blacklist";
 import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog } from "./tauri-shim";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -57,15 +60,25 @@ import type {
   SetupStatus,
   SupervisorState,
   ThumbInfo,
+  RecordingMetadata,
 } from "./types";
 import appIcon from "./assets/logo.svg";
 import "./tokens.css";
 import "./App.css";
 import "./editor.css";
 import "./studio.css";
+const SessionView=lazy(()=>import("./SessionView").then(module=>({default:module.SessionView})));
+
+// Editor times all read m:ss.t ("0:12.4"); lengths as seconds ("19.2 s").
+function clipTime(s: number) {
+  const tenths = Math.max(0, Math.round(s * 10));
+  const m = Math.floor(tenths / 600);
+  const sec = (tenths % 600) / 10;
+  return `${m}:${sec.toFixed(1).padStart(4, "0")}`;
+}
 
 function trimReadout(start: number, end: number) {
-  return `${start.toFixed(1)}s → ${end.toFixed(1)}s · ${(end - start).toFixed(1)}s selected`;
+  return `${clipTime(start)} → ${clipTime(end)} · ${(end - start).toFixed(1)} s selected`;
 }
 
 // Thumbnails live at a deterministic path next to the clip, so a card can
@@ -133,9 +146,7 @@ function isEdit(name: string) {
 }
 
 // "<Game> Session <date time>.mp4" from full-session recording.
-function isSession(name: string) {
-  return /^\S+ Session \d{4}-\d{2}-\d{2}/.test(name);
-}
+const isSession = isSessionRecording;
 
 function gameOf(clip: ClipInfo) {
   if (isEdit(clip.name)) return "Edits";
@@ -154,14 +165,15 @@ function gameColor(game: string) {
   return "#7fe6d7";
 }
 
-const GAME_INITIALS: Record<string, string> = { cs2: "CS", r6: "R6", rainbowsix: "R6", overwatch: "OW", lol: "LoL", r5apex: "AP" };
-
-// Short label for the sidebar's game tile: "OW", "CS", "V".
-function gameInitials(game: string) {
-  const known = GAME_INITIALS[game.toLowerCase()];
-  if (known) return known;
-  const words = gameName(game).split(/[\s:-]+/).filter((w) => /^[A-Za-z]/.test(w));
-  return words.length > 1 ? (words[0][0] + words[1][0]).toUpperCase() : (words[0]?.[0] ?? "?").toUpperCase();
+// The game's own icon once ClipForge has cached it from the game's .exe;
+// until then a dot in the game's colour.
+function GameMark({ game, icons }: { game: string; icons: Record<string, string> }) {
+  const icon = icons[game.toLowerCase()];
+  return icon ? (
+    <img className="st-game-icon" src={convertFileSrc(icon)} alt="" draggable={false} />
+  ) : (
+    <span className="st-game-dot" aria-hidden="true"><span style={{ background: gameColor(game) }} /></span>
+  );
 }
 
 // Label each audio track by what it actually contains, which depends on how
@@ -230,6 +242,7 @@ function trackLabels(count: number): TrackMeta[] {
 
 function App() {
   const reduceMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const compactLibrary = useMediaQuery("(max-width: 1100px)");
   const [showSetupCheck, setShowSetupCheck] = useState(false);
   const [status, setStatus] = useState<ObsStatus>({
     connected: false,
@@ -247,7 +260,17 @@ function App() {
     void invoke("apply_obs_config").catch(() => {});
   }));
   const [clips, setClips] = useState<ClipInfo[]>([]);
+  const [recordingMetadata, setRecordingMetadata] = useState<Record<string,RecordingMetadata>>({});
+  const [metadataRevision,setMetadataRevision] = useState(0);
+  useEffect(()=> {
+    let cancelled=false;
+    const timer=setTimeout(()=> { invoke<Record<string,RecordingMetadata>>("list_recording_metadata",{inputs:clips.map(c=>c.path)}).then(data=>{if(!cancelled)setRecordingMetadata(data??{});}).catch(()=>{}); },150);
+    return ()=>{cancelled=true;clearTimeout(timer);};
+  },[clips,metadataRevision]);
   const [selected, setSelected] = useState<ClipInfo | null>(null);
+  const [sessionClip, setSessionClip] = useState<ClipInfo | null>(null);
+  const pendingTrim = useRef<[number, number] | null>(null);
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [trimStart, setTrimStart] = useState(0);
@@ -327,6 +350,8 @@ function App() {
   });
   // Card focused by keyboard navigation; -1 = none.
   const [focusIdx, setFocusIdx] = useState(-1);
+  // The clip behind focusIdx, so the selection survives rows shifting.
+  const focusPath = useRef<string | null>(null);
   // Back-to-back preview of the selection: queue of paths + position.
   const [previewQueue, setPreviewQueue] = useState<string[] | null>(null);
   const [previewQIdx, setPreviewQIdx] = useState(0);
@@ -348,6 +373,23 @@ function App() {
   const [killTimes, setKillTimes] = useState<Record<string, number[]>>({});
   const inspectorVideo = useRef<HTMLVideoElement>(null);
   const [libExportMb, setLibExportMb] = useState(10);
+  const [inspectorTab, setInspectorTab] = useState<"details" | "audio" | "shares">("details");
+  const [inspectorPath, setInspectorPath] = useState<string | null>(null);
+  const [inspectorMedia, setInspectorMedia] = useState<{ path: string; tracks: number | null; links: ShareLink[]; error: boolean } | null>(null);
+  useEffect(() => {
+    setInspectorTab("details");
+    if (!inspectorPath || selected || showSettings || sessionClip) return;
+    let cancelled = false;
+    setInspectorMedia(null);
+    Promise.allSettled([
+      invoke<number>("list_audio_tracks", { input: inspectorPath }),
+      invoke<ShareLink[]>("list_share_links", { input: inspectorPath }),
+    ]).then(([tracks, links]) => {
+      if (!cancelled) setInspectorMedia({ path: inspectorPath, tracks: tracks.status === "fulfilled" ? tracks.value : null, links: links.status === "fulfilled" ? links.value : [], error: links.status === "rejected" });
+    });
+    return () => { cancelled = true; };
+  }, [inspectorPath, selected, showSettings, sessionClip]);
+  useEffect(() => { if (showSettings) setSessionClip(null); }, [showSettings]);
   // Admin banner: also make "restart automatically" this game's rule.
   const [adminAlways, setAdminAlways] = useState(false);
   const [diskFree, setDiskFree] = useState<number | null>(null);
@@ -369,6 +411,18 @@ function App() {
   // both are cheap reads.
   const [backedUp, setBackedUp] = useState(0);
   const [recLine, setRecLine] = useState<string | null>(null);
+  // Cached game icons (label → PNG). Reloaded when a game starts: its icon
+  // is extracted on first sight, a moment after the game appears.
+  const [gameIcons, setGameIcons] = useState<Record<string, string>>({});
+  const gameRunning = sup?.game ?? null;
+  // Display name for the running game ("Valorant", not its .exe).
+  const runningGameName = sup?.game_label ? gameName(sup.game_label) : sup?.game ? gameName(sup.game.replace(/\.exe$/i, "")) : null;
+  useEffect(() => {
+    const load = () => invoke<Record<string, string>>("list_game_icons").then(setGameIcons).catch(() => {});
+    load();
+    const later = setTimeout(load, 5000);
+    return () => clearTimeout(later);
+  }, [gameRunning]);
   useEffect(() => {
     const load = () => {
       invoke<{ backed_up: number }>("backup_status")
@@ -522,9 +576,6 @@ function App() {
       const s = await invoke<Settings>("load_settings");
       settingsSubmitted.current = s;
       setSettings(s);
-      // Exports start at the user's Discord limit; each export can still change it.
-      setTargetMb(s.discord_target_mb || 10);
-      setLibExportMb(s.discord_target_mb || 10);
       setHkSave(s.hotkey_save);
       setHkShort(s.hotkey_short);
       try {
@@ -553,6 +604,13 @@ function App() {
     })();
   }, [connect, refreshClips]);
 
+  // Apply a changed default immediately, while retaining per-export choices
+  // until the default itself changes.
+  useEffect(() => {
+    setTargetMb(settings?.discord_target_mb || 10);
+    setLibExportMb(settings?.discord_target_mb || 10);
+  }, [settings?.discord_target_mb]);
+
   const applySup = useCallback((s: SupervisorState) => {
     setSup(s);
     setBufferPaused(s.paused);
@@ -570,6 +628,7 @@ function App() {
       }),
       listen<string>("clip-error", (e) => setError(e.payload)),
       listen("clips-changed", () => refreshClips()),
+      listen("match-metadata-changed",()=>setMetadataRevision(n=>n+1)),
       listen<{ label: string; pct: number }>("export-progress", (e) => {
         setExportLabel(e.payload.label);
         setExportPct(e.payload.pct);
@@ -955,7 +1014,10 @@ function App() {
     }
   }
 
-  function selectClip(clip: ClipInfo) {
+  function selectClip(clip: ClipInfo, range?: [number, number]) {
+    setSessionClip(null);
+    setShowSettings(false);
+    pendingTrim.current = range ?? null;
     setAudioNotice("");
     setSelected(clip);
     setTrimStart(0);
@@ -992,6 +1054,12 @@ function App() {
       .catch(() => {});
   }
 
+  function openClip(clip: ClipInfo) {
+    setShowSettings(false);
+    if (isSession(clip.name) || recordingMetadata[clip.path]?.is_session) { setSelected(null); setSessionClip(clip); }
+    else selectClip(clip);
+  }
+
   // Mirror the keep-checkboxes onto the <video>'s audio tracks so preview
   // plays only the checked tracks. Needs the AudioVideoTracks blink feature
   // (enabled via additionalBrowserArgs); WebView2 may only play the first
@@ -1021,6 +1089,7 @@ function App() {
   }
 
   function loadKillTimes(clip: ClipInfo) {
+    setInspectorPath(clip.path);
     if (killTimes[clip.path]) return;
     invoke<number[]>("load_markers", { input: clip.path })
       .then((m) => setKillTimes((prev) => ({ ...prev, [clip.path]: m ?? [] })))
@@ -1313,7 +1382,7 @@ function App() {
   // Editor keyboard shortcuts: space play/pause, arrows frame-step
   // (shift = 1s), [ ] set trim markers at the playhead.
   useEffect(() => {
-    if (!selected) return;
+    if (!selected || commandsOpen) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       // Dropdowns (export size, audio) use the arrow keys themselves.
@@ -1352,14 +1421,14 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, duration, trimStart, trimEnd]);
+  }, [selected, duration, trimStart, trimEnd, commandsOpen]);
 
   // Library / settings keyboard shortcuts: Esc backs out (settings → library,
   // selection → clear), Ctrl+A selects everything visible, Delete recycles
   // the selection, arrows walk the grid, Enter opens the focused clip.
   // Re-attached per render so closures stay fresh — cheap.
   useEffect(() => {
-    if (selected) return;
+    if (selected || sessionClip || commandsOpen) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (ctxMenu) return;
@@ -1387,6 +1456,10 @@ function App() {
         setMontageSel(new Set(visibleClips.map((c) => c.path)));
       } else if (!showSettings && e.key === "Delete" && montageSel.size > 0) {
         deleteSelected();
+      } else if (!showSettings && !e.ctrlKey && !e.metaKey && !e.altKey && focusIdx >= 0 && visibleClips[focusIdx] && (e.key === " " || e.key.toLowerCase() === "s")) {
+        e.preventDefault();
+        if (e.key.toLowerCase() === "s") void toggleFavorite(visibleClips[focusIdx]);
+        else { const v = inspectorVideo.current; if (v?.paused) void v.play().catch(() => showToast("Preview unavailable. Open the editor to convert this recording.")); else v?.pause(); }
       } else if (!showSettings && e.key.startsWith("Arrow") && visibleClips.length > 0) {
         e.preventDefault();
         // Column count from layout: cards sharing the first card's top row.
@@ -1404,7 +1477,7 @@ function App() {
         focusIdx >= 0 &&
         focusIdx < visibleClips.length
       ) {
-        selectClip(visibleClips[focusIdx]);
+        openClip(visibleClips[focusIdx]);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1650,7 +1723,7 @@ function App() {
   }
 
   async function shareCatbox() {
-    if (!selected) return;
+    if (!selected || trimEnd <= trimStart) return;
     setSharing("catbox");
     setError(null);
     try {
@@ -1666,7 +1739,7 @@ function App() {
   }
 
   async function shareStreamable() {
-    if (!selected) return;
+    if (!selected || trimEnd <= trimStart) return;
     setSharing("streamable");
     setError(null);
     try {
@@ -1700,7 +1773,7 @@ function App() {
   }
 
   async function exportDiscord() {
-    if (!selected) return;
+    if (!selected || trimEnd <= trimStart) return;
     setExporting(true);
     setError(null);
     try {
@@ -1722,6 +1795,28 @@ function App() {
   }
 
   const blackCount = clips.filter((c) => blackMap[c.path]).length;
+
+  // App-wide shortcuts only. Global recording shortcuts stay registered by Rust.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!settings || booting || e.repeat || e.altKey || !(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === "k" && (!document.querySelector('[aria-modal="true"]') || commandsOpen)) {
+        e.preventDefault(); setCommandsOpen(open => !open); return;
+      }
+      if (document.querySelector('[aria-modal="true"]')) return;
+      if (key === ",") { e.preventDefault(); setSelected(null); setSessionClip(null); setShowSettings(s => !s); }
+      else if (key === "e" && !exporting && !sharing && !showSettings) {
+        e.preventDefault();
+        if (e.shiftKey) { const latest = latestClipForExport(clips,recordingMetadata); if (latest) void exportClipForDiscord(latest, settings.discord_target_mb); }
+        else if (selected) void exportDiscord();
+        else if (sessionClip) selectClip(sessionClip);
+        else if (inspected) void exportClipForDiscord(inspected, libExportMb);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   if (booting || !settings) {
     return (
@@ -1751,7 +1846,7 @@ function App() {
       case "multikills":
         return clipKillCount(c.name, markerCounts[c.path] ?? 0) >= 2;
       case "sessions":
-        return isSession(c.name);
+        return isSession(c.name) || recordingMetadata[c.path]?.is_session;
       default:
         return gameOf(c) === view;
     }
@@ -1765,6 +1860,7 @@ function App() {
   const openLibraryView = (view: string) => {
     setShowSettings(false);
     setSelected(null);
+    setSessionClip(null);
     setGameFilter(view);
   };
   const visibleClips = clips
@@ -1804,13 +1900,15 @@ function App() {
     const yesterday = dayKey(Date.now() - 86400000);
     const groups: { key: string; label: string; meta: string; items: typeof items }[] = [];
     for (const it of items) {
-      const key = dayKey(it.c.modified_ms);
+      const date = dayKey(it.c.modified_ms);
+      const matchId=recordingMetadata[it.c.path]?.matches.length === 1 ? recordingMetadata[it.c.path].matches[0].info.id : "";
+      const key = `${date}:${matchId}`;
       let g = groups[groups.length - 1];
       if (!g || g.key !== key) {
         const label =
-          key === today
+          date === today
             ? "Today"
-            : key === yesterday
+            : date === yesterday
               ? "Yesterday"
               : new Date(it.c.modified_ms).toLocaleDateString(undefined, {
                   weekday: "long",
@@ -1828,20 +1926,40 @@ function App() {
       const n = g.items.length;
       const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
       g.meta = `${gamesText} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
+      const metadata=recordingMetadata[g.items[0].c.path];
+      if (metadata?.matches.length===1) g.meta=`${gamesText} · ${matchLabel(metadata.matches[0].info)} · ${n} ${n===1?"clip":"clips"} · ${size}`;
     }
     return groups;
   })();
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
   // Details panel for the library row that has focus (click, arrows).
+  // The panel follows the clip, not the row: a clip landing above the
+  // selection (an export, a fresh save) would otherwise shift it.
+  if (focusIdx >= 0 && focusPath.current && visibleClips[focusIdx]?.path !== focusPath.current) {
+    const moved = visibleClips.findIndex((c) => c.path === focusPath.current);
+    if (moved >= 0) setFocusIdx(moved);
+  }
   const inspected = focusIdx >= 0 ? visibleClips[focusIdx] ?? null : null;
+  const sessions = recentSessions(clips,3,recordingMetadata);
+  const latestClip = latestClipForExport(clips,recordingMetadata);
+  const commandClip = selected ? (trimEnd > trimStart ? selected : null) : sessionClip ?? inspected;
+  const commandItems: StudioCommand[] = [
+    ...(commandClip && !exporting && !sharing ? [{ id: "export", group: "Actions" as const, label: sessionClip ? "Edit session before exporting" : "Export selected clip for Discord", detail: `${selected ? targetMb : libExportMb} MB`, shortcut: "Ctrl E", keywords: "share copy", run: () => { if (selected) void exportDiscord(); else if (sessionClip) selectClip(sessionClip); else void exportClipForDiscord(commandClip, libExportMb); } }] : []),
+    ...(latestClip && !exporting && !sharing ? [{ id: "latest", group: "Actions" as const, label: "Export latest clip for Discord", detail: `${settings.discord_target_mb} MB · ${momentTitle(latestClip.name, markerCounts[latestClip.path] ?? 0)}`, shortcut: "Ctrl Shift E", run: () => void exportClipForDiscord(latestClip, settings.discord_target_mb) }] : []),
+    { id: "settings", group: "Actions", label: "Open settings", shortcut: "Ctrl ,", run: () => { setSelected(null); setShowSettings(true); } },
+    { id: "export-settings", group: "Actions", label: "Settings › Export: Discord upload limit", keywords: "size free nitro", detail: `${settings.discord_target_mb} MB`, run: () => { setSelected(null); setShowSettings(true); requestAnimationFrame(() => document.querySelector<HTMLAnchorElement>('.settings-sections a[href="#settings-export"]')?.click()); } },
+    ...libraryViews.map(v => ({ id: `view-${v.key}`, group: "Views" as const, label: v.label, detail: `${v.count} clips`, run: () => openLibraryView(v.key) })),
+    ...games.map(g => ({ id: `game-${g}`, group: "Games" as const, label: gameName(g), run: () => { setSearch(""); openLibraryView(g); } })),
+    ...[...clips].sort((a,b) => b.modified_ms - a.modified_ms).map(c => ({ id: c.path, group: "Clips" as const, label: momentTitle(c.name, markerCounts[c.path] ?? 0), keywords: `${c.name} ${gameName(gameOf(c))}`, detail: `${gameName(gameOf(c))} · ${new Date(c.modified_ms).toLocaleString()}`, run: () => openClip(c) })),
+  ];
   const inspector = (() => {
     if (!inspected) {
       return (
         <aside className="st-insp st-insp-empty" aria-label="Clip details">
           <FilmStrip size={28} />
           <span>Select a clip to see its kills and share it.</span>
-          <span className="st-insp-hint">Double-click or Enter opens the editor.</span>
+          <span className="st-insp-hint">Double-click or Enter opens a clip.</span>
         </aside>
       );
     }
@@ -1856,7 +1974,13 @@ function App() {
     const span = times.length > 1 ? times[times.length - 1] - times[0] : 0;
     return (
       <aside className="st-insp" aria-label="Clip details">
-        <div className="st-insp-body">
+        <div className="st-insp-tabs" role="tablist" aria-label="Clip information" onKeyDown={e => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+          e.preventDefault(); const tabs = ["details", "audio", "shares"] as const;
+          const next = e.key === "Home" ? 0 : e.key === "End" ? 2 : (tabs.indexOf(inspectorTab) + (e.key === "ArrowRight" ? 1 : 2)) % 3;
+          setInspectorTab(tabs[next]); (e.currentTarget.children[next] as HTMLButtonElement)?.focus();
+        }}>{(["details", "audio", "shares"] as const).map(tab => <button key={tab} id={`inspector-${tab}-tab`} role="tab" aria-selected={inspectorTab === tab} aria-controls={`inspector-${tab}`} tabIndex={inspectorTab === tab ? 0 : -1} onClick={() => setInspectorTab(tab)}>{tab === "details" ? "Details" : tab === "audio" ? "Audio" : "Shares"}</button>)}</div>
+        {inspectorTab === "details" ? <div className="st-insp-body" role="tabpanel" id="inspector-details" aria-labelledby="inspector-details-tab">
           <video
             key={c.path}
             ref={inspectorVideo}
@@ -1870,9 +1994,11 @@ function App() {
 
           <div className="st-insp-title">
             <span>{title}</span>
-            <span className="st-sub">
+            <span className="st-sub st-insp-game">
+              <GameMark game={gameOf(c)} icons={gameIcons} />
               {gameName(gameOf(c))} · {new Date(c.modified_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}
             </span>
+            {recordingMetadata[c.path] && <span className="st-match-context">{recordingMatchLabel(recordingMetadata[c.path])}{roundLabel(recordingMetadata[c.path]) && ` · ${roundLabel(recordingMetadata[c.path])}`}</span>}
           </div>
 
           <dl className="st-insp-facts">
@@ -1949,8 +2075,8 @@ function App() {
               </select>
             </div>
             <div className="st-insp-grid">
-              <button className="st-ghost" onClick={() => selectClip(c)}>
-                <Scissors size={14} /> Edit
+              <button className="st-ghost" onClick={() => openClip(c)}>
+                <Scissors size={14} /> {isSession(c.name) ? "Open session" : "Edit"}
               </button>
               <button className="st-ghost" onClick={() => void copyClip(c)}>
                 <Copy size={14} /> Copy file
@@ -1966,19 +2092,35 @@ function App() {
               <Trash size={14} /> Move to Recycle Bin
             </button>
           </div>
-        </div>
+        </div> : <div className="st-insp-body st-insp-secondary" role="tabpanel" id={`inspector-${inspectorTab}`} aria-labelledby={`inspector-${inspectorTab}-tab`}>
+          <div className="st-insp-title"><span>{title}</span><span className="st-sub">{inspectorTab === "audio" ? "Recorded audio" : "Saved share links"}</span></div>
+          {inspectorMedia?.path !== c.path ? <p role="status">Loading…</p> : inspectorTab === "audio" ? <>
+            {inspectorMedia.tracks === null ? <p>Audio tracks could not be read. Open the editor to try again.</p> : inspectorMedia.tracks === 0 ? <p>No audio tracks were found in this recording.</p> : <>
+              <p>{inspectorMedia.tracks} audio {inspectorMedia.tracks === 1 ? "track" : "tracks"}. Choose what to keep and adjust each track’s volume in the editor.</p>
+              <ul className="st-inspector-tracks">{trackLabels(inspectorMedia.tracks).map(({i,label,Icon}) => <li key={i}><Icon size={16} /><span>{label}</span><small>Track {i + 1}</small></li>)}</ul>
+            </>}
+            <button className="st-primary st-solo" onClick={() => { selectClip(c); setMixerOpen(true); }}><Waveform size={15} /> Edit audio mix</button>
+          </> : <>
+            {inspectorMedia.error ? <p role="alert">Saved links could not be loaded. Open sharing in the editor to try again.</p> : inspectorMedia.links.length === 0 ? <p>No saved links for this clip yet. Create a link from the editor’s sharing options.</p> : <ul className="st-inspector-links">{inspectorMedia.links.map(link => <li key={link.url}><div><strong>{link.host}</strong><span title={link.url}>{link.url}</span><small>{formatDuration(link.start) || "0:00"} → {formatDuration(link.end) || "full clip"}</small></div><button className="st-ghost" aria-label={`Copy ${link.host} link`} onClick={() => invoke("copy_link", { url: link.url }).then(() => showToast("Link copied")).catch(e => setError(String(e)))}><Copy size={14} /></button></li>)}</ul>}
+            <button className="st-primary st-solo" onClick={() => { selectClip(c); requestAnimationFrame(() => { const disclosure = document.querySelector<HTMLDetailsElement>(".more-share"); if (disclosure) { disclosure.open = true; disclosure.scrollIntoView({ block: "nearest" }); } }); }}><LinkSimple size={15} /> Open sharing in editor</button>
+          </>}
+        </div>}
       </aside>
     );
   })();
 
 
   return (
-    <div className={`app-frame ${status.replay_buffer_active ? "live" : ""}`}>
+    <div className={`app-frame ${status.replay_buffer_active ? "live" : ""} ${showSettings ? "st-settings" : selected ? "st-editing" : sessionClip ? "st-session" : "st-library"}`}>
       <div className="titlebar" data-tauri-drag-region>
-        <span className="titlebar-title" data-tauri-drag-region>ClipForge</span>
-        <span className="titlebar-live" title="Replay buffer is armed — gameplay is being recorded">
-          <span className="titlebar-live-dot" />
-          READY
+        <span className="titlebar-brand" data-tauri-drag-region title={`ClipForge ${appVersion}`}>
+          <img src={appIcon} alt="" draggable={false} />
+          <span className="titlebar-title" data-tauri-drag-region>ClipForge</span>
+        </span>
+        <button className="st-search titlebar-search st-command-trigger" onClick={() => setCommandsOpen(true)} aria-label="Search clips or run a command" aria-haspopup="dialog"><MagnifyingGlass size={14} /><span>Search clips or run a command</span><kbd>Ctrl K</kbd></button>
+        <span className={`st-title-status ${sup?.game_elevated || sup?.engine_error ? "warn" : status.replay_buffer_active && !bufferPaused ? "recording" : "idle"}`} role="status">
+          <span />
+          {sup?.game_elevated ? `Can’t capture ${runningGameName ?? "this game"}` : sup?.engine_downloading ? "Setting up capture" : sup?.engine_error ? "Capture needs attention" : bufferPaused ? "Capture paused" : status.replay_buffer_active ? `Live${runningGameName ? ` · ${runningGameName}` : ""}` : "Waiting for a game"}
         </span>
         <div className="titlebar-controls">
           <button
@@ -2006,12 +2148,6 @@ function App() {
       </div>
       <div className="app-shell">
       <aside className="st-side" aria-label="Sidebar">
-        <div className="st-brand">
-          <img src={appIcon} alt="" draggable={false} />
-          <span className="st-brand-name">ClipForge</span>
-          <span className="st-brand-ver">{appVersion === "dev" ? "dev" : appVersion ? `v${appVersion}` : ""}</span>
-        </div>
-
         <nav className="st-nav" aria-label="Clips">
           {libraryViews.map(({ key, label, Icon, count }) => {
             const active = !showSettings && gameFilter === key;
@@ -2043,9 +2179,7 @@ function App() {
                     aria-current={active ? "page" : undefined}
                     onClick={() => openLibraryView(g)}
                   >
-                    <span className="st-tile" aria-hidden="true" style={{ background: `${gameColor(g)}29`, color: gameColor(g) }}>
-                      {gameInitials(g)}
-                    </span>
+                    <GameMark game={g} icons={gameIcons} />
                     <span className="st-label">{gameName(g)}</span>
                     <span className="st-count">{clips.filter((c) => gameOf(c) === g).length}</span>
                   </button>
@@ -2055,6 +2189,13 @@ function App() {
           </>
         )}
 
+        {sessions.length > 0 && <>
+          <div className="st-section">Recent sessions</div>
+          <nav className="st-recent-sessions" aria-label="Recent sessions">{sessions.map(c => <button key={c.path} className={sessionClip?.path === c.path ? "active" : ""} aria-current={sessionClip?.path === c.path ? "page" : undefined} onClick={() => openClip(c)}>
+            <span>{gameName(gameOf(c))}<small>{new Date(c.modified_ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</small></span>
+            <small>{thumbs[c.path]?.duration ? formatDuration(thumbs[c.path].duration) : "Full session"}</small>
+          </button>)}</nav>
+        </>}
         <div className="st-spacer" />
 
         <div className={`st-capture ${sup?.game_elevated ? "warn" : ""}`} role="status">
@@ -2092,7 +2233,7 @@ function App() {
           </div>
           <dl className="st-kv">
             <dt>Game</dt>
-            <dd>{sup?.game ?? (status.replay_buffer_active && !bufferPaused ? "Closed, stopping soon" : "None running")}</dd>
+            <dd title={sup?.game ?? undefined}>{runningGameName ? runningGameName : (status.replay_buffer_active && !bufferPaused ? "Closed, stopping soon" : "None running")}</dd>
             {recLine && (
               <>
                 <dt>Output</dt>
@@ -2244,10 +2385,10 @@ function App() {
           <div className="st-admin-banner" role="alert">
             <Warning size={18} weight="fill" />
             <div className="st-admin-text">
-              <strong>Can’t capture {gameName(sup.game.replace(/\.exe$/i, ""))}</strong>
+              <strong>Can’t capture {runningGameName}</strong>
               <span>
                 It runs as administrator, so ClipForge can’t see it: clips come out black and {settings.hotkey_save} can’t reach the game.
-                Restart as admin to fix it. Windows will ask for permission.
+                Restart as admin to fix it. Windows asks for permission the first time.
               </span>
             </div>
             <div className="st-admin-actions">
@@ -2293,7 +2434,7 @@ function App() {
             </span>
           </div>
         )}
-        {showSettings ? null : !selected ? (
+        {showSettings ? null : sessionClip ? <Suspense fallback={<p className="st-session-note" role="status">Opening full session…</p>}><SessionView key={sessionClip.path} clip={sessionClip} game={gameName(gameOf(sessionClip))} metadata={recordingMetadata[sessionClip.path]} durationHint={thumbs[sessionClip.path]?.duration ?? 0} starred={favorites.includes(sessionClip.path)} onStar={() => toggleFavorite(sessionClip)} onBack={() => setSessionClip(null)} onEdit={range => selectClip(sessionClip, range)} /></Suspense> : !selected ? (
           <>
             <div className="st-toolbar">
               <h1>{libraryViews.find((v) => v.key === gameFilter)?.label ?? gameName(gameFilter)}</h1>
@@ -2302,21 +2443,7 @@ function App() {
                 {backedUp > 0 && ` · ${backedUp} backed up`}
               </span>
               <div className="st-toolbar-actions">
-                <label className="st-search">
-                  <MagnifyingGlass size={14} />
-                  <input
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    onKeyDown={(e) => e.key === "Escape" && setSearch("")}
-                    placeholder="Search clips"
-                    aria-label="Search clips"
-                  />
-                  {search && (
-                    <button className="st-icon-btn" title="Clear (Esc)" aria-label="Clear search" onClick={() => setSearch("")}>
-                      <X size={12} />
-                    </button>
-                  )}
-                </label>
+                <label className="st-search st-library-search"><MagnifyingGlass size={14} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Filter this view" aria-label="Filter clips" onKeyDown={e => { if (e.key === "Escape") setSearch(""); }} />{search && <button className="st-icon-btn" aria-label="Clear filter" onClick={() => setSearch("")}><X size={12} /></button>}</label>
                 <select
                   className="st-select"
                   value={sortBy}
@@ -2384,10 +2511,15 @@ function App() {
               ) : (
                 <div className="empty-state">
                   <FilmStrip size={44} color="#33363f" />
-                  <span className="empty-title">No clips here yet</span>
+                  <span className="empty-title">No clips yet</span>
                   <span className="empty-hint">
-                    Press <span className="empty-key">{settings.hotkey_save}</span> in-game to save one
+                    ClipForge keeps the last {formatDuration(settings.replay_seconds)} of gameplay, ready when you need it.
                   </span>
+                  <div className="st-first-steps">
+                    <div><CheckCircle size={18} /><span><strong>{sup?.connected ? "Capture engine is connected" : "Check your capture setup"}</strong><span>{recLine ?? "Check picture and audio before your next game."}</span></span><button className="st-ghost" onClick={() => setShowSetupCheck(true)}>Test my setup</button></div>
+                    <div><GameController size={18} /><span><strong>Start a game</strong><span>Watched games arm the replay buffer automatically. Add a game in Settings if it isn’t detected.</span></span><button className="st-ghost" onClick={() => setShowSettings(true)}>Settings</button></div>
+                    <div><Scissors size={18} /><span><strong>Save a good play</strong><span>Press <kbd className="st-kbd">{settings.hotkey_save}</kbd> after it happens. Your clip will appear here, ready to trim and share.</span></span></div>
+                  </div>
                 </div>
               )
             ) : (
@@ -2417,7 +2549,7 @@ function App() {
                       <Fragment key={g.key}>
                         {g.label && (
                           <tr className="st-group">
-                            <td colSpan={7}>
+                            <td colSpan={compactLibrary ? 4 : 7}>
                               <div className="st-group-inner">
                                 <strong>{g.label}</strong>
                                 <span className="st-group-meta">{g.meta}</span>
@@ -2444,7 +2576,7 @@ function App() {
                               // Roving tabindex: Tab lands on one row, arrows walk
                               // the table (library shortcuts), Enter opens it.
                               tabIndex={i === Math.max(0, focusIdx) ? 0 : -1}
-                              aria-label={`${title}, ${new Date(c.modified_ms).toLocaleString()}. Enter to edit; Shift+F10 for actions.`}
+                              aria-label={`${title}, ${new Date(c.modified_ms).toLocaleString()}. Enter to open; Shift+F10 for actions.`}
                               onKeyDown={(e) => {
                                 if (e.target !== e.currentTarget) return;
                                 if (e.key === "F10" && e.shiftKey) {
@@ -2455,6 +2587,7 @@ function App() {
                               }}
                               onFocus={(e) => {
                                 if (e.target !== e.currentTarget) return;
+                                focusPath.current = c.path;
                                 setFocusIdx(i);
                                 loadKillTimes(c);
                               }}
@@ -2464,7 +2597,7 @@ function App() {
                               // Click selects the row for the details panel; double-click
                               // or Enter opens the editor.
                               onClick={(e) => (e.shiftKey ? handleSelect(c, true) : e.currentTarget.focus())}
-                              onDoubleClick={(e) => !e.shiftKey && selectClip(c)}
+                              onDoubleClick={(e) => !e.shiftKey && openClip(c)}
                               onContextMenu={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -2542,7 +2675,7 @@ function App() {
                                         {isSession(c.name) && <span className="st-tag">Full match</span>}
                                         {blackMap[c.path] === true && <span className="st-tag warn">Black</span>}
                                         {trimRanges[c.path] && (
-                                          <span className="st-tag" title={`Saved trim ${trimRanges[c.path][0].toFixed(1)}s → ${trimRanges[c.path][1].toFixed(1)}s. Montage uses this cut`}>Trimmed</span>
+                                          <span className="st-tag" title={`Saved trim ${clipTime(trimRanges[c.path][0])} → ${clipTime(trimRanges[c.path][1])}. Montage uses this cut`}>Trimmed</span>
                                         )}
                                         {lastSeenRef.current > 0 && c.modified_ms > lastSeenRef.current && !isEdit(c.name) && (
                                           <span className="st-tag new">New</span>
@@ -2550,9 +2683,31 @@ function App() {
                                       </span>
                                     )}
                                     <span className="st-sub" title={c.name}>
-                                      {relativeTime(c.modified_ms)} · {c.name.replace(/\.[^.]+$/, "")}
+                                      {relativeTime(c.modified_ms)} · {recordingMatchLabel(recordingMetadata[c.path]) ? [recordingMatchLabel(recordingMetadata[c.path]),roundLabel(recordingMetadata[c.path])].filter(Boolean).join(" · ") : c.name.replace(/\.[^.]+$/, "")}
                                     </span>
                                   </div>
+                                </div>
+                              </td>
+                              <td className="c-game">
+                                <span className="st-game">
+                                  <GameMark game={gameOf(c)} icons={gameIcons} />
+                                  <span className="st-game-name">{gameName(gameOf(c))}</span>
+                                </span>
+                              </td>
+                              <td className="c-kills">
+                                {ace ? (
+                                  <span className="st-chip ace" aria-label="Ace">ACE</span>
+                                ) : kills > 0 ? (
+                                  <span className={`st-chip ${kills > 1 ? "multi" : ""}`} aria-label={`${kills} ${kills === 1 ? "kill" : "kills"}`}>{kills}K</span>
+                                ) : (
+                                  <span className="st-sub" aria-label="No kills marked">–</span>
+                                )}
+                              </td>
+                              <td className="num c-len">{thumbs[c.path]?.duration ? formatDuration(thumbs[c.path].duration) : "–"}</td>
+                              <td className="num c-size" style={{ color: "var(--st-muted)" }}>{formatSize(c.size_bytes)}</td>
+                              <td className="num c-saved">
+                                {new Date(c.modified_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              
                                   <div className="st-row-actions" onClick={(e) => e.stopPropagation()}>
                                     <button className="st-icon-btn" title="Rename" aria-label={`Rename ${title}`} onClick={() => startLibRename(c)}>
                                       <PencilSimple size={14} />
@@ -2581,29 +2736,6 @@ function App() {
                                       <DotsThree size={16} weight="bold" />
                                     </button>
                                   </div>
-                                </div>
-                              </td>
-                              <td>
-                                <span className="st-game">
-                                  <span className="st-tile" aria-hidden="true" style={{ background: `${gameColor(gameOf(c))}29`, color: gameColor(gameOf(c)) }}>
-                                    {gameInitials(gameOf(c))}
-                                  </span>
-                                  <span className="st-game-name">{gameName(gameOf(c))}</span>
-                                </span>
-                              </td>
-                              <td>
-                                {ace ? (
-                                  <span className="st-chip ace" aria-label="Ace">ACE</span>
-                                ) : kills > 0 ? (
-                                  <span className={`st-chip ${kills > 1 ? "multi" : ""}`} aria-label={`${kills} ${kills === 1 ? "kill" : "kills"}`}>{kills}K</span>
-                                ) : (
-                                  <span className="st-sub" aria-label="No kills marked">–</span>
-                                )}
-                              </td>
-                              <td className="num">{thumbs[c.path]?.duration ? formatDuration(thumbs[c.path].duration) : "–"}</td>
-                              <td className="num" style={{ color: "var(--st-muted)" }}>{formatSize(c.size_bytes)}</td>
-                              <td className="num c-saved">
-                                {new Date(c.modified_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                               </td>
                             </tr>
                           );
@@ -2622,11 +2754,16 @@ function App() {
                 {montageSel.size > 0 ? `${montageSel.size} selected · ` : ""}
                 {clips.length} clips · {totalSize}
               </span>
+              <span className="st-storage" title="All recordings count toward the storage cap. Star clips to protect them from cleanup.">
+                Storage
+                {settings.max_storage_gb > 0 ? <><span className="st-meter"><span style={{ width: `${Math.min(100, clips.reduce((sum, c) => sum + c.size_bytes, 0) / (settings.max_storage_gb * 1024 ** 3) * 100)}%` }} /></span><span>{totalSize} / {settings.max_storage_gb} GB</span></> : <span>No limit</span>}
+              </span>
               <span className="st-footer-keys">
                 <span><kbd>↑↓</kbd> browse</span>
-                <span><kbd>Enter</kbd> or double-click edit</span>
-                <span><kbd>Shift</kbd>-click range</span>
-                <span><kbd>Shift F10</kbd> actions</span>
+                <span><kbd>Enter</kbd> or double-click open</span>
+                <span><kbd>Space</kbd> preview</span>
+                <span><kbd>Ctrl E</kbd> export</span>
+                <span><kbd>S</kbd> star</span>
               </span>
             </footer>
             {montageSel.size >= 1 && (
@@ -2727,7 +2864,6 @@ function App() {
                 <ArrowLeft size={15} />
                 Library
               </button>
-              <span className="chip-dot" style={{ background: gameColor(gameOf(selected)) }} />
               <h1 className="editor-heading">
               {renaming ? (
                 <input
@@ -2755,6 +2891,7 @@ function App() {
                 </button>
               )}
               </h1>
+              {recordingMetadata[selected.path] && <span className="st-editor-match" title={recordingMatchLabel(recordingMetadata[selected.path])}>{[recordingMatchLabel(recordingMetadata[selected.path]),roundLabel(recordingMetadata[selected.path],trimStart)].filter(Boolean).join(" · ")}</span>}
               <span className="editor-meta mono">
                 {formatSize(selected.size_bytes)}
                 {duration > 0 && ` · ${formatDuration(duration)}`}
@@ -2799,10 +2936,13 @@ function App() {
                   setNoVideo(e.currentTarget.videoWidth === 0);
                   // Restore the clip's last trim so montage prep survives
                   // closing and re-opening the editor.
-                  const saved = trimRanges[selected.path];
+                  const requested = pendingTrim.current;
+                  pendingTrim.current = null;
+                  const saved = requested ?? trimRanges[selected.path];
                   if (saved && saved[0] < d) {
                     setTrimStart(Math.max(0, saved[0]));
                     setTrimEnd(Math.min(saved[1], d));
+                    if (requested) e.currentTarget.currentTime = Math.max(0, saved[0]);
                   } else {
                     // Tenth-second precision like the handles; whole
                     // seconds cut up to a second off every full export.
@@ -2853,7 +2993,8 @@ function App() {
 
             <aside className="export-panel" aria-label="Export">
               <section className="export-card">
-                <h2 className="export-title">Share to Discord</h2>
+                <h2 className="export-title">Export selection</h2>
+                <span className="st-field-caption">Discord upload limit</span>
                 <div className="size-seg" role="radiogroup" aria-label="Discord size limit">
                   {[
                     { mb: 10, note: "Free" },
@@ -2882,6 +3023,13 @@ function App() {
                     </button>
                   ))}
                 </div>
+                <span className="field-hint">Sized to fit your limit. Exported and copied, ready to paste.</span>
+                {trimEnd > trimStart && <dl className="st-export-output">
+                  <div><dt>Selection</dt><dd>{clipTime(trimStart)} → {clipTime(trimEnd)}</dd></div>
+                  <div><dt>Duration</dt><dd>{(trimEnd - trimStart).toFixed(1)} s</dd></div>
+                  <div><dt>Video bitrate</dt><dd>{(kbps / 1000).toFixed(1)} Mbps</dd></div>
+                  <div><dt>Upload limit</dt><dd>{targetMb} MB</dd></div>
+                </dl>}
                 {/* No estimate until the clip's length is known — a 0s range
                     divides the size budget into a nonsense bitrate. */}
                 {trimEnd - trimStart > 0 && (
@@ -2892,7 +3040,7 @@ function App() {
                     </span>
                   </div>
                 )}
-                <button className="btn-discord wide" onClick={exportDiscord} disabled={exporting || sharing !== null}>
+                <button className="btn-discord wide" onClick={exportDiscord} disabled={exporting || sharing !== null || trimEnd <= trimStart}>
                   <DiscordLogo size={17} weight="fill" />
                   {exporting
                     ? `exporting… ${exportPct != null && exportLabel === "export" ? Math.round(exportPct) + "%" : ""}`
@@ -2907,7 +3055,7 @@ function App() {
                   expire; free Streamable links last 90 days.
                 </span>
                 <div className="share-buttons">
-                  <button className="btn-trim" onClick={shareCatbox} disabled={sharing !== null || exporting}>
+                  <button className="btn-trim" onClick={shareCatbox} disabled={sharing !== null || exporting || trimEnd <= trimStart}>
                     <LinkSimple size={16} />
                     {sharing === "catbox"
                       ? exportLabel === "upload"
@@ -2919,7 +3067,7 @@ function App() {
                     className="btn-trim"
                     title="Prepares the file and opens streamable.com — drag the file in there"
                     onClick={shareStreamable}
-                    disabled={sharing !== null || exporting}
+                    disabled={sharing !== null || exporting || trimEnd <= trimStart}
                   >
                     <ArrowSquareOut size={16} />
                     {sharing === "streamable"
@@ -2972,6 +3120,7 @@ function App() {
                   </ul>
                 )}
               </section>
+              </details>
               <div className="export-tools">
                 <button className="btn-trim" onClick={doTrim} disabled={trimming || trimEnd <= trimStart}>
                   <Scissors size={16} />
@@ -2999,7 +3148,6 @@ function App() {
                   Copy file
                 </button>
               </div>
-              </details>
             </aside>
             </div>
 
@@ -3257,6 +3405,7 @@ function App() {
         </Modal>
       )}
 
+      {commandsOpen && <StudioCommands items={commandItems} onClose={() => setCommandsOpen(false)} />}
       {ctxMenu && (
         <div className="ctx-menu" role="dialog" aria-label="Clip actions" style={{ left: ctxMenu.x, top: ctxMenu.y }}
           onKeyDown={(e) => {
@@ -3267,7 +3416,7 @@ function App() {
             const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (index + (e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey) ? -1 : 1) + buttons.length) % buttons.length;
             buttons[next]?.focus();
           }}>
-          <button onClick={() => selectClip(ctxMenu.clip)}>
+          <button onClick={() => { openClip(ctxMenu.clip); setCtxMenu(null); }}>
             <Play size={14} weight="fill" />
             Open in editor
           </button>
@@ -3372,6 +3521,7 @@ function App() {
 
       {showSettings && (
         <SettingsPage
+          onBack={() => setShowSettings(false)}
           onTestSetup={() => setShowSetupCheck(true)}
           settings={settings}
           setSettings={setSettings}

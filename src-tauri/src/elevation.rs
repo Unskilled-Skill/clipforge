@@ -273,13 +273,13 @@ fn create_task() -> Result<(), String> {
 #[tauri::command]
 pub async fn set_run_elevated(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     crate::clips::blocking(move || {
-        if enabled {
-            create_task()?;
-        } else if task_exists() {
-            schtasks_elevated(&format!("/delete /tn \"{TASK}\" /f"))?;
-        }
         let mut settings = crate::clips::load_settings_inner(&app);
         settings.run_elevated = enabled;
+        if enabled {
+            create_task()?;
+        } else if !settings.needs_admin_task() && task_exists() {
+            schtasks_elevated(&format!("/delete /tn \"{TASK}\" /f"))?;
+        }
         crate::clips::save_settings(app, settings)
     })
     .await

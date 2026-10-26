@@ -1,7 +1,9 @@
 mod autoclip;
 mod gamesources;
+mod gameicons;
 mod screenkills;
 mod session;
+mod matchdata;
 mod backup;
 mod clips;
 mod elevation;
@@ -352,6 +354,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::run(handle));
             tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));
+            gameicons::seed(app.handle().clone(), clips::load_settings_inner(app.handle()).game_exes);
             {
                 // Finish sessions a crash left half-done.
                 let dir = clips::load_settings_inner(app.handle()).clips_dir;
@@ -422,6 +425,7 @@ pub fn run() {
             let _ = app
                 .asset_protocol_scope()
                 .allow_directory(&settings.clips_dir, true);
+            gameicons::allow_assets(app.handle());
             spawn_dir_watcher(app.handle().clone());
 
             apply_launch_at_login(app.handle(), settings.launch_at_login);
@@ -507,6 +511,8 @@ pub fn run() {
             clips::rename_clip,
             clips::show_in_folder,
             clips::load_markers,
+            matchdata::load_recording_metadata,
+            matchdata::list_recording_metadata,
             clips::disk_free,
             clips::copy_clip,
             clips::gen_filmstrip,
@@ -526,6 +532,7 @@ pub fn run() {
             elevation::is_running_elevated,
             elevation::restart_elevated,
             elevation::ensure_admin_task,
+            gameicons::list_game_icons,
             backup::backup_status,
             backup::backup_now,
             set_hotkeys,

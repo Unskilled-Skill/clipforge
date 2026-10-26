@@ -146,6 +146,13 @@ async fn on_clip_saved(
     // Annotate the clip with recent kill positions (timeline markers).
     // The buffer ends at save time, so this works for hotkey saves too.
     crate::autoclip::write_kill_markers(&final_str, saved_at);
+    if let Some(game)=game.as_deref() {
+        if let Ok(duration)=crate::clips::probe_clip_duration(&final_str) {
+            if duration.is_finite() && duration > 0.0 {
+                if let Some(start)=saved_at.checked_sub(std::time::Duration::from_secs_f64(duration)) { crate::matchdata::write_recording(&final_str,game,start,saved_at,false); }
+            }
+        }
+    }
 
     let _ = app.emit("clip-saved", ClipSaved { path: final_str.clone() });
 

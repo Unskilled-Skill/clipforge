@@ -32,6 +32,22 @@ pub static RETRY_ENGINE_NOW: AtomicBool = AtomicBool::new(false);
 
 /// PID of the admin game last warned about, so the toast shows once per run.
 static WARNED_ELEVATED_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static RESTARTED_ELEVATED_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[derive(Debug, PartialEq)]
+enum AdminAction { None, Warn, Restart }
+
+fn admin_action(rule: &str, task_ready: bool, warned: bool, restarted: bool) -> AdminAction {
+    if rule == "never" {
+        AdminAction::None
+    } else if rule == "auto" && task_ready {
+        if restarted { AdminAction::None } else { AdminAction::Restart }
+    } else if warned {
+        AdminAction::None
+    } else {
+        AdminAction::Warn
+    }
+}
 
 /// The running engine was started while adapter 0 was an integrated GPU.
 static STARTED_ON_IGPU: AtomicBool = AtomicBool::new(false);
@@ -85,6 +101,8 @@ pub struct SupervisorState {
     pub obs_running: bool,
     pub connected: bool,
     pub game: Option<String>,
+    /// The label clip files use for the game ("Valorant"), for display.
+    pub game_label: Option<String>,
     pub buffer_active: bool,
     pub paused: bool,
     /// Kept false: the embedded engine has no websocket to switch on.
@@ -294,6 +312,15 @@ async fn tick(
         .map(|g| g.to_lowercase())
         .find(|g| running.contains(g) && !settings.capture_blocked(g))
         .or_else(|| session_games.iter().next().cloned()));
+    state.game_label = state.game.as_deref().map(crate::obs::pretty_game_name);
+
+    // Keep the game's icon for the library (once per game; needs its path,
+    // which an admin game hides from a non-admin ClipForge).
+    if let Some(path) = state.game.as_ref().and_then(|g| {
+        system.processes().values().find(|p| p.name().to_string_lossy().eq_ignore_ascii_case(g)).and_then(|p| p.exe())
+    }) {
+        crate::gameicons::remember(app, path);
+    }
 
     // A game running as admin is out of reach of a non-elevated ClipForge:
     // black clips and a dead save hotkey. Say so, once per game run.
@@ -309,14 +336,22 @@ async fn tick(
         let rule = settings.admin_rule_for(g).to_string();
         if let Some(pid) = elevated_pid.filter(|_| rule != "never") {
             state.game_elevated = true;
-            if WARNED_ELEVATED_PID.swap(pid, Ordering::Relaxed) != pid {
+            let action = admin_action(
+                &rule,
+                rule == "auto" && crate::elevation::task_ready(),
+                WARNED_ELEVATED_PID.load(Ordering::Relaxed) == pid,
+                RESTARTED_ELEVATED_PID.load(Ordering::Relaxed) == pid,
+            );
+            if action != AdminAction::None {
                 crate::logs::line(&format!("{g} runs as admin; ClipForge doesn't (rule: {rule})"));
-                if rule == "auto" && crate::elevation::task_ready() {
+                if action == AdminAction::Restart {
+                    RESTARTED_ELEVATED_PID.store(pid, Ordering::Relaxed);
                     crate::logs::line("Restarting ClipForge as admin to match");
                     if let Err(error) = crate::elevation::restart_elevated(app.clone()) {
                         crate::logs::line(&format!("Could not restart as admin: {error}"));
                     }
                 } else {
+                    WARNED_ELEVATED_PID.store(pid, Ordering::Relaxed);
                     use tauri_plugin_notification::NotificationExt;
                     let _ = app
                         .notification()
@@ -466,6 +501,16 @@ async fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_restart_is_independent_of_an_earlier_warning() {
+        assert_eq!(admin_action("ask", false, false, false), AdminAction::Warn);
+        assert_eq!(admin_action("ask", false, true, false), AdminAction::None);
+        assert_eq!(admin_action("auto", true, true, false), AdminAction::Restart);
+        assert_eq!(admin_action("auto", true, true, true), AdminAction::None);
+        assert_eq!(admin_action("auto", false, false, false), AdminAction::Warn);
+        assert_eq!(admin_action("never", true, false, false), AdminAction::None);
+    }
 
     #[test]
     fn picture_recovery_steps() {

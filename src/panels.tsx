@@ -2,6 +2,7 @@
 // the two app-picker modals. All state stays in App — these are pure views
 // over props, so App.tsx keeps the data flow while this file keeps the bulk.
 import { useEffect, useRef, useState } from "react";
+import { gameName } from "./clip-presentation";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { confirmDialog, invoke, listen, openDialog } from "./tauri-shim";
 import appIcon from "./assets/logo.svg";
@@ -692,6 +693,7 @@ const SETTINGS_SECTIONS: [string, string][] = [
 ];
 
 export function SettingsPage(props: {
+  onBack: () => void;
   onTestSetup: () => void;
   settings: Settings;
   setSettings: (s: Settings) => void;
@@ -856,6 +858,8 @@ export function SettingsPage(props: {
       {props.saveFeedback}
       <div className="settings-layout">
       <nav className="settings-sections" aria-label="Settings sections">
+        <button className="settings-back" onClick={props.onBack}><ArrowLeft size={14} /> Library</button>
+        <span className="settings-nav-label">Settings</span>
         {SETTINGS_SECTIONS.map(([id, label]) => (
           <a
             key={id}
@@ -1027,7 +1031,7 @@ export function SettingsPage(props: {
               <span className="field-label">Per game</span>
               {Object.entries(settings.admin_rule_games).map(([exe, rule]) => (
                 <div className="admin-game" key={exe}>
-                  <span className="mono">{exe}</span>
+                  <span className="mono" title={exe}>{gameName(exe)}</span>
                   <select className="audio-select" value={rule} aria-label={`Admin rule for ${exe}`} onChange={(e) => void setAdminRule(exe, e.target.value)}>
                     {ADMIN_RULES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     <option value="default">Use default</option>
@@ -1035,11 +1039,11 @@ export function SettingsPage(props: {
                 </div>
               ))}
               {settings.game_exes.some((g) => !(g.toLowerCase() in settings.admin_rule_games)) && (
-                <select className="audio-select" aria-label="Add a per-game rule" value="" onChange={(e) => { if (e.target.value) void setAdminRule(e.target.value, "auto"); }}>
+                <select className="audio-select" aria-label="Add a per-game rule" value="" onChange={(e) => { if (e.target.value) void setAdminRule(e.target.value, "ask"); }}>
                   <option value="">Add a game…</option>
                   {settings.game_exes
                     .filter((g) => !(g.toLowerCase() in settings.admin_rule_games))
-                    .map((g) => <option key={g} value={g.toLowerCase()}>{g}</option>)}
+                    .map((g) => <option key={g} value={g.toLowerCase()}>{gameName(g)}</option>)}
                 </select>
               )}
             </div>

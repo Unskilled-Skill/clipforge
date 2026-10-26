@@ -487,6 +487,7 @@ fn cs2_new_kill(json: &serde_json::Value, last_round_kills: &AtomicI64) -> bool 
 }
 
 fn handle_cs2_payload(app: &AppHandle, json: &serde_json::Value) {
+    if let Some(update)=crate::matchdata::cs2_update(json) { crate::matchdata::ingest(app,"cs2.exe","cs2-gsi",update); }
     if cs2_new_kill(json, &CS2_ROUND_KILLS) {
         let hs = json["player"]["state"]["round_killhs"].as_i64().unwrap_or(0);
         crate::logs::line(&format!("auto-clip: cs2 kill (round headshots {hs})"));
@@ -543,6 +544,10 @@ fn handle_overwolf_payload(app: &AppHandle, json: &serde_json::Value) {
     OVERWOLF_LAST_SEEN.store(now, Ordering::Relaxed);
 
     let settings = crate::clips::load_settings_inner(app);
+    if settings.overwolf_events && json["game"] == 21640 {
+        if json["type"] == "match_info" { crate::matchdata::ingest(app,"valorant-win64-shipping.exe","valorant-overwolf",crate::matchdata::valorant_update(&json["info"])); }
+        else if json["type"] == "game_stop" { crate::matchdata::ingest(app,"valorant-win64-shipping.exe","valorant-overwolf",Default::default()); }
+    }
     if settings.overwolf_events && json["type"] == "highlight" {
         schedule_clip(app, settings.auto_clip_delay_s);
     }

@@ -304,6 +304,11 @@ pub fn load_favorites(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 impl Settings {
+    pub fn needs_admin_task(&self) -> bool {
+        self.run_elevated || self.admin_rule == "auto"
+            || self.admin_rule_games.values().any(|rule| rule == "auto")
+    }
+
     /// The admin rule for one game: its override, else the default.
     pub fn admin_rule_for(&self, exe: &str) -> &str {
         let exe = exe.trim().to_lowercase();
@@ -351,6 +356,22 @@ mod overlap_tests {
 #[cfg(test)]
 mod admin_rule_tests {
     use super::*;
+
+    #[test]
+    fn automatic_rules_keep_the_admin_task_when_start_as_admin_is_off() {
+        let mut settings = Settings::default();
+        assert!(!settings.needs_admin_task());
+        settings.run_elevated = true;
+        assert!(settings.needs_admin_task());
+        settings.run_elevated = false;
+        settings.admin_rule = "auto".into();
+        assert!(settings.needs_admin_task());
+        settings.admin_rule = "ask".into();
+        settings.admin_rule_games.insert("valorant.exe".into(), "auto".into());
+        assert!(settings.needs_admin_task());
+        settings.admin_rule_games.insert("valorant.exe".into(), "never".into());
+        assert!(!settings.needs_admin_task());
+    }
 
     #[test]
     fn per_game_override_beats_the_default_and_old_files_default_to_ask() {
@@ -939,13 +960,16 @@ fn remove_clip_leftovers(app: &AppHandle, path: &str) {
         let stem = stem.to_string_lossy();
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.jpg")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave.png")));
+        let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wavet.png")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.markers.json")));
+        let _ = std::fs::remove_file(thumbs.join(format!("{stem}.match.json")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.strip.jpg")));
         if let Some(reel) = find_reel(&thumbs, &stem) {
             let _ = std::fs::remove_file(reel);
         }
         for i in 0..6 {
             let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave{i}.png")));
+            let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wavet{i}.png")));
         }
     }
 }
@@ -1331,7 +1355,9 @@ pub async fn encode_selection(
             out_bytes as f64 / 1_048_576.0
         ));
     }
-    Ok(output.to_string_lossy().replace('\\', "/"))
+    let out=output.to_string_lossy().replace('\\', "/");
+    crate::matchdata::copy_selection(&input,&out,start,end);
+    Ok(out)
 }
 
 /// Render an audio waveform strip for the timeline, cached next to thumbs.
@@ -1345,10 +1371,10 @@ fn gen_waveform_blocking(input: String) -> Result<String, String> {
     let input_path = PathBuf::from(&input);
     let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out = dir.join(format!(
-        "{}.wave.png",
-        input_path.file_stem().ok_or("bad path")?.to_string_lossy()
-    ));
+    let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+    // ".wavet": teal renders; the older blue ".wave" files are dropped.
+    let _ = std::fs::remove_file(dir.join(format!("{stem}.wave.png")));
+    let out = dir.join(format!("{stem}.wavet.png"));
     if !out.exists() {
         let result = ffmpeg_cmd(&ffmpeg)
             .args([
@@ -1357,7 +1383,7 @@ fn gen_waveform_blocking(input: String) -> Result<String, String> {
                 "-i",
                 &input,
                 "-filter_complex",
-                "aformat=channel_layouts=mono,compand,showwavespic=s=1200x64:colors=#6b8bff",
+                "aformat=channel_layouts=mono,compand,showwavespic=s=1200x64:colors=#3fd2be",
                 "-frames:v",
                 "1",
             ])
@@ -1457,7 +1483,10 @@ fn gen_waveforms_blocking(input: String) -> Result<Vec<TrackWave>, String> {
     // process, so this cuts editor-open latency to the slowest single track
     // instead of the sum of all five.
     let jobs: Vec<(u32, PathBuf)> = (0..count)
-        .map(|i| (i, dir.join(format!("{stem}.wave{i}.png"))))
+        .map(|i| {
+            let _ = std::fs::remove_file(dir.join(format!("{stem}.wave{i}.png")));
+            (i, dir.join(format!("{stem}.wavet{i}.png")))
+        })
         .collect();
     let handles: Vec<_> = jobs
         .iter()
@@ -1475,7 +1504,7 @@ fn gen_waveforms_blocking(input: String) -> Result<Vec<TrackWave>, String> {
                         &input,
                         "-filter_complex",
                         &format!(
-                            "[0:a:{i}]aformat=channel_layouts=mono,compand,showwavespic=s=1200x40:colors=#6b8bff"
+                            "[0:a:{i}]aformat=channel_layouts=mono,compand,showwavespic=s=1200x40:colors=#3fd2be"
                         ),
                         "-frames:v",
                         "1",
@@ -1702,13 +1731,21 @@ pub fn rename_clip(path: String, new_name: String) -> Result<String, String> {
     if target.exists() {
         return Err("a clip with that name already exists".into());
     }
+    let sidecars: Vec<_> = [
+        (markers_path(&path),markers_path(&target.to_string_lossy())),
+        (crate::matchdata::path(&path),crate::matchdata::path(&target.to_string_lossy())),
+    ].into_iter().filter_map(|(a,b)|a.zip(b)).collect();
+    if sidecars.iter().any(|(_,to)|to.exists()) { return Err("That name still has saved clip data. Choose another name so it stays recoverable.".into()); }
     std::fs::rename(&old, &target).map_err(|e| e.to_string())?;
-    // Kill markers can't be regenerated (unlike thumbnails) — carry them over.
-    if let (Some(from), Some(to)) = (
-        markers_path(&path),
-        markers_path(&target.to_string_lossy()),
-    ) {
-        let _ = std::fs::rename(from, to);
+    let mut moved: Vec<(PathBuf,PathBuf)>=Vec::new();
+    for (from,to) in sidecars {
+        if !from.exists() { continue; }
+        if let Err(e)=std::fs::rename(&from,&to) {
+            for (from,to) in moved.iter().rev() { let _=std::fs::rename(to,from); }
+            let _=std::fs::rename(&target,&old);
+            return Err(format!("Could not carry over clip data: {e}"));
+        }
+        moved.push((from,to));
     }
     Ok(target.to_string_lossy().replace('\\', "/"))
 }
@@ -1865,6 +1902,7 @@ fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, Str
     if !shifted.is_empty() {
         write_markers(&out, &shifted);
     }
+    crate::matchdata::copy_selection(&input,&out,start,end);
     Ok(out)
 }
 #[cfg(all(test, target_os = "windows"))]

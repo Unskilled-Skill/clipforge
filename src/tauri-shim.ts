@@ -9,6 +9,7 @@ import {
   type OpenDialogOptions,
 } from "@tauri-apps/plugin-dialog";
 import { openUrl as realOpenUrl } from "@tauri-apps/plugin-opener";
+import type { MatchInfo, RecordingMetadata } from "./types";
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -48,9 +49,11 @@ let mockFavorites: string[] = [];
 const mockDeleted = new Map<string, (typeof mockClips)[number]>();
 
 const games = ["Valorant", "Rainbowsix", "Marathon", "Cs2", "Apex"];
-const mockClips = Array.from({ length: 14 }, (_, i) => ({
+// Browser-only fixtures for checking the first-run and capture-problem boards.
+const mockPreview = new URLSearchParams(location.search).get("preview");
+const mockClips = Array.from({ length: mockPreview === "empty" ? 0 : 14 }, (_, i) => ({
   path: `D:/RECORDINGS/Clips/mock-${i}.mp4`,
-  name: `${games[i % games.length]} 2026-07-0${(i % 7) + 1} 2${i % 10}-1${i % 6}-0${i % 9}.mp4`,
+  name: `${i === 12 ? "Valorant" : games[i % games.length]} ${i >= 12 ? "Session " : ""}2026-07-0${(i % 7) + 1} 2${i % 10}-1${i % 6}-0${i % 9}.mp4`,
   modified_ms: Date.now() - i * 3600_000 * 5,
   size_bytes: 120_000_000 + i * 37_000_000,
 }));
@@ -59,8 +62,30 @@ const mockThumbs = Object.fromEntries(
   mockClips.map((c, i) => [c.path, { thumb: `mock://thumb-${i}`, duration: 34 + i * 11 }])
 );
 
+// Sample context for visual verification only; native builds read persisted sources.
+function mockRecordingMetadata(input: string): RecordingMetadata | null {
+  const i=Number(input.match(/mock-(\d+)/)?.[1]??-1);
+  if (![0,5,10,12,13].includes(i)) return null;
+  const cs=i===13;
+  const info: MatchInfo={id:cs?"demo-cs2":"demo-valorant",game:cs?"cs2.exe":"valorant-win64-shipping.exe",source:cs?"cs2-gsi":"valorant-overwolf",map:cs?"de_nuke":"Lotus",mode:"Competitive",score:{won:13,lost:9},result:"won",round_results:{"4":"won","9":"won","13":"lost","17":"won"}};
+  const bounds=[0,9,20,30,39.066667];
+  const rounds=i>=12 ? [4,9,13,17].map((number,j)=>({match_id:info.id,number,start:bounds[j],end:bounds[j+1],result:info.round_results[String(number)]})) : [{match_id:info.id,number:9,start:0,end:mockThumbs[input]?.duration??34,result:info.round_results["9"]}];
+  return {version:1,is_session:i>=12,matches:[{start:0,end:i>=12?39.066667:mockThumbs[input]?.duration??34,info}],rounds};
+}
+
 async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise<unknown> {
   switch (cmd) {
+    case "list_recording_metadata":
+      return Object.fromEntries(((_args?.inputs??[]) as string[]).map(input=>[input,mockRecordingMetadata(input)]).filter(([,data])=>data));
+    case "load_recording_metadata":
+      return mockRecordingMetadata(String(_args?.input??""));
+    case "supervisor_state":
+      return mockPreview === "admin" ? {
+        obs_running: true, connected: true, game: "valorant-win64-shipping.exe",
+        buffer_active: false, paused: false, obs_needs_restart: false, obs_outdated: null,
+        engine_downloading: false, engine_error: null, render_lag: false, encoder_lag: false,
+        game_elevated: true,
+      } : null;
     case "recycle_clip": {
       const path = String(_args?.path);
       const index = mockClips.findIndex((clip) => clip.path === path);
@@ -80,6 +105,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       Object.assign(mockSettings, structuredClone(_args?.settings));
       mockSettings.game_exes = mockSettings.game_exes.map(exe => exe.trim().toLowerCase()).filter(exe => exe && !mockSettings.game_blacklist.some((blocked: string) => blocked === exe) && !/^discord(ptb|canary)?\.exe$/.test(exe));
       return null;
+    case "list_game_icons":
+      return {};
     case "load_settings":
       return structuredClone(mockSettings);
     case "list_clips":

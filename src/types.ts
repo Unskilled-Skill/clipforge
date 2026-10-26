@@ -42,6 +42,7 @@ export interface SupervisorState {
   obs_running: boolean;
   connected: boolean;
   game: string | null;
+  game_label?: string | null;
   buffer_active: boolean;
   paused: boolean;
   obs_needs_restart: boolean;
@@ -91,6 +92,17 @@ export interface ClipInfo {
   name: string;
   modified_ms: number;
   size_bytes: number;
+}
+
+export interface MatchInfo {
+  id: string; game: string; source: string; map: string | null; mode: string | null;
+  score: { won: number; lost: number } | null; result: "won" | "lost" | "draw" | null;
+  round_results: Record<string, "won" | "lost" | "draw">;
+}
+export interface RecordingMetadata {
+  version: number; is_session: boolean;
+  matches: { start: number; end: number; info: MatchInfo }[];
+  rounds: { match_id: string; number: number; start: number; end: number; result: "won" | "lost" | "draw" | null }[];
 }
 
 export interface ThumbInfo {
