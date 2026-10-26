@@ -914,3 +914,21 @@ input, textarea { caret-color: var(--st-accent); }
 .auto-clip-game { display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 8px 0; border-top: 1px solid var(--st-line); }
 .auto-clip-game .toggle-text { flex: 1; min-width: 0; }
 .auto-clip-game select { flex: 0 0 210px; }
+
+/* First-run steps: done (teal tick), now (teal number), later (grey). */
+.st-first-steps > div > .st-step-num {
+  flex: 0 0 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1.5px solid var(--st-line-strong); color: var(--st-muted); font-size: 11px; font-weight: 600;
+}
+.st-first-steps > div.now > .st-step-num { border-color: var(--st-accent); color: var(--st-accent-text); }
+.st-first-steps > div.later strong { color: var(--st-text-3); }
+.st-first-steps > div.done strong { color: var(--st-text-2); }
+
+/* Details panel: a black clip explains itself. */
+.st-insp-warn {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; padding: 10px 12px;
+  border-radius: 6px; background: #1f190e; border: 1px solid #4a3a1c; color: var(--st-warn); font-size: 12px;
+}
+.st-insp-warn > span { flex: 1 1 200px; display: flex; flex-direction: column; gap: 3px; color: #d9cdb6; line-height: 1.5; }
+.st-insp-warn strong { color: #f7ebd3; font-weight: 600; font-size: 12.5px; }
+.st-insp-warn > button { margin-left: 26px; }

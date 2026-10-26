@@ -44,6 +44,8 @@ libobs-wrapper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce
 libobs-bootstrapper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }
 libobs-window-helper = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }
 log = "0.4"
+# Game icons are saved as PNG (already built for Tauri's image-png).
+png = "0.18"
 
 
 [profile.release]

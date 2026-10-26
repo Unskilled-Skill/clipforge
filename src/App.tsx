@@ -1857,6 +1857,16 @@ function App() {
     { key: "favorites", label: "Starred", Icon: Star },
     { key: "sessions", label: "Full matches", Icon: FilmSlate },
   ].map((v) => ({ ...v, count: clips.filter((c) => inLibraryView(c, v.key)).length }));
+  // Open Settings and bring one section or field into view (it mounts next frame).
+  const openSettingsAt = (id: string) => {
+    setSelected(null);
+    setShowSettings(true);
+    setTimeout(() => {
+      const el = document.getElementById(id);
+      el?.scrollIntoView({ block: "start" });
+      if (el instanceof HTMLInputElement) el.focus();
+    }, 120);
+  };
   const openLibraryView = (view: string) => {
     setShowSettings(false);
     setSelected(null);
@@ -2043,6 +2053,28 @@ function App() {
             </div>
           )}
 
+          {blackMap[c.path] === true && (
+            <div className="st-insp-warn" role="status">
+              <Warning size={16} weight="fill" />
+              <span>
+                <strong>This clip is black</strong>
+                The game’s picture was hidden from capture, usually because the game runs as admin and ClipForge doesn’t.
+                {sup?.game_elevated ? " That’s the case right now." : " Settings › Auto-clip decides what ClipForge does when that happens."}
+              </span>
+              {sup?.game_elevated ? (
+                <button className="st-primary st-solo" onClick={async () => {
+                  try {
+                    await invoke("ensure_admin_task");
+                    await invoke("restart_elevated");
+                  } catch (error) {
+                    setToast(String(error));
+                  }
+                }}>Restart as admin</button>
+              ) : (
+                <button className="st-ghost" onClick={() => openSettingsAt("settings-automation")}>Admin rule</button>
+              )}
+            </div>
+          )}
           <div className="st-insp-actions">
             {length > 0 && (
               <div className={`st-insp-hint-box ${exportKbps < 2000 ? "soft" : ""}`}>
@@ -2516,9 +2548,25 @@ function App() {
                     ClipForge keeps the last {formatDuration(settings.replay_seconds)} of gameplay, ready when you need it.
                   </span>
                   <div className="st-first-steps">
-                    <div><CheckCircle size={18} /><span><strong>{sup?.connected ? "Capture engine is connected" : "Check your capture setup"}</strong><span>{recLine ?? "Check picture and audio before your next game."}</span></span><button className="st-ghost" onClick={() => setShowSetupCheck(true)}>Test my setup</button></div>
-                    <div><GameController size={18} /><span><strong>Start a game</strong><span>Watched games arm the replay buffer automatically. Add a game in Settings if it isn’t detected.</span></span><button className="st-ghost" onClick={() => setShowSettings(true)}>Settings</button></div>
-                    <div><Scissors size={18} /><span><strong>Save a good play</strong><span>Press <kbd className="st-kbd">{settings.hotkey_save}</kbd> after it happens. Your clip will appear here, ready to trim and share.</span></span></div>
+                    {/* Each step shows done (tick), now (numbered, teal) or later. */}
+                    <div className={sup?.connected ? "done" : "now"}>
+                      {sup?.connected ? <CheckCircle size={20} weight="fill" aria-label="Done" /> : <span className="st-step-num">1</span>}
+                      <span><strong>{sup?.connected ? "Capture engine is ready" : "Check your capture setup"}</strong><span>{recLine ?? "Check picture and audio before your next game."}</span></span>
+                      <button className="st-ghost" onClick={() => setShowSetupCheck(true)}>{sup?.connected ? "Test again" : "Test my setup"}</button>
+                    </div>
+                    <div className={sup?.game ? "done" : sup?.connected ? "now" : "later"}>
+                      {sup?.game ? <CheckCircle size={20} weight="fill" aria-label="Done" /> : <span className="st-step-num">2</span>}
+                      <span>
+                        <strong>{sup?.game && runningGameName ? `${runningGameName} is running` : "Start a game"}</strong>
+                        <span>Watched games arm the replay buffer automatically. If a game runs as admin, ClipForge offers to restart as admin so clips aren’t black.</span>
+                      </span>
+                      <button className="st-ghost" onClick={() => openSettingsAt("settings-games")}>Game not found?</button>
+                    </div>
+                    <div className={sup?.game ? "now" : "later"}>
+                      <span className="st-step-num">3</span>
+                      <span><strong>Save a good play</strong><span>Press <kbd className="st-kbd">{settings.hotkey_save}</kbd> after it happens, or let auto-clip catch your kills. The clip shows up here with its kills marked.</span></span>
+                      <button className="st-ghost" onClick={() => openSettingsAt("hotkey-save")}>Change hotkey</button>
+                    </div>
                   </div>
                 </div>
               )

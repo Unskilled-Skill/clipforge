@@ -630,6 +630,7 @@ dependencies = [
  "libobs-wrapper",
  "log",
  "notify",
+ "png 0.18.1",
  "regex",
  "reqwest",
  "serde",
