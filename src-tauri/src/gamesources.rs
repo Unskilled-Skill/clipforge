@@ -245,7 +245,7 @@ pub async fn rocket_league(app: AppHandle) {
             let mut consumed = 0;
             while let Some(Ok(msg)) = stream_de.next() {
                 consumed = stream_de.byte_offset();
-                if state.handle(&msg) {
+                if state.handle(&msg) && crate::clips::load_settings_inner(&app).clip_rule("rocketleague").enabled {
                     crate::logs::line("auto-clip: rocket league highlight");
                     crate::autoclip::schedule(&app);
                 }

@@ -687,6 +687,20 @@ function SegRadios<T extends string | number>(props: { label: string; value: T; 
   );
 }
 
+// Games with built-in auto-clip. `minimum`: kills per round, or kills close
+// together; games that only report events have none.
+const AUTO_CLIP_GAMES: { id: string; name: string; source: string; minimum?: "round" | "streak" }[] = [
+  { id: "valorant", name: "Valorant", source: "Kill banner on screen", minimum: "round" },
+  { id: "cs2", name: "Counter-Strike 2", source: "Game State Integration", minimum: "round" },
+  { id: "dota2", name: "Dota 2", source: "Game State Integration. Add -gamestateintegration to its Steam launch options.", minimum: "streak" },
+  { id: "lol", name: "League of Legends", source: "Live client API: kills and objectives", minimum: "streak" },
+  { id: "rocketleague", name: "Rocket League", source: "Stats API: goals and saves" },
+  { id: "arenabreakout", name: "Arena Breakout: Infinite", source: "Kills from the game log" },
+  { id: "valheim", name: "Valheim", source: "Boss kills from the game log" },
+];
+const ROUND_MINIMUMS: [number, string][] = [[1, "Every kill"], [2, "Rounds with 2+ kills"], [3, "Rounds with 3+ kills"], [4, "Rounds with 4+ kills"], [5, "Aces only"]];
+const STREAK_MINIMUMS: [number, string][] = [[1, "Every kill"], [2, "2+ kills close together"], [3, "3+ kills close together"], [4, "4+ kills close together"], [5, "5 kills close together"]];
+
 const SETTINGS_SECTIONS: [string, string][] = [
   ["capture", "Capture"], ["automation", "Auto-clip"], ["export", "Export"], ["hotkeys", "Hotkeys"],
   ["audio", "Audio"], ["games", "Games"], ["storage", "Storage"], ["advanced", "Advanced"], ["health", "Health"],
@@ -1095,24 +1109,45 @@ export function SettingsPage(props: {
             </button>
           </div>
           {settings.auto_clip && (
-            <label className="set-col">
-              <span className="field-label">Valorant: clip</span>
-              <select
-                className="audio-select wide"
-                value={settings.auto_clip_min_kills}
-                onChange={(e) => saveSettings({ ...settings, auto_clip_min_kills: Number(e.target.value) })}
-              >
-                <option value={1}>Every kill</option>
-                <option value={2}>Rounds with 2+ kills</option>
-                <option value={3}>Rounds with 3+ kills</option>
-                <option value={4}>Rounds with 4+ kills</option>
-                <option value={5}>Aces only</option>
-              </select>
+            <div className="auto-clip-games" role="group" aria-label="Auto-clip per game">
               <span className="field-hint">
-                Multikill clips are named 2K, 3K, 4K or ACE. With a minimum, the whole round is saved
-                as one clip when it ends.
+                Multikill clips are named 2K, 3K, 4K or ACE. With a round minimum, the whole round is saved as one clip when it ends.
               </span>
-            </label>
+              {AUTO_CLIP_GAMES.map((g) => {
+                const rule = settings.auto_clip_games[g.id] ?? { enabled: true, min_kills: g.id === "valorant" ? settings.auto_clip_min_kills : 1 };
+                const save = (next: { enabled: boolean; min_kills: number }) =>
+                  saveSettings({ ...settings, auto_clip_games: { ...settings.auto_clip_games, [g.id]: next } });
+                return (
+                  <div className="auto-clip-game" key={g.id}>
+                    <div className="toggle-text">
+                      <span className="toggle-title">{g.name}</span>
+                      <span className="toggle-desc">{g.source}</span>
+                    </div>
+                    {g.minimum && rule.enabled && (
+                      <select
+                        className="audio-select"
+                        aria-label={`${g.name}: what to clip`}
+                        value={Math.min(5, Math.max(1, rule.min_kills))}
+                        onChange={(e) => save({ ...rule, min_kills: Number(e.target.value) })}
+                      >
+                        {(g.minimum === "round" ? ROUND_MINIMUMS : STREAK_MINIMUMS).map(([v, label]) => (
+                          <option key={v} value={v}>{label}</option>
+                        ))}
+                      </select>
+                    )}
+                    <button
+                      className={`switch ${rule.enabled ? "on" : ""}`}
+                      role="switch"
+                      aria-checked={rule.enabled}
+                      aria-label={`Auto-clip ${g.name}`}
+                      onClick={() => save({ ...rule, enabled: !rule.enabled })}
+                    >
+                      <span className="knob" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </section>
 

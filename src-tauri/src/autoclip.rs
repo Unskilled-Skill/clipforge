@@ -87,6 +87,9 @@ static LOG_TAIL: Mutex<Option<LogTail>> = Mutex::new(None);
 
 /// Check the active game's log for new matching lines.
 fn poll_log_trigger(app: &AppHandle, game: &str, delay_s: f64) {
+    if !crate::clips::load_settings_inner(app).clip_rule(&crate::clips::auto_clip_game_id(game)).enabled {
+        return;
+    }
     let trigger = load_triggers(app)
         .into_iter()
         .find(|t| t.game_exe.to_lowercase() == game)
@@ -167,6 +170,9 @@ struct Pending {
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 /// `round_kills` from our own player's last CS2 GSI payload (-1 = unknown).
 static CS2_ROUND_KILLS: AtomicI64 = AtomicI64::new(-1);
+/// CS2 round mode (a minimum above one kill): the round's first kill and
+/// kill count, saved as one clip when the round ends.
+static CS2_ROUND: Mutex<Option<(Instant, u32)>> = Mutex::new(None);
 /// `player.kills` from the last Dota 2 GSI payload (-1 = unknown).
 static DOTA_KILLS: AtomicI64 = AtomicI64::new(-1);
 /// Highest LoL event id already processed.
@@ -481,11 +487,29 @@ fn cs2_new_kill(json: &serde_json::Value, last_round_kills: &AtomicI64) -> bool 
 
 fn handle_cs2_payload(app: &AppHandle, json: &serde_json::Value) {
     if let Some(update)=crate::matchdata::cs2_update(json) { crate::matchdata::ingest(app,"cs2.exe","cs2-gsi",update); }
-    if cs2_new_kill(json, &CS2_ROUND_KILLS) {
+    let rule = crate::clips::load_settings_inner(app).clip_rule("cs2");
+    if cs2_new_kill(json, &CS2_ROUND_KILLS) && rule.enabled {
         let hs = json["player"]["state"]["round_killhs"].as_i64().unwrap_or(0);
         crate::logs::line(&format!("auto-clip: cs2 kill (round headshots {hs})"));
-        let delay = crate::clips::load_settings_inner(app).auto_clip_delay_s;
-        schedule_clip(app, delay);
+        let round_kills = CS2_ROUND_KILLS.load(Ordering::Relaxed).max(0) as u32;
+        if rule.min_kills > 1 {
+            record_kill();
+            CS2_ROUND.lock().unwrap().get_or_insert((Instant::now(), 0)).1 = round_kills;
+        } else {
+            schedule_counted(app, round_kills, 1);
+        }
+    }
+    // Round mode: the round is judged when it ends.
+    if json["auth"]["token"] == GSI_TOKEN
+        && (json["round"]["phase"] == "over" || json["map"]["phase"] == "gameover")
+    {
+        if let Some((first, kills)) = CS2_ROUND.lock().unwrap().take() {
+            if rule.enabled && kills >= rule.min_kills {
+                save_round(app, first, kills);
+            } else {
+                crate::logs::line("auto-clip: cs2 round skipped, fewer kills than the minimum");
+            }
+        }
     }
 }
 
@@ -506,8 +530,12 @@ fn dota_new_kill(json: &serde_json::Value, last_kills: &AtomicI64) -> bool {
 
 fn handle_dota_payload(app: &AppHandle, json: &serde_json::Value) {
     if dota_new_kill(json, &DOTA_KILLS) {
+        let rule = crate::clips::load_settings_inner(app).clip_rule("dota2");
+        if !rule.enabled {
+            return;
+        }
         crate::logs::line("auto-clip: dota 2 kill");
-        schedule(app);
+        schedule_counted(app, 0, rule.min_kills);
     }
 }
 
@@ -575,8 +603,9 @@ async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64) {
         }
     }
     LOL_LAST_EVENT.store(newest, Ordering::Relaxed);
-    if kill {
-        schedule_clip(app, delay_s);
+    let rule = crate::clips::load_settings_inner(app).clip_rule("lol");
+    if kill && rule.enabled {
+        open_window(app, delay_s, Some((0, rule.min_kills)));
     }
 }
 

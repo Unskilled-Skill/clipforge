@@ -907,3 +907,10 @@ input, textarea { caret-color: var(--st-accent); }
 .st-game-dot > span { width: 8px; height: 8px; border-radius: 50%; }
 .st-insp-game { display: flex; align-items: center; gap: 6px; }
 .st-insp-game .st-game-icon, .st-insp-game .st-game-dot { flex-basis: 16px; width: 16px; height: 16px; }
+
+/* Settings › Auto-clip: one row per game with built-in auto-clip. */
+.auto-clip-games { display: flex; flex-direction: column; padding-bottom: 4px; }
+.auto-clip-games > .field-hint { padding: 0 0 6px; }
+.auto-clip-game { display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 8px 0; border-top: 1px solid var(--st-line); }
+.auto-clip-game .toggle-text { flex: 1; min-width: 0; }
+.auto-clip-game select { flex: 0 0 210px; }

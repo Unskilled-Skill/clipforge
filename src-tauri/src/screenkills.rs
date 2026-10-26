@@ -461,8 +461,9 @@ pub fn run(app: AppHandle) {
                 checked = Instant::now();
                 let game = app.state::<crate::obs::CurrentGame>().0.lock().ok().and_then(|g| g.clone());
                 let settings = crate::clips::load_settings_inner(&app);
-                enabled = settings.auto_clip && game.is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
-                min_kills = settings.auto_clip_min_kills.max(1);
+                let rule = settings.clip_rule("valorant");
+                enabled = settings.auto_clip && rule.enabled && game.is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
+                min_kills = rule.min_kills;
             }
             if !enabled {
                 capture = None;

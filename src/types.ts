@@ -29,6 +29,7 @@ export interface Settings {
   auto_clip: boolean;
   auto_clip_delay_s: number;
   auto_clip_min_kills: number;
+  auto_clip_games: Record<string, { enabled: boolean; min_kills: number }>;
   session_recording: boolean;
   replay_seconds: number;
   video_fps: number;

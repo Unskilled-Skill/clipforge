@@ -188,9 +188,14 @@ pub struct Settings {
     #[serde(default)]
     pub session_recording: bool,
     /// Valorant: only auto-clip rounds with at least this many kills (1 =
-    /// every kill). Games that don't report a kill count ignore it.
+    /// every kill). Superseded by `auto_clip_games["valorant"]`; still read
+    /// as that rule's default so older settings keep their choice.
     #[serde(default = "default_min_kills")]
     pub auto_clip_min_kills: u32,
+    /// Per-game auto-clip rules, keyed by `auto_clip_game_id`. A game with no
+    /// entry is on, clipping every kill.
+    #[serde(default)]
+    pub auto_clip_games: std::collections::BTreeMap<String, GameClipRule>,
     /// Replay buffer length — how far back a clip reaches.
     #[serde(default = "default_replay_seconds")]
     pub replay_seconds: f64,
@@ -230,6 +235,34 @@ fn default_discord_mb() -> f64 {
 
 fn default_min_kills() -> u32 {
     1
+}
+
+/// One game's auto-clip rule. `min_kills` counts kills in a round
+/// (Valorant, CS2) or kills close together (Dota 2, League); games that
+/// don't report kills ignore it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct GameClipRule {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_min_kills")]
+    pub min_kills: u32,
+}
+
+/// Stable id of a game with built-in auto-clip, from its exe. Other games
+/// (custom log triggers) use their exe name.
+pub fn auto_clip_game_id(exe: &str) -> String {
+    let exe = exe.trim().to_lowercase();
+    let id = match exe.as_str() {
+        "valorant-win64-shipping.exe" => "valorant",
+        "cs2.exe" => "cs2",
+        "dota2.exe" => "dota2",
+        "league of legends.exe" => "lol",
+        "rocketleague.exe" => "rocketleague",
+        "uagame.exe" => "arenabreakout",
+        "valheim.exe" => "valheim",
+        _ => return exe,
+    };
+    id.into()
 }
 
 fn default_auto_clip_delay() -> f64 {
@@ -277,6 +310,7 @@ impl Default for Settings {
             auto_clip: false,
             auto_clip_delay_s: default_auto_clip_delay(),
             auto_clip_min_kills: default_min_kills(),
+            auto_clip_games: Default::default(),
             session_recording: false,
             replay_seconds: default_replay_seconds(),
             video_fps: default_fps(),
@@ -300,6 +334,15 @@ pub fn load_favorites(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 impl Settings {
+    /// The auto-clip rule for a game id (see `auto_clip_game_id`).
+    pub fn clip_rule(&self, game: &str) -> GameClipRule {
+        self.auto_clip_games.get(game).copied().unwrap_or(GameClipRule {
+            enabled: true,
+            min_kills: if game == "valorant" { self.auto_clip_min_kills } else { 1 },
+        })
+        .normalized()
+    }
+
     pub fn needs_admin_task(&self) -> bool {
         self.run_elevated || self.admin_rule == "auto"
             || self.admin_rule_games.values().any(|rule| rule == "auto")
@@ -346,6 +389,32 @@ mod overlap_tests {
         assert_eq!(tracks(&[3, 4], 5), [3, 4]);
         assert_eq!(tracks(&[1, 2, 4], 5), [1, 2, 4]);
         assert_eq!(tracks(&[0, 1], 3), [1]);
+    }
+}
+
+impl GameClipRule {
+    fn normalized(self) -> Self {
+        Self { min_kills: self.min_kills.clamp(1, 5), ..self }
+    }
+}
+
+#[cfg(test)]
+mod clip_rule_tests {
+    use super::*;
+
+    #[test]
+    fn games_default_to_every_kill_and_valorant_keeps_its_old_minimum() {
+        let mut settings = Settings::default();
+        settings.auto_clip_min_kills = 3;
+        assert_eq!(settings.clip_rule("valorant"), GameClipRule { enabled: true, min_kills: 3 });
+        assert_eq!(settings.clip_rule("cs2"), GameClipRule { enabled: true, min_kills: 1 });
+        settings.auto_clip_games.insert("valorant".into(), GameClipRule { enabled: false, min_kills: 0 });
+        assert_eq!(settings.clip_rule("valorant"), GameClipRule { enabled: false, min_kills: 1 });
+        assert_eq!(auto_clip_game_id("VALORANT-Win64-Shipping.exe"), "valorant");
+        assert_eq!(auto_clip_game_id("League of Legends.exe"), "lol");
+        assert_eq!(auto_clip_game_id("MyGame.exe"), "mygame.exe");
+        let old: Settings = serde_json::from_str(r#"{"clips_dir":"C:/Clips","auto_clip_min_kills":2}"#).unwrap();
+        assert_eq!(old.clip_rule("valorant").min_kills, 2);
     }
 }
 
