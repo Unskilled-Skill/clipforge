@@ -166,8 +166,11 @@ function gameColor(game: string) {
 }
 
 // The game's own icon once ClipForge has cached it from the game's .exe;
-// until then a dot in the game's colour.
+// until then a dot in the game's colour. Edits (trims, exports, GIFs) get scissors.
 function GameMark({ game, icons }: { game: string; icons: Record<string, string> }) {
+  if (game === "Edits") {
+    return <span className="st-game-dot st-game-edits" aria-hidden="true"><Scissors size={13} weight="bold" /></span>;
+  }
   const icon = icons[game.toLowerCase()];
   return icon ? (
     <img className="st-game-icon" src={convertFileSrc(icon)} alt="" draggable={false} />
@@ -1854,9 +1857,12 @@ function App() {
   const libraryViews = [
     { key: "all", label: "All clips", Icon: FilmStrip },
     { key: "multikills", label: "Multikills", Icon: Crosshair },
-    { key: "favorites", label: "Starred", Icon: Star },
+    { key: "favorites", label: "Favorites", Icon: Star },
     { key: "sessions", label: "Full matches", Icon: FilmSlate },
-  ].map((v) => ({ ...v, count: clips.filter((c) => inLibraryView(c, v.key)).length }));
+  ]
+    .map((v) => ({ ...v, count: clips.filter((c) => inLibraryView(c, v.key)).length }))
+    // Multikills appears once there are multikill clips (or while it's open).
+    .filter((v) => v.key !== "multikills" || v.count > 0 || gameFilter === "multikills");
   // Open Settings and bring one section or field into view (it mounts next frame).
   const openSettingsAt = (id: string) => {
     setSelected(null);

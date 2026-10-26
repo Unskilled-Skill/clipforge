@@ -932,3 +932,5 @@ input, textarea { caret-color: var(--st-accent); }
 .st-insp-warn > span { flex: 1 1 200px; display: flex; flex-direction: column; gap: 3px; color: #d9cdb6; line-height: 1.5; }
 .st-insp-warn strong { color: #f7ebd3; font-weight: 600; font-size: 12.5px; }
 .st-insp-warn > button { margin-left: 26px; }
+
+.st-game-edits { color: var(--st-muted); }
