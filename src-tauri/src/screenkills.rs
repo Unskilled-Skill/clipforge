@@ -32,6 +32,8 @@ const OFF_FRAMES: u32 = 3;
 /// Bright, saturated pixels one more kill arc adds, at 1080p (an arc is
 /// ~440 px; half that rides out glow and fade-in).
 const ARC_PIXELS: f32 = 220.0;
+/// Arc growth this soon after a counted kill is that kill's arc fading in.
+const SETTLE_ARCS: Duration = Duration::from_millis(1700);
 
 // ---- Detection --------------------------------------------------------
 
@@ -187,9 +189,11 @@ impl Tracker {
             return false;
         }
         self.off_frames = 0;
-        // The arc for the kill that raised the banner may still be fading
-        // in; only count growth well after the last kill.
-        let settled = self.last_kill.is_none_or(|t| now.duration_since(t) > Duration::from_millis(600));
+        // The arcs keep growing for up to ~1.6 s after a kill as they fade
+        // in, and read as extra kills (8 of 36 on 2026-10-26, checked against
+        // Riot's match record). Only growth after that counts; a real second
+        // kill sooner is rare, and the post-match check (valmatch.rs) puts it back.
+        let settled = self.last_kill.is_none_or(|t| now.duration_since(t) > SETTLE_ARCS);
         if score >= ON && arcs as f32 > self.arcs_seen as f32 + ARC_PIXELS * s * s && settled {
             self.arcs_seen = arcs;
             self.last_kill = Some(now);
@@ -865,8 +869,9 @@ mod tests {
         assert!(!t.update(0.95, 500, 1.0, at(200)), "same banner, arc still fading in");
         assert!(!t.update(0.3, 0, 1.0, at(400)), "animation dip isn't a new banner");
         assert!(!t.update(0.95, 500, 1.0, at(600)));
-        assert!(t.update(0.95, 950, 1.0, at(1000)), "second arc = second kill");
-        for ms in [1200, 1400, 1600] {
+        assert!(!t.update(0.95, 950, 1.0, at(1200)), "growth 1.2 s after a kill is its own arc fading in");
+        assert!(t.update(0.95, 1450, 1.0, at(2000)), "growth after that = second kill");
+        for ms in [2200, 2400, 2600] {
             assert!(!t.update(0.05, 0, 1.0, at(ms)));
         }
         assert!(t.update(0.9, 400, 1.0, at(5000)), "next banner after it went away");
