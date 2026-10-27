@@ -25,7 +25,8 @@ function useView(ctl: TimelineController | null): TimelineView | null {
   return view;
 }
 
-export function Ruler({ ctl }: { ctl: TimelineController | null }) {
+/** Time ruler, with a small notch over each kill. */
+export function Ruler({ ctl, markers = [] }: { ctl: TimelineController | null; markers?: number[] }) {
   const view = useView(ctl);
   const ticks = view
     ? rulerTicks(view.duration, view.width, view.scrollLeft - 60, view.scrollLeft + view.viewport + 60)
@@ -37,6 +38,8 @@ export function Ruler({ ctl }: { ctl: TimelineController | null }) {
           {t.label && <span className="mt-tick-label">{t.label}</span>}
         </span>
       ))}
+      {view && view.duration > 0 &&
+        markers.map((m) => <span key={m} className="mt-ruler-kill" style={{ transform: `translateX(${(m / view.duration) * view.width}px)` }} />)}
     </div>
   );
 }
@@ -125,27 +128,28 @@ export function Filmstrip({
 }
 
 /**
- * Kill markers, grouped so ones that would overlap at this zoom share a
- * pill with their count; they split apart as you zoom in. Clicking jumps to
- * the group's first kill.
+ * Kill tags for the Kills lane, numbered in play order (K1, K2…). Ones that
+ * would overlap at this zoom share a tag ("K1–3"); they split apart as you
+ * zoom in. Clicking jumps to the group's first kill.
  */
 export function KillMarkers({
   ctl,
   times,
-  icon,
   onJump,
 }: {
   ctl: TimelineController | null;
   times: number[];
-  icon: React.ReactNode;
   onJump: (t: number) => void;
 }) {
   const view = useView(ctl);
   if (!view || view.duration <= 0) return null;
+  let next = 1;
   return (
     <>
       {groupMarkers(times, view.duration, view.width).map((g) => {
         const n = g.times.length;
+        const first = next;
+        next += n;
         const span = n > 1 ? `${fmtTime(g.times[0])}–${fmtTime(g.times[n - 1])}` : fmtTime(g.t);
         return (
           <button
@@ -158,7 +162,7 @@ export function KillMarkers({
             title={`${n > 1 ? `${n} kills` : "Kill"} at ${span} — click to jump`}
             onClick={() => onJump(g.t)}
           >
-            {n > 1 ? <span className="kill-count-num">{n}</span> : icon}
+            {n > 1 ? `K${first}–${first + n - 1}` : `K${first}`}
           </button>
         );
       })}

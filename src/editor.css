@@ -17,39 +17,21 @@
 .export-card .btn-discord { height: auto; min-height: 46px; padding-block: 10px; }
 .more-share { flex-shrink: 0; }
 .trim-section { margin: 0; padding: 10px 12px; gap: 6px; min-width: 0; }
-.trim-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
-.trim-actions { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.trim-actions .preview-btn, .trim-actions .kill-count { margin: 0; white-space: nowrap; flex-shrink: 0; }
-.trim-readout { margin: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.tl-zoom { margin: 0; }
 .audio-note { max-height: 2.8em; overflow-y: auto; line-height: 1.4; }
-.multitrack { height: 84px; margin: 0; overflow-y: auto; overflow-x: hidden; align-items: flex-start; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.editor.mixer-open .multitrack { height: clamp(124px, 20vh, 190px); }
-.editor:not(.mixer-open) .mt-audio { display: none; }
-.mt-labels { width: 166px; flex: 0 0 166px; }
+.multitrack { height: auto; margin: 0; overflow-y: auto; overflow-x: hidden; align-items: flex-start; overscroll-behavior: contain; }
+.mt-labels { width: 148px; flex: 0 0 148px; }
 .mt-labels > * { flex-shrink: 0; }
-.mt-label.mt-audio, .mt-lane.mt-audio { height: 34px; }
-.mt-ruler, .mt-ruler-spacer { height: 24px; }
-.mt-scroller { --ruler-h: 24px; }
-.mt-tick-label { font-size: var(--text-xs); color: #b5bdce; }
-.editor-shortcuts { position: relative; color: var(--text-secondary); font-size: var(--text-xs); }
-.editor-shortcuts > summary { cursor: pointer; width: fit-content; }
-.editor-shortcuts .kbd-hints { position: absolute; left: 0; bottom: 100%; z-index: 25; padding: 12px; margin: 0 0 6px; background: #171a23; border: 1px solid var(--border-strong); border-radius: var(--radius-control); width: min(640px, 100%); }
 .disk-bar { flex-shrink: 0; }
 .disk-bar .setup-btn { white-space: nowrap; height: auto; min-height: 28px; padding-block: 5px; flex-shrink: 0; }
 @media (max-width: 1150px) {
   .editor-stage { grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; }
-  .trim-head { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
-  .trim-actions { grid-column: 1 / -1; }
-  .trim-readout { text-align: left; }
-  .mt-labels { width: 148px; flex-basis: 148px; }
+  .mt-labels { width: 128px; flex-basis: 128px; }
   .editor-meta { display: none; }
   .setup-bar.disk-bar { padding: 6px 16px; }
 }
 @media (max-height: 720px) {
   .editor { gap: 6px; padding-block: 8px; }
   .trim-section { padding-block: 6px; }
-  .editor.mixer-open .multitrack { height: 124px; }
   .editor-top .btn-delete { font-size: var(--text-xs); }
   .audio-note { font-size: var(--text-xs); }
 }

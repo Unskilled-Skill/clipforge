@@ -446,9 +446,7 @@ select:focus,
 .mt-label.on { color: var(--text-primary); border-color: #33406e; background: #161a26; }
 .mt-label svg { flex-shrink: 0; color: var(--text-secondary); }
 .mt-label.on svg { color: var(--accent-text); }
-.mt-vid-label svg { color: var(--accent-text); }
 .mt-label input { accent-color: var(--accent-action); margin: 0; flex-shrink: 0; }
-.mt-vid-label { height: 46px; color: var(--text-soft); cursor: default; }
 
 /* Lanes scroll horizontally together when zoomed; the labels column stays.
    The sizer is zoom × 100% wide; everything inside is positioned in its px. */
@@ -463,6 +461,9 @@ select:focus,
   scrollbar-color: #2b2f3c transparent;
 }
 .mt-scroller.zoomed { padding-bottom: 4px; }
+/* Unzoomed there's nothing to scroll to: the playhead's grab handle poking
+   past the end mustn't summon a scrollbar. */
+.mt-scroller:not(.zoomed) { overflow-x: hidden; }
 .mt-sizer { position: relative; width: 100%; }
 .mt-tracks {
   position: relative;
@@ -1821,8 +1822,8 @@ button.kill-count { color: #8deadc; background: #1c3b37; }
 .health-details > summary { cursor: pointer; color: #cfcfd6; padding: 10px 0; font-size: var(--text-sm); }
 .health-details .health-list { margin-top: 8px; }
 @media (min-width: 900px) {
-  .editor:has(.many-tracks) .mt-label:not(.mt-vid-label),
-  .editor:has(.many-tracks) .mt-lane:not(.mt-vid) { height: 34px; }
+  .editor:has(.many-tracks) .mt-label.mt-audio,
+  .editor:has(.many-tracks) .mt-lane.mt-audio { height: 36px; }
 }
 .kbd-hints { gap: 6px 12px; }
 .key-hint { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }

@@ -21,12 +21,14 @@ import {
   Copy,
   Crosshair,
   LinkSimple,
-  MagnifyingGlassMinus,
-  MagnifyingGlassPlus,
   ArrowsInLineHorizontal,
   DiscordLogo,
   DotsThree,
   Gif,
+  Pause,
+  SkipBack,
+  SkipForward,
+  SpeakerSlash,
   FilmSlate,
   FilmStrip,
   FolderOpen,
@@ -39,7 +41,6 @@ import {
   Monitor,
   PencilSimple,
   Play,
-  Repeat,
   Scissors,
   SpeakerHigh,
   Star,
@@ -76,10 +77,6 @@ function clipTime(s: number) {
   const m = Math.floor(tenths / 600);
   const sec = (tenths % 600) / 10;
   return `${m}:${sec.toFixed(1).padStart(4, "0")}`;
-}
-
-function trimReadout(start: number, end: number) {
-  return `${clipTime(start)} → ${clipTime(end)} · ${(end - start).toFixed(1)} s selected`;
 }
 
 // Thumbnails live at a deterministic path next to the clip, so a card can
@@ -323,6 +320,13 @@ function App() {
   const [trackRoles, setTrackRoles] = useState<TrackRole[]>(["mix"]);
   // Frame rate of the open clip, so arrow keys step exactly one frame.
   const [clipFps, setClipFps] = useState(30);
+  const [playing, setPlaying] = useState(false);
+  // Drags snap to kill markers (as well as the playhead) while this is on.
+  const [snapKills, setSnapKills] = useState(true);
+  const [videoSize, setVideoSize] = useState<[number, number] | null>(null);
+  // The zoom slider while it's being dragged (the controller reports the
+  // settled zoom a moment later).
+  const [zoomDraft, setZoomDraft] = useState<number | null>(null);
   const audioTracks = trackRoles.length;
   const [audioKeep, setAudioKeep] = useState<Set<number>>(new Set([0]));
   // Per-track export gain, 1 = unchanged. Applied in the ffmpeg mix.
@@ -497,11 +501,23 @@ function App() {
     endHandle: useRef<HTMLDivElement>(null),
     dimLeft: useRef<HTMLDivElement>(null),
     dimRight: useRef<HTMLDivElement>(null),
+    rangeLabel: useRef<HTMLSpanElement>(null),
   };
   const [timeline, setTimeline] = useState<TimelineController | null>(null);
   const [timelineZoom, setTimelineZoom] = useState(1);
-  // Live "a → b" readout while dragging (written directly, no re-render).
-  const trimReadoutRef = useRef<HTMLSpanElement>(null);
+  // In / Out / Selection readouts and the clock: written directly, so a
+  // drag or playback never re-renders the editor.
+  const trimInRef = useRef<HTMLSpanElement>(null);
+  const trimOutRef = useRef<HTMLSpanElement>(null);
+  const trimLenRef = useRef<HTMLSpanElement>(null);
+  const clockRef = useRef<HTMLSpanElement>(null);
+  const paintTrimInfo = (start: number, end: number) => {
+    const len = `${(end - start).toFixed(1)} s`;
+    if (trimInRef.current) trimInRef.current.textContent = clipTime(start);
+    if (trimOutRef.current) trimOutRef.current.textContent = clipTime(end);
+    if (trimLenRef.current) trimLenRef.current.textContent = len;
+    if (tl.rangeLabel.current) tl.rangeLabel.current.textContent = len;
+  };
   // Per-track mixer: one hidden <audio> per track, each solo'd to its own
   // track, volume driven by that track's slider. The master <video> is muted
   // while this engine is active (multi-track clip + track API available).
@@ -1382,13 +1398,12 @@ function App() {
       endHandle: tl.endHandle.current,
       dimLeft: tl.dimLeft.current,
       dimRight: tl.dimRight.current,
+      rangeLabel: tl.rangeLabel.current,
     };
     if (!selected || !hasDuration || !video || Object.values(els).some((el) => !el)) return;
     const ctl = new TimelineController(video, els as Record<keyof typeof els, HTMLElement>, {
       onTrimCommit: (start, end, by) => onTimelineCommit.current(start, end, by),
-      onTrimLive: (start, end) => {
-        if (trimReadoutRef.current) trimReadoutRef.current.textContent = trimReadout(start, end);
-      },
+      onTrimLive: paintTrimInfo,
       onInteract: () => setPreviewing(false),
       onZoom: setTimelineZoom,
     });
@@ -1405,11 +1420,50 @@ function App() {
   }, [timeline, duration]);
   useEffect(() => {
     timeline?.setTrim(trimStart, trimEnd);
-    if (trimReadoutRef.current) trimReadoutRef.current.textContent = trimReadout(trimStart, trimEnd);
+    paintTrimInfo(trimStart, trimEnd);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeline, trimStart, trimEnd]);
   useEffect(() => {
-    timeline?.setMarkers(killMarkers);
-  }, [timeline, killMarkers]);
+    timeline?.setMarkers(snapKills ? killMarkers : []);
+  }, [timeline, killMarkers, snapKills]);
+  // The transport clock: per frame while playing, once on every seek.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let raf = 0;
+    const paint = () => {
+      const el = clockRef.current;
+      if (!el) return;
+      const [whole, tenth] = clipTime(video.currentTime).split(".");
+      el.innerHTML = `${whole}<small>.${tenth}</small>`;
+    };
+    const tick = () => {
+      paint();
+      raf = video.paused ? 0 : requestAnimationFrame(tick);
+    };
+    const onPlay = () => {
+      setPlaying(true);
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    const onPause = () => {
+      setPlaying(false);
+      paint();
+    };
+    paint();
+    setPlaying(!video.paused);
+    video.addEventListener("play", onPlay);
+    video.addEventListener("pause", onPause);
+    video.addEventListener("seeked", paint);
+    video.addEventListener("timeupdate", paint);
+    return () => {
+      cancelAnimationFrame(raf);
+      video.removeEventListener("play", onPlay);
+      video.removeEventListener("pause", onPause);
+      video.removeEventListener("seeked", paint);
+      video.removeEventListener("timeupdate", paint);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.path, playerReload, hasDuration]);
 
   // Editor keyboard shortcuts: space play/pause, arrows frame-step
   // (shift = 1s), [ ] set trim markers at the playhead.
@@ -2009,6 +2063,13 @@ function App() {
   const sessions = recentSessions(clips,3,recordingMetadata);
   const latestClip = latestClipForExport(clips,recordingMetadata);
   const commandClip = selected ? (trimEnd > trimStart ? selected : null) : sessionClip ?? inspected;
+  const setTrackKept = (i: number, keep: boolean) => {
+    const next = keep ? keepTrack(audioKeep, i, trackRoles) : new Set([...audioKeep].filter((x) => x !== i));
+    const removed = trackLabels(trackRoles).filter((track) => audioKeep.has(track.i) && !next.has(track.i));
+    const kept = trackLabels(trackRoles).filter((track) => next.has(track.i)).map((track) => track.label);
+    setAudioKeep(next);
+    setAudioNotice(`${removed.length ? `${removed.map((track) => track.label).join(" and ")} left out to avoid duplicate sound. ` : ""}Export audio: ${kept.join(", ") || "none (silent video)"}.${next.size === 1 && trackRoles[[...next][0]] === "game" ? " Add voice or mic to keep reactions." : ""}`);
+  };
   // Clips: auto-clips save as you play. Whole match: the session is recorded
   // too, and its kills become highlight clips when the game closes.
   const setWholeMatch = (whole: boolean) => {
@@ -3057,6 +3118,7 @@ function App() {
                 onLoadedMetadata={(e) => {
                   const d = e.currentTarget.duration;
                   setDuration(d);
+                  setVideoSize(e.currentTarget.videoWidth ? [e.currentTarget.videoWidth, e.currentTarget.videoHeight] : null);
                   // A video track the WebView can't decode loads as audio-only.
                   setNoVideo(e.currentTarget.videoWidth === 0);
                   // Restore the clip's last trim so montage prep survives
@@ -3277,143 +3339,138 @@ function App() {
             </div>
 
             <div className="trim-section">
-              <div className="trim-head">
-                <div className="trim-actions">
-                <span className="trim-label">TRIM</span>
-                <button
-                  className={`preview-btn ${previewing ? "on" : ""}`}
-                  onClick={previewSelection}
-                  title="Play the selected range"
-                >
-                  <Play size={12} weight="fill" />
-                  {previewing ? "previewing…" : "preview"}
-                </button>
-                <button
-                  className={`preview-btn ${loopPreview ? "on" : ""}`}
-                  onClick={() => setLoopPreview(!loopPreview)}
-                  title="Loop the selection"
-                >
-                  <Repeat size={12} weight="bold" />
-                  loop
-                </button>
-                {killMarkers.length > 0 && (
+              <div className="tx-bar">
+                <span className="tx-clock mono" ref={clockRef} aria-label="Current time" />
+                <div className="tx-controls">
+                  <button type="button" className="tx-btn" aria-label="Back one frame" title="Back one frame (←)" onClick={() => timeline?.step(-1, clipFps)}>
+                    <SkipBack size={14} weight="fill" />
+                  </button>
                   <button
-                    className="kill-count"
-                    title="Jump to the first kill — timeline markers jump to each"
+                    type="button"
+                    className="tx-btn tx-play"
+                    aria-label={playing ? "Pause" : "Play"}
+                    title="Play / pause (Space)"
                     onClick={() => {
                       const v = videoRef.current;
-                      const first = Math.min(...killMarkers);
-                      if (!v || !isFinite(first)) return;
-                      v.pause();
-                      setPreviewing(false);
-                      v.currentTime = Math.max(0, first);
+                      if (!v) return;
+                      if (v.paused) v.play().catch(() => {});
+                      else v.pause();
                     }}
                   >
-                    <Crosshair size={12} weight="bold" />
-                    {killMarkers.length} kill{killMarkers.length > 1 ? "s" : ""}
+                    {playing ? <Pause size={14} weight="fill" /> : <Play size={14} weight="fill" />}
                   </button>
-                )}
-                <button className="preview-btn mixer-toggle" aria-expanded={mixerOpen} aria-controls="clip-multitrack" onClick={() => setMixerOpen((open) => !open)}>
-                  <Waveform size={14} />Audio · {audioKeep.has(0) ? "all" : `${audioKeep.size} tracks`}
-                </button>
-                </div>
-                <span className="trim-readout" ref={trimReadoutRef}>
-                  {trimReadout(trimStart, trimEnd)}
-                </span>
-                <div className="tl-zoom" title="Zoom the timeline (Ctrl + scroll)">
-                  <button
-                    className="preview-btn"
-                    onClick={() => timeline?.zoomBy(1 / 1.5)}
-                    disabled={timelineZoom <= 1}
-                    aria-label="Zoom out"
-                  >
-                    <MagnifyingGlassMinus size={13} weight="bold" />
+                  <button type="button" className="tx-btn" aria-label="Forward one frame" title="Forward one frame (→)" onClick={() => timeline?.step(1, clipFps)}>
+                    <SkipForward size={14} weight="fill" />
                   </button>
-                  <span className="tl-zoom-level">
-                    {timelineZoom < 10 ? timelineZoom.toFixed(1) : Math.round(timelineZoom)}×
-                  </span>
-                  <button
-                    className="preview-btn"
-                    onClick={() => timeline?.zoomBy(1.5)}
-                    disabled={!timeline || timelineZoom >= timeline.maxZoom}
-                    aria-label="Zoom in"
-                  >
-                    <MagnifyingGlassPlus size={13} weight="bold" />
+                  <span className="tx-sep" aria-hidden="true" />
+                  <button type="button" className="tx-toggle" aria-pressed={previewing} onClick={previewSelection} title="Play the selected range">
+                    Play selection
                   </button>
-                  <button
-                    className="preview-btn"
-                    onClick={() =>
-                      trimStart <= 0.05 && trimEnd >= duration - 0.05
-                        ? timeline?.setZoom(1)
-                        : timeline?.fitRange(trimStart, trimEnd)
-                    }
-                    title="Zoom to the selection"
-                    aria-label="Zoom to the selection"
-                  >
-                    <ArrowsInLineHorizontal size={13} weight="bold" />
+                  <button type="button" className="tx-toggle" aria-pressed={loopPreview} onClick={() => setLoopPreview(!loopPreview)} title="Loop the selection">
+                    Loop
                   </button>
                 </div>
+                <span className="tx-total mono">/ {clipTime(duration)}</span>
               </div>
-              {duration > 0 && mixerOpen && <p className="audio-note" role="status">{audioNotice || (trackRoles.includes("desktop") && trackRoles.includes("game") ? "Mix keeps all audio. Game or Voice replaces Mix/Desktop; add Mic to keep your reaction." : "Mix keeps all audio. Individual tracks replace the mix to avoid duplicate sound.")}</p>}
+              <div className="tl-info">
+                <span>In <span className="mono" ref={trimInRef} /></span>
+                <span>Out <span className="mono" ref={trimOutRef} /></span>
+                <span>Selection <span className="mono tl-info-len" ref={trimLenRef} /></span>
+                {audioNotice && <span className="tl-info-note" role="status" title={audioNotice}>{audioNotice}</span>}
+                <label className="tl-snap" title="Trim handles snap to kills and the playhead">
+                  <input type="checkbox" checked={snapKills} onChange={(e) => setSnapKills(e.target.checked)} />
+                  Snap to kills
+                </label>
+                <span className="tl-info-sep" aria-hidden="true" />
+                <label className="tl-zoom" title="Zoom the timeline (Ctrl + scroll)">
+                  Zoom
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    aria-label="Timeline zoom"
+                    disabled={!timeline || timeline.maxZoom <= 1}
+                    value={zoomDraft ?? (timeline && timeline.maxZoom > 1 ? Math.round((Math.log(timelineZoom) / Math.log(timeline.maxZoom)) * 100) : 0)}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setZoomDraft(v);
+                      if (timeline) timeline.setZoom(Math.exp((v / 100) * Math.log(timeline.maxZoom)));
+                    }}
+                    onPointerUp={() => setZoomDraft(null)}
+                    onKeyUp={() => setZoomDraft(null)}
+                    onBlur={() => setZoomDraft(null)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="tl-fit"
+                  onClick={() =>
+                    trimStart <= 0.05 && trimEnd >= duration - 0.05
+                      ? timeline?.setZoom(1)
+                      : timeline?.fitRange(trimStart, trimEnd)
+                  }
+                  title="Zoom to the selection"
+                  aria-label="Zoom to the selection"
+                >
+                  <ArrowsInLineHorizontal size={13} weight="bold" />
+                </button>
+              </div>
               {duration > 0 && (
-                <div className="multitrack" id="clip-multitrack" tabIndex={mixerOpen ? 0 : -1} aria-label={mixerOpen ? "Audio mixer and timeline; scroll for more tracks" : "Video timeline"}>
+                <div className="multitrack" id="clip-multitrack" aria-label="Timeline">
                   <div className="mt-labels">
                     <div className="mt-ruler-spacer" />
-                    <div className="mt-label mt-vid-label">
-                      <FilmSlate size={14} weight="fill" />
-                      video
-                    </div>
-                    {trackLabels(trackRoles).map((t) => {
+                    <div className="mt-label mt-vid-label"><span className="mt-id">V1</span>Video</div>
+                    {trackLabels(trackRoles).map((t, n) => {
                       const on = audioKeep.has(t.i);
+                      const gain = trackGain[t.i] ?? 1;
                       return (
-                        <label
+                        <div
                           key={t.i}
-                          className={`mt-label mt-audio ${on ? "on" : ""}`}
+                          className={`mt-label mt-audio ${on ? "on" : "off"}`}
                           title={
                             t.i === 0
-                              ? "Keep in export. The mix already contains every other track."
+                              ? "The mix already contains every other track."
                               : t.role === "desktop"
-                                ? "Keep in export. Desktop already contains game, voice chat and other apps."
-                                : "Keep in export"
+                                ? "Desktop already contains game, voice chat and other apps."
+                                : undefined
                           }
                         >
-                          <input
-                            type="checkbox"
-                            aria-label={`Include ${t.label} in export`}
-                            checked={on}
-                            onChange={(e) => {
-                              const next = e.target.checked ? keepTrack(audioKeep, t.i, trackRoles) : new Set([...audioKeep].filter((i) => i !== t.i));
-                              const removed = trackLabels(trackRoles).filter((track) => audioKeep.has(track.i) && !next.has(track.i));
-                              const kept = trackLabels(trackRoles).filter((track) => next.has(track.i)).map((track) => track.label);
-                              setAudioKeep(next);
-                              setAudioNotice(`${removed.length ? `${removed.map((track) => track.label).join(" and ")} removed to avoid duplicate sound. ` : ""}Export audio: ${kept.join(", ") || "none (silent video)"}.${next.size === 1 && trackRoles[[...next][0]] === "game" ? " Add voice or mic to keep reactions." : ""}`);
-                            }}
-                          />
-                          <t.Icon size={14} weight="fill" className="mt-label-icon" />
-                          {t.label}
+                          <span className="mt-id">A{n + 1}</span>
+                          <span className="mt-name">{t.label}</span>
                           <input
                             type="range"
+                            className="mt-gain"
                             aria-label={`${t.label} export volume`}
-                            aria-valuetext={`${Math.round((trackGain[t.i] ?? 1) * 100)} percent`}
+                            aria-valuetext={`${Math.round(gain * 100)} percent`}
                             min={0}
                             max={2}
                             step={0.05}
-                            value={trackGain[t.i] ?? 1}
+                            value={gain}
                             disabled={!on}
-                            title={`Export volume: ${Math.round((trackGain[t.i] ?? 1) * 100)}% — double-click resets`}
+                            title={`Export volume: ${Math.round(gain * 100)}% — double-click resets`}
                             onDoubleClick={() => setTrackGain((g) => ({ ...g, [t.i]: 1 }))}
-                            onChange={(e) =>
-                              setTrackGain((g) => ({ ...g, [t.i]: Number(e.target.value) }))
-                            }
+                            onChange={(e) => setTrackGain((g) => ({ ...g, [t.i]: Number(e.target.value) }))}
                           />
-                        </label>
+                          <button
+                            type="button"
+                            className="mt-mute"
+                            aria-pressed={!on}
+                            aria-label={on ? `Leave ${t.label} out of the export` : `Keep ${t.label} in the export`}
+                            title={on ? "In the export. Click to leave it out" : "Left out of the export. Click to keep it"}
+                            onClick={() => setTrackKept(t.i, !on)}
+                          >
+                            {on ? <SpeakerHigh size={13} /> : <SpeakerSlash size={13} />}
+                          </button>
+                        </div>
                       );
                     })}
+                    {killMarkers.length > 0 && <div className="mt-label mt-kills-label"><span className="mt-id">E</span>Kills</div>}
                   </div>
                   <div ref={tl.scroller} className={`mt-scroller ${timelineZoom > 1 ? "zoomed" : ""}`}>
                     <div ref={tl.sizer} className="mt-sizer">
                       <div ref={tl.surface} className="mt-tracks">
-                        <Ruler ctl={timeline} />
+                        <Ruler ctl={timeline} markers={killMarkers} />
                         <div ref={tl.videoLane} className="mt-lane mt-vid">
                           <Filmstrip
                             ctl={timeline}
@@ -3429,21 +3486,25 @@ function App() {
                             </div>
                           );
                         })}
+                        {killMarkers.length > 0 && (
+                          <div className="mt-lane mt-kills">
+                            <KillMarkers
+                              ctl={timeline}
+                              times={killMarkers}
+                              onJump={(t) => {
+                                const v = videoRef.current;
+                                if (!v) return;
+                                v.pause();
+                                setPreviewing(false);
+                                v.currentTime = t;
+                              }}
+                            />
+                          </div>
+                        )}
                         <div ref={tl.dimLeft} className="mt-dim left" />
                         <div ref={tl.dimRight} className="mt-dim right" />
                         <div ref={tl.range} className="mt-range" />
-                        <KillMarkers
-                          ctl={timeline}
-                          times={killMarkers}
-                          icon={<Crosshair size={11} weight="bold" />}
-                          onJump={(t) => {
-                            const v = videoRef.current;
-                            if (!v) return;
-                            v.pause();
-                            setPreviewing(false);
-                            v.currentTime = t;
-                          }}
-                        />
+                        <span ref={tl.rangeLabel} className="mt-range-label mono" aria-hidden="true" />
                         <div ref={tl.startHandle} className="mt-handle start" title="Drag or use arrow keys to trim" role="slider" tabIndex={0}
                           aria-label="Trim start" aria-valuemin={0} aria-valuemax={trimEnd - 0.5} aria-valuenow={trimStart} aria-valuetext={`${trimStart.toFixed(1)} seconds`}
                           onKeyDown={(e) => {
@@ -3474,17 +3535,25 @@ function App() {
               )}
             </div>
 
-            <details className="editor-shortcuts"><summary>Keyboard shortcuts</summary>
-            <p className="kbd-hints">
-              <span className="key-hint"><kbd>space</kbd> play/pause</span>
-              <span className="key-hint"><kbd>←</kbd><kbd>→</kbd> frame</span>
-              <span className="key-hint"><kbd>shift</kbd> + arrows: 1s</span>
-              <span className="key-hint"><kbd>[</kbd> start</span>
-              <span className="key-hint"><kbd>]</kbd> end</span>
-              <span className="key-hint"><kbd>ctrl</kbd> + scroll: zoom</span>
-              <span className="key-hint"><kbd>esc</kbd> back</span>
-            </p>
-            </details>
+            <footer className="ed-status">
+              <span className="mono">
+                {[
+                  videoSize && `${videoSize[0]}×${videoSize[1]}`,
+                  `${Math.round(clipFps * 100) / 100} fps`,
+                  `${audioTracks} audio track${audioTracks === 1 ? "" : "s"}`,
+                  formatSize(selected.size_bytes),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+              <span className="ed-keys">
+                <span><kbd>Space</kbd> play</span>
+                <span><kbd>[</kbd> <kbd>]</kbd> set in/out</span>
+                <span><kbd>←</kbd> <kbd>→</kbd> frame</span>
+                <span><kbd>Shift</kbd>+arrows 1 s</span>
+                <span><kbd>Ctrl</kbd>+scroll zoom</span>
+              </span>
+            </footer>
           </div>
         )}
 

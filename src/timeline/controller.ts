@@ -6,9 +6,9 @@
 import { clamp, snapTime, toTime, toX } from "./math";
 
 /** Handle width (px), drawn inside the selection's edges. */
-export const HANDLE_PX = 12;
-/** Extra grab tolerance outside a handle (px). */
-const HANDLE_SLOP = 6;
+export const HANDLE_PX = 8;
+/** Extra grab tolerance outside a handle (px): slim handles, roomy target. */
+const HANDLE_SLOP = 8;
 /** Shortest selection a drag can make (s). */
 const MIN_TRIM = 0.5;
 /** At most one seek per this many ms while dragging; the latest wins. */
@@ -35,6 +35,8 @@ export interface TimelineElements {
   endHandle: HTMLElement;
   dimLeft: HTMLElement;
   dimRight: HTMLElement;
+  /** Optional tag riding the selection's start (its length). */
+  rangeLabel?: HTMLElement | null;
 }
 
 export interface TimelineView {
@@ -288,6 +290,7 @@ export class TimelineController {
     endHandle.style.transform = `translateX(${e - HANDLE_PX}px)`;
     dimLeft.style.transform = `scaleX(${s / W})`;
     dimRight.style.transform = `scaleX(${(W - e) / W})`;
+    if (this.el.rangeLabel) this.el.rangeLabel.style.transform = `translateX(${s}px)`;
   }
 
   /** Keyboard stepping. Pauses, moves on from where the previous step was
