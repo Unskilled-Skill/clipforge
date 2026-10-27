@@ -3792,6 +3792,7 @@ function App() {
       {showSettings && (
         <SettingsPage
           onBack={() => setShowSettings(false)}
+          appVersion={appVersion}
           onTestSetup={() => setShowSetupCheck(true)}
           settings={settings}
           setSettings={setSettings}

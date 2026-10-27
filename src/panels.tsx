@@ -781,6 +781,8 @@ const SETTINGS_SECTIONS: [string, string][] = [
 
 export function SettingsPage(props: {
   onBack: () => void;
+  /** This build's version, shown at the foot of the section list. */
+  appVersion: string;
   onTestSetup: () => void;
   settings: Settings;
   setSettings: (s: Settings) => void;
@@ -961,6 +963,7 @@ export function SettingsPage(props: {
             {label}
           </a>
         ))}
+        {props.appVersion && <span className="settings-version" title="Updates install automatically">ClipForge {props.appVersion}</span>}
       </nav>
       <div className="settings-body" ref={bodyRef}>
         <section id="settings-capture" className="set-group">
