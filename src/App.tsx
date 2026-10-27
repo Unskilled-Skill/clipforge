@@ -52,6 +52,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { AppPickerModal, Modal, OnboardingModal, SegRadios, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
+import { dateBucket, sessionIndices, sessionLabel } from "./library-groups";
 import { TimelineController } from "./timeline/controller";
 import { Filmstrip, KillMarkers, Ruler } from "./timeline/parts";
 import type {
@@ -322,25 +323,38 @@ function App() {
   // Frame rate of the open clip, so arrow keys step exactly one frame.
   const [clipFps, setClipFps] = useState(30);
   const [playing, setPlaying] = useState(false);
-  // Library days folded shut (by date), remembered between runs.
-  const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => {
+  // Library groups folded shut, and older groups (folded by default) that
+  // were opened; both remembered between runs.
+  const loadKeys = (name: string) => {
     try {
-      return new Set(JSON.parse(localStorage.getItem("collapsedDays") ?? "[]"));
+      return new Set<string>(JSON.parse(localStorage.getItem(name) ?? "[]"));
     } catch {
-      return new Set();
+      return new Set<string>();
     }
-  });
-  const toggleDay = (date: string) =>
-    setCollapsedDays((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(date)) next.add(date);
-      try {
-        localStorage.setItem("collapsedDays", JSON.stringify([...next]));
-      } catch {
-        /* storage unavailable: folding just isn't remembered */
-      }
-      return next;
-    });
+  };
+  const [foldedGroups, setFoldedGroups] = useState(() => loadKeys("foldedGroups"));
+  const [openedGroups, setOpenedGroups] = useState(() => loadKeys("openedGroups"));
+  const isFolded = (key: string, recent: boolean) => foldedGroups.has(key) || (!recent && !openedGroups.has(key));
+  const toggleGroup = (key: string, recent: boolean) => {
+    const fold = !isFolded(key, recent);
+    const folded = new Set(foldedGroups);
+    const opened = new Set(openedGroups);
+    if (fold) {
+      folded.add(key);
+      opened.delete(key);
+    } else {
+      folded.delete(key);
+      opened.add(key);
+    }
+    setFoldedGroups(folded);
+    setOpenedGroups(opened);
+    try {
+      localStorage.setItem("foldedGroups", JSON.stringify([...folded]));
+      localStorage.setItem("openedGroups", JSON.stringify([...opened]));
+    } catch {
+      /* storage unavailable: folding just isn't remembered */
+    }
+  };
   // Drags snap to kill markers (as well as the playhead) while this is on.
   const [snapKills, setSnapKills] = useState(true);
   const [videoSize, setVideoSize] = useState<[number, number] | null>(null);
@@ -429,7 +443,7 @@ function App() {
   const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
   const [streamableReady, setStreamableReady] = useState(false);
   const [streamableUrl, setStreamableUrl] = useState("");
-  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "largest" | "longest" | "name" | "kills">(
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "sessions" | "largest" | "longest" | "name" | "kills">(
     "newest"
   );
   const [targetMb, setTargetMb] = useState(10);
@@ -1581,8 +1595,7 @@ function App() {
         // Rows in folded days aren't drawn: step over them, and find the
         // row by its clip rather than its position on screen.
         const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
-        const folded = (i: number) =>
-          (sortBy === "newest" || sortBy === "oldest") && collapsedDays.has(new Date(visibleClips[i].modified_ms).toDateString());
+        const folded = (i: number) => foldedPaths.has(visibleClips[i].path);
         let next = focusIdx === -1 ? 0 : focusIdx + delta;
         while (next >= 0 && next < visibleClips.length && folded(next)) next += delta;
         if (next < 0 || next >= visibleClips.length) next = focusIdx === -1 ? -1 : focusIdx;
@@ -2024,42 +2037,42 @@ function App() {
   // stay one grid. Flat indices are kept for the keyboard focus.
   const clipGroups = (() => {
     const items = visibleClips.map((c, i) => ({ c, i }));
-    if (sortBy !== "newest" && sortBy !== "oldest") {
-      return [{ key: "all", date: "", label: "", meta: "", sub: "", dayItems: items, items }];
+    if (sortBy !== "newest" && sortBy !== "oldest" && sortBy !== "sessions") {
+      return [{ key: "all", date: "", recent: true, label: "", meta: "", sub: "", dayItems: items, items }];
     }
-    const dayKey = (ms: number) => new Date(ms).toDateString();
-    const today = dayKey(Date.now());
-    const yesterday = dayKey(Date.now() - 86400000);
-    // One header per day; a day with several matches (or games) lists each
-    // as a sub-row under it. Cleanup acts on the whole day.
-    const groups: { key: string; date: string; label: string; meta: string; sub: string; dayItems: typeof items; items: typeof items }[] = [];
-    for (const it of items) {
-      const date = dayKey(it.c.modified_ms);
+    // Each clip's group: a play session, or a time bucket (days for the
+    // last week, then weeks, months, years). A group with several matches
+    // (or games) lists each as a sub-row under it. Cleanup acts on the
+    // whole group.
+    const now = Date.now();
+    const sessionOf = sortBy === "sessions" ? sessionIndices(items.map(({ c }) => c.modified_ms)) : [];
+    const sessionStart = new Map<number, number>();
+    sessionOf.forEach((n, k) => sessionStart.set(n, items[k].c.modified_ms));
+    const bucketOf = (k: number) => {
+      if (sortBy !== "sessions") return dateBucket(items[k].c.modified_ms, now);
+      const start = sessionStart.get(sessionOf[k]) ?? items[k].c.modified_ms;
+      return { key: `s:${start}`, label: sessionLabel(start, now), recent: now - items[k].c.modified_ms < 7 * 86400000 };
+    };
+    const groups: { key: string; date: string; recent: boolean; label: string; meta: string; sub: string; dayItems: typeof items; items: typeof items }[] = [];
+    items.forEach((it, k) => {
+      const bucket = bucketOf(k);
       const matchId=recordingMetadata[it.c.path]?.matches.length === 1 ? recordingMetadata[it.c.path].matches[0].info.id : "";
-      const key = `${date}:${matchId}`;
+      const key = `${bucket.key}:${matchId}`;
       let g = groups[groups.length - 1];
       if (!g || g.key !== key) {
-        const label =
-          date === today
-            ? "Today"
-            : date === yesterday
-              ? "Yesterday"
-              : new Date(it.c.modified_ms).toLocaleDateString(undefined, {
-                  weekday: "long",
-                  day: "numeric",
-                  month: "long",
-                });
-        g = { key, date, label, meta: "", sub: "", dayItems: [], items: [] };
+        g = { key, date: bucket.key, recent: bucket.recent, label: bucket.label, meta: "", sub: "", dayItems: [], items: [] };
         groups.push(g);
       }
       g.items.push(it);
-    }
+    });
     const summary = (list: typeof items, match?: string) => {
       const names = [...new Set(list.map(({ c }) => gameName(gameOf(c))))];
       const gamesText = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
       const n = list.length;
       const size = formatSize(list.reduce((a, { c }) => a + c.size_bytes, 0));
-      return `${gamesText}${match ? ` · ${match}` : ""} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
+      const matches = new Set(list.map(({ c }) => recordingMetadata[c.path]?.matches.length === 1 ? recordingMetadata[c.path].matches[0].info.id : "").filter(Boolean)).size;
+      const matchesText = !match && sortBy === "sessions" && matches > 1 ? ` · ${matches} matches` : "";
+      return `${gamesText}${match ? ` · ${match}` : ""}${matchesText} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
     };
     for (const g of groups) {
       const metadata = recordingMetadata[g.items[0].c.path];
@@ -2075,6 +2088,10 @@ function App() {
     }
     return groups;
   })();
+  // Clips in folded groups: not drawn, so keyboard focus steps over them.
+  const foldedPaths = new Set(
+    clipGroups.filter((g) => g.date && isFolded(g.date, g.recent)).flatMap((g) => g.items.map(({ c }) => c.path)),
+  );
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
   // Details panel for the library row that has focus (click, arrows).
@@ -2640,6 +2657,7 @@ function App() {
                 >
                   <option value="newest">Newest</option>
                   <option value="oldest">Oldest</option>
+                  <option value="sessions">Sessions</option>
                   <option value="kills">Most kills</option>
                   <option value="largest">Largest</option>
                   <option value="longest">Longest</option>
@@ -2749,10 +2767,12 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {clipGroups.map((g) => {
-                      const folded = !!g.date && collapsedDays.has(g.date);
+                    {clipGroups.map((g, gi) => {
+                      const folded = !!g.date && isFolded(g.date, g.recent);
                       return (
-                      <Fragment key={g.key}>
+                      // The same match can come back within a group (other
+                      // clips in between), so its key alone isn't unique.
+                      <Fragment key={`${g.key}#${gi}`}>
                         {g.label && (
                           <tr className={`st-group ${g.sub ? "st-group-day" : ""} ${folded ? "folded" : ""}`}>
                             <td colSpan={compactLibrary ? 4 : 7}>
@@ -2762,7 +2782,7 @@ function App() {
                                   className="st-group-toggle"
                                   aria-expanded={!folded}
                                   title={folded ? `Show ${g.label}'s clips` : `Hide ${g.label}'s clips`}
-                                  onClick={() => toggleDay(g.date)}
+                                  onClick={() => toggleGroup(g.date, g.recent)}
                                 >
                                   <CaretRight size={11} weight="bold" className="st-group-caret" />
                                   <strong>{g.label}</strong>
