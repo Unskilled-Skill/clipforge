@@ -353,13 +353,60 @@ fn has_round_end(text: &str) -> bool {
     text.contains("OnRoundEnded for round") || text.contains("LogShooterGameState: Match Ended")
 }
 
-/// Kills this round, reset by round-end lines in ShooterGame.log.
-#[derive(Default)]
+/// Kills shortly after a camera line still count: a round you win writes
+/// one as the last enemy dies, a moment before your banner is seen.
+const DEAD_GRACE_S: f64 = 1.5;
+/// Camera lines this soon after a round end or map load are the game
+/// settling the view, not a death.
+const SETTLE_S: f64 = 12.0;
+
+/// Seconds since the Unix epoch of a log line's "[2026.10.26-20.32.29:187]"
+/// stamp (UTC).
+fn line_time(line: &str) -> Option<f64> {
+    if !line.starts_with('[') {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| line.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (n(1..5)?, n(6..8)?, n(9..11)?);
+    let (h, mi, sec, ms) = (n(12..14)?, n(15..17)?, n(18..20)?, n(21..24)?);
+    // Days from civil (Howard Hinnant).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (mo + if mo > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+    Some((days * 86400 + h * 3600 + mi * 60 + sec) as f64 + ms as f64 / 1000.0)
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+/// Kills this round, reset by round-end lines in ShooterGame.log, plus what
+/// the log says about whether a banner on screen can be ours: none in
+/// menus or agent select, and none once we're dead and spectating (the
+/// spectated teammate's banners look exactly like ours).
 struct Round {
     kills: u32,
     first: Option<Instant>,
     /// Log read position; None until the log is found.
     offset: Option<u64>,
+    /// In a game world (not the menu or agent select).
+    in_world: bool,
+    /// A mode with rounds you sit out after dying (not Deathmatch or the Range).
+    rounds: bool,
+    /// Camera lines before this are the view settling.
+    settle_until: f64,
+    /// This round's start (the first camera line after the buy phase) seen.
+    started: bool,
+    /// When a later camera line said we died (or the round was decided).
+    dead_at: Option<f64>,
+}
+
+impl Default for Round {
+    fn default() -> Self {
+        Round { kills: 0, first: None, offset: None, in_world: true, rounds: true, settle_until: 0.0, started: false, dead_at: None }
+    }
 }
 
 impl Round {
@@ -395,7 +442,54 @@ impl Round {
             }
         }
         self.offset = Some(size);
-        has_round_end(&text)
+        self.read(&text)
+    }
+
+    /// Follow new log lines; true when a round ended among them.
+    fn read(&mut self, text: &str) -> bool {
+        let mut ended = false;
+        for line in text.lines() {
+            let Some(t) = line_time(line) else { continue };
+            if has_round_end(line) {
+                ended = true;
+                self.new_round(t);
+            } else if line.contains("LogMapLoadModel: Update:") {
+                let world = line.contains("[Local World: TRUE");
+                if world && !self.in_world {
+                    self.new_round(t);
+                }
+                self.in_world = world;
+                if world && line.contains("/GameModes/") {
+                    self.rounds = !["Deathmatch", "ShootingRange", "HURM", "GunGame"].iter().any(|m| line.contains(m));
+                }
+            } else if line.contains("UpdateMapReady") {
+                if t < self.settle_until {
+                    self.settle_until = t + SETTLE_S;
+                } else if !self.started {
+                    self.started = true;
+                } else if self.dead_at.is_none() {
+                    self.dead_at = Some(t);
+                }
+            }
+        }
+        ended
+    }
+
+    fn new_round(&mut self, t: f64) {
+        self.started = false;
+        self.dead_at = None;
+        self.settle_until = t + SETTLE_S;
+    }
+
+    /// Why a banner seen at `now` can't be our kill, if it can't.
+    fn not_ours(&self, now: f64) -> Option<&'static str> {
+        if !self.in_world {
+            Some("not in a match")
+        } else if self.rounds && self.dead_at.is_some_and(|d| now - d > DEAD_GRACE_S) {
+            Some("dead, spectating")
+        } else {
+            None
+        }
     }
 
     fn log_found(&self) -> bool {
@@ -506,6 +600,10 @@ pub fn run(app: AppHandle) {
             let arcs = if score >= ON { arc_pixels(&bgra, side as usize, cx, cy, r, s) } else { 0 };
             let now = Instant::now();
             if tracker.update(score, arcs, s, now) {
+                if let Some(why) = round.not_ours(now_secs()) {
+                    crate::logs::line(&format!("auto-clip: valorant banner ignored ({why})"));
+                    continue;
+                }
                 round.kills += 1;
                 round.first.get_or_insert(now);
                 crate::logs::line(&format!(
@@ -621,6 +719,67 @@ mod tests {
         assert!(has_round_end("[2026.10.24-17.52.54:989][537]LogShooterGameState: Warning: AShooterGameState::OnRoundEnded for round '0'"));
         assert!(has_round_end("[2026.10.24-18.30.00:000][  1]LogShooterGameState: Match Ended: Completion State: 'Completed'"));
         assert!(!has_round_end("[2026.10.24-17.52.55:205][576]LogShooterGameState: Warning: Gameplay started at local time 0.039062"));
+    }
+
+    #[test]
+    fn log_stamps_are_utc_seconds() {
+        assert_eq!(line_time("[1970.01.01-00.00.01:500][  0]x"), Some(1.5));
+        assert_eq!(line_time("[2026.10.26-20.32.29:187][177]x"), Some(1_793_046_749.187));
+        assert_eq!(line_time("no stamp"), None);
+    }
+
+    /// Lines as a real match (2026-10-26) wrote them: agent select, map
+    /// load, round 0 starting, a death, then the round end.
+    #[test]
+    fn log_tracks_menus_and_deaths() {
+        let at = |hms: &str| line_time(&format!("[2026.10.26-{hms}:000][0]")).unwrap();
+        let cam = |hms: &str| format!("[2026.10.26-{hms}:000][0]LogMapLoadModel: Display: UpdateMapReady: [PlayerCharacterLoaded: TRUE]\n");
+        let map = |hms: &str, name: &str, world: &str, url: &str| {
+            format!("[2026.10.26-{hms}:000][0]LogMapLoadModel: Update: [Map Name: {name} | Changed: TRUE] [Local World: {world} | Changed: TRUE] [URL: {url}]\n")
+        };
+        let mut r = Round::default();
+        r.read(&map("20.29.41", "CharacterSelectPersistentLevel", "FALSE", ""));
+        assert_eq!(r.not_ours(at("20.30.09")), Some("not in a match"));
+        let load = map("20.31.23", "Juliett", "TRUE", "1.2.3.4:7000/Game/Maps/Juliett?Game=/Game/GameModes/Bomb/BombGameMode.BombGameMode_C");
+        let text = [load, cam("20.31.24"), cam("20.31.32"), cam("20.31.33"), cam("20.32.17")].concat();
+        assert!(!r.read(&text));
+        assert_eq!(r.not_ours(at("20.32.20")), None, "round started, alive");
+        r.read(&cam("20.32.29"));
+        assert_eq!(r.not_ours(at("20.32.30")), None, "a winning kill lands just after the line");
+        assert_eq!(r.not_ours(at("20.32.53")), Some("dead, spectating"));
+        assert!(r.read("[2026.10.26-20.33.14:212][978]LogShooterGameState: Warning: AShooterGameState::OnRoundEnded for round '0'\n"));
+        r.read(&cam("20.33.14"));
+        assert_eq!(r.not_ours(at("20.33.20")), None, "new round, alive again");
+
+        // Deathmatch respawns: deaths don't stop counting.
+        let mut dm = Round::default();
+        let text = [map("19.00.00", "Ascent", "TRUE", "x?Game=/Game/GameModes/Deathmatch/DeathmatchGameMode"), cam("19.00.30"), cam("19.01.00")].concat();
+        dm.read(&text);
+        assert_eq!(dm.not_ours(at("19.01.30")), None);
+    }
+
+    /// Replays a real ShooterGame.log and prints what each moment reads as.
+    /// `CLIPFORGE_VALORANT_LOG=... cargo test --lib screenkills::tests::replay_log -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn replay_log() {
+        let path = std::env::var("CLIPFORGE_VALORANT_LOG").expect("set CLIPFORGE_VALORANT_LOG");
+        let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+        let times: Vec<f64> = std::env::var("CLIPFORGE_KILL_TIMES").unwrap_or_default().split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        let mut r = Round::default();
+        let mut lines = text.lines().peekable();
+        for t in times {
+            let mut chunk = String::new();
+            while let Some(l) = lines.peek() {
+                if line_time(l).is_some_and(|lt| lt > t) {
+                    break;
+                }
+                chunk.push_str(lines.next().unwrap());
+                chunk.push('\n');
+            }
+            r.read(&chunk);
+            println!("{t:.1} {}", r.not_ours(t).unwrap_or("ours"));
+        }
     }
 
     #[test]
