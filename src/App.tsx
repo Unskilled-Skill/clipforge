@@ -322,6 +322,25 @@ function App() {
   // Frame rate of the open clip, so arrow keys step exactly one frame.
   const [clipFps, setClipFps] = useState(30);
   const [playing, setPlaying] = useState(false);
+  // Library days folded shut (by date), remembered between runs.
+  const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem("collapsedDays") ?? "[]"));
+    } catch {
+      return new Set();
+    }
+  });
+  const toggleDay = (date: string) =>
+    setCollapsedDays((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(date)) next.add(date);
+      try {
+        localStorage.setItem("collapsedDays", JSON.stringify([...next]));
+      } catch {
+        /* storage unavailable: folding just isn't remembered */
+      }
+      return next;
+    });
   // Drags snap to kill markers (as well as the playhead) while this is on.
   const [snapKills, setSnapKills] = useState(true);
   const [videoSize, setVideoSize] = useState<[number, number] | null>(null);
@@ -1559,12 +1578,17 @@ function App() {
         e.preventDefault();
         // Column count from layout: cards sharing the first card's top row.
         // One clip per table row, so every arrow steps a single row.
-        const cards = document.querySelectorAll<HTMLElement>(".st-table .st-row");
+        // Rows in folded days aren't drawn: step over them, and find the
+        // row by its clip rather than its position on screen.
         const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
-        const next =
-          focusIdx === -1 ? 0 : Math.max(0, Math.min(visibleClips.length - 1, focusIdx + delta));
+        const folded = (i: number) =>
+          (sortBy === "newest" || sortBy === "oldest") && collapsedDays.has(new Date(visibleClips[i].modified_ms).toDateString());
+        let next = focusIdx === -1 ? 0 : focusIdx + delta;
+        while (next >= 0 && next < visibleClips.length && folded(next)) next += delta;
+        if (next < 0 || next >= visibleClips.length) next = focusIdx === -1 ? -1 : focusIdx;
+        if (next < 0) return;
         setFocusIdx(next);
-        cards[next]?.focus();
+        document.querySelector<HTMLElement>(`.st-table .st-row[data-clip-path="${CSS.escape(visibleClips[next].path)}"]`)?.focus();
       } else if (
         !showSettings &&
         e.key === "Enter" &&
@@ -2725,13 +2749,24 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {clipGroups.map((g) => (
+                    {clipGroups.map((g) => {
+                      const folded = !!g.date && collapsedDays.has(g.date);
+                      return (
                       <Fragment key={g.key}>
                         {g.label && (
-                          <tr className={`st-group ${g.sub ? "st-group-day" : ""}`}>
+                          <tr className={`st-group ${g.sub ? "st-group-day" : ""} ${folded ? "folded" : ""}`}>
                             <td colSpan={compactLibrary ? 4 : 7}>
                               <div className="st-group-inner">
-                                <strong>{g.label}</strong>
+                                <button
+                                  type="button"
+                                  className="st-group-toggle"
+                                  aria-expanded={!folded}
+                                  title={folded ? `Show ${g.label}'s clips` : `Hide ${g.label}'s clips`}
+                                  onClick={() => toggleDay(g.date)}
+                                >
+                                  <CaretRight size={11} weight="bold" className="st-group-caret" />
+                                  <strong>{g.label}</strong>
+                                </button>
                                 <span className="st-group-meta">{g.meta}</span>
                                 {g.dayItems.some(({ c }) => !favorites.includes(c.path)) && (
                                   <details className="session-actions"><summary aria-label={`Cleanup options for ${g.label}`}>Cleanup</summary><button className="session-clear" onClick={() => clearUnstarred(g.label, g.dayItems.map(({ c }) => c))}>
@@ -2742,14 +2777,14 @@ function App() {
                             </td>
                           </tr>
                         )}
-                        {g.sub && (
+                        {g.sub && !folded && (
                           <tr className="st-group st-group-sub">
                             <td colSpan={compactLibrary ? 4 : 7}>
                               <div className="st-group-inner"><span className="st-group-meta">{g.sub}</span></div>
                             </td>
                           </tr>
                         )}
-                        {g.items.map(({ c, i }) => {
+                        {!folded && g.items.map(({ c, i }) => {
                           const markers = markerCounts[c.path] ?? 0;
                           const title = momentTitle(c.name, markers);
                           const kills = clipKillCount(c.name, markers);
@@ -2928,7 +2963,8 @@ function App() {
                           );
                         })}
                       </Fragment>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

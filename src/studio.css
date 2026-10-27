@@ -285,6 +285,11 @@
 }
 .st-group-inner { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .st-group-inner strong { font-weight: 600; }
+/* Day headers fold their clips away. */
+.st-group-toggle { display: flex; align-items: center; gap: 6px; white-space: nowrap; flex-shrink: 0; margin: -3px 0 -3px -6px; padding: 3px 6px; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.st-group-toggle:hover { background: #1b1b1f; }
+.st-group-caret { color: var(--st-muted); transition: transform 150ms var(--ease-out); }
+.st-group-toggle[aria-expanded="true"] .st-group-caret { transform: rotate(90deg); }
 .st-group-meta { color: var(--st-muted); }
 .st-group .session-actions { margin-left: auto; }
 
