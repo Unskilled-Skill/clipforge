@@ -321,8 +321,9 @@ pub async fn save_replay(app: &AppHandle, short: bool) -> Result<(), String> {
 
 /// Save, then keep only the last `keep_last` seconds (auto-clip windows),
 /// naming the clip with `label` ("3K", "ACE") if given.
-pub async fn save_replay_keep(app: &AppHandle, keep_last: f64, label: Option<&str>) -> Result<(), String> {
-    save_replay_path(app, Some(keep_last), label).await.map(|_| ())
+/// Returns the saved clip's path.
+pub async fn save_replay_keep(app: &AppHandle, keep_last: f64, label: Option<&str>) -> Result<String, String> {
+    save_replay_path(app, Some(keep_last), label).await
 }
 
 /// Below this the save itself can fail half-written (a 3-minute 1440p

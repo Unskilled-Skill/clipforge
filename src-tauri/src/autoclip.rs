@@ -216,6 +216,34 @@ struct Pending {
 }
 
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+
+/// The last auto clip saved from an event window, so the next one can
+/// absorb it when the two overlap (one fight, not two clips).
+#[derive(Clone)]
+struct LastAuto {
+    path: String,
+    /// The clip's first frame.
+    start: Instant,
+    saved_at: Instant,
+    kills: u32,
+    round_kills: u32,
+}
+
+static LAST_AUTO: Mutex<Option<LastAuto>> = Mutex::new(None);
+/// An earlier clip is only replaced while it is this fresh: older, the
+/// player may already have it open, shared or edited.
+const MERGE_WITHIN: Duration = Duration::from_secs(60);
+
+/// How the clip saved now should cover the window `[start, now]`, given
+/// the last auto clip: `Some(seconds to keep)` when they overlap and one
+/// clip starting at the earlier one's start still fits `limit` seconds
+/// (the replay buffer, and the game's longest clip).
+fn merged_keep(last: &LastAuto, start: Instant, now: Instant, limit: f64) -> Option<f64> {
+    let fresh = now.saturating_duration_since(last.saved_at) < MERGE_WITHIN;
+    let overlaps = start <= last.saved_at;
+    let keep = now.saturating_duration_since(last.start).as_secs_f64();
+    (fresh && overlaps && keep <= limit).then_some(keep)
+}
 /// `round_kills` from our own player's last CS2 GSI payload (-1 = unknown).
 static CS2_ROUND_KILLS: AtomicI64 = AtomicI64::new(-1);
 /// CS2 round mode (a minimum above one kill): the round's first kill and
@@ -333,6 +361,39 @@ pub fn kill_label(kills: u32, round_kills: u32) -> Option<String> {
     }
 }
 
+/// Save a closed event window: `keep` seconds with `kills` counted kills.
+/// When it overlaps the auto clip saved just before, one clip covering
+/// both replaces that one (moved to the Recycle Bin), so a fight that ran
+/// a little past the window is still one clip.
+async fn save_window(app: &AppHandle, settings: &crate::clips::Settings, keep: f64, kills: u32, round_kills: u32, max: f64) {
+    let now = Instant::now();
+    let start = now - Duration::from_secs_f64(keep);
+    let limit = settings.replay_seconds.min(max);
+    let last = LAST_AUTO.lock().unwrap().clone();
+    let favorites = crate::clips::load_favorites(app.clone()).unwrap_or_default();
+    let merge = last.filter(|l| std::path::Path::new(&l.path).exists() && !favorites.contains(&l.path)).and_then(|l| {
+        let keep = merged_keep(&l, start, now, limit)?;
+        Some((l, keep))
+    });
+    let (keep, kills, round_kills, start) = match &merge {
+        Some((l, keep)) => (*keep, l.kills + kills, l.round_kills.max(round_kills), l.start),
+        None => (keep, kills, round_kills, start),
+    };
+    let label = kill_label(kills, round_kills);
+    crate::logs::line(&format!("auto-clip: saving last {keep:.0}s{}", if merge.is_some() { " (joins the previous clip)" } else { "" }));
+    let Ok(path) = crate::obs::save_replay_keep(app, keep, label.as_deref()).await else { return };
+    if let Some((l, _)) = merge {
+        let (app2, old) = (app.clone(), l.path.clone());
+        match crate::obs::blocking(move || crate::clips::delete_clip(app2, old)).await {
+            Ok(()) => crate::logs::line(&format!("auto-clip: replaced {} with the joined clip", l.path)),
+            Err(e) => crate::logs::line(&format!("auto-clip: couldn't remove {} after joining: {e}", l.path)),
+        }
+        let _ = app.emit("clip-replaced", serde_json::json!({ "old": l.path, "new": path }));
+    }
+    *LAST_AUTO.lock().unwrap() = Some(LastAuto { path, start, saved_at: now, kills, round_kills });
+    let _ = app.emit("auto-clipped", ());
+}
+
 /// Save one clip covering a whole round's kills, from the game's lead-in
 /// before the first (round mode: "only rounds with N+ kills" is known at
 /// round end).
@@ -373,8 +434,13 @@ pub async fn run(app: AppHandle) {
         .build()
         .ok();
 
+    // Windows close on a 250 ms tick, so a clip saves right as its window
+    // ends instead of up to 2 s late (a kill in that gap landed on the last
+    // frame of one clip and the first of the next).
+    let mut tick: u64 = 0;
     loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        tick += 1;
         let settings = crate::clips::load_settings_inner(&app);
         if !settings.auto_clip {
             *PENDING.lock().unwrap() = None;
@@ -389,21 +455,21 @@ pub async fn run(app: AppHandle) {
                 Some(p) if now >= p.deadline => {
                     let keep = window_length(p.first, now, p.timing);
                     let worth = p.kills >= p.min_kills;
-                    let label = kill_label(p.kills, p.round_kills);
+                    let due = (keep, p.kills, p.round_kills, p.timing.max);
                     *pending = None;
                     if !worth {
                         crate::logs::line("auto-clip: skipped, fewer kills than the minimum");
                     }
-                    worth.then_some((keep, label))
+                    worth.then_some(due)
                 }
                 _ => None,
             }
         };
-        if let Some((keep, label)) = due {
-            crate::logs::line(&format!("auto-clip: saving last {keep:.0}s"));
-            if crate::obs::save_replay_keep(&app, keep, label.as_deref()).await.is_ok() {
-                let _ = app.emit("auto-clipped", ());
-            }
+        if let Some((keep, kills, round_kills, max)) = due {
+            save_window(&app, &settings, keep, kills, round_kills, max).await;
+        }
+        if tick % 8 != 0 {
+            continue; // everything below runs every 2 s
         }
 
         let game = app
@@ -712,6 +778,24 @@ fn install_gsi_configs() -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The 2026-10-26 21:17 fight: a 2K clip saved, a third kill 9.75 s
+    /// after the second, and a second clip whose lead-in reached back
+    /// into the first. It becomes one clip from the first one's start.
+    #[test]
+    fn overlapping_windows_join_into_one_clip() {
+        let t0 = Instant::now();
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        let last = LastAuto { path: "a.mp4".into(), start: at(0.0), saved_at: at(21.4), kills: 2, round_kills: 2 };
+        // Second window: kill at 21.4, lead-in 10 s back, saved at 39.5.
+        assert_eq!(merged_keep(&last, at(11.4), at(39.5), 120.0), Some(39.5));
+        // Too long for the buffer: kept apart.
+        assert_eq!(merged_keep(&last, at(11.4), at(39.5), 30.0), None);
+        // No overlap: a separate moment.
+        assert_eq!(merged_keep(&last, at(25.0), at(45.0), 120.0), None);
+        // The earlier clip is over a minute old: left alone.
+        assert_eq!(merged_keep(&last, at(20.0), at(90.0), 120.0), None);
+    }
 
     fn payload(round_kills: i64, player: &str, round_phase: &str) -> serde_json::Value {
         json!({

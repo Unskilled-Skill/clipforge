@@ -631,6 +631,16 @@ function App() {
       }),
       listen<string>("clip-error", (e) => setError(e.payload)),
       listen("clips-changed", () => refreshClips()),
+      // An auto clip joined the one before it: follow it if that one was open.
+      listen<{ old: string; new: string }>("clip-replaced", async (e) => {
+        await refreshClips();
+        const dir = settingsRef.current?.clips_dir;
+        const list = dir ? await invoke<ClipInfo[]>("list_clips", { dir }) : [];
+        const next = list.find((c) => c.path === e.payload.new);
+        if (!next) return;
+        setSelected((cur) => (cur?.path === e.payload.old ? next : cur));
+        setInspectorPath((cur) => (cur === e.payload.old ? next.path : cur));
+      }),
       listen("match-metadata-changed",()=>setMetadataRevision(n=>n+1)),
       listen<{ label: string; pct: number }>("export-progress", (e) => {
         setExportLabel(e.payload.label);
