@@ -92,12 +92,15 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
             let markers: Vec<f64> = started
                 .as_ref().map(|(s,_)| kills.iter().map(|k| k.saturating_duration_since(*s).as_secs_f64()).collect())
                 .unwrap_or_default();
-            match crate::obs::blocking(move || finish(&path, &clips_dir, &markers)).await {
+            let bookmarks = markers.clone();
+            match crate::obs::blocking(move || finish(&path, &clips_dir, &bookmarks)).await {
                 Ok(done) => {
                     if let Some((start,game))=started {
                         if let Ok(duration)=crate::clips::probe_clip_duration(&done) {
                             if duration.is_finite() && duration > 0.0 { crate::matchdata::write_recording(&done,&game,start,start+Duration::from_secs_f64(duration),true); }
                         }
+                        // After the match info is written: each highlight gets its slice.
+                        save_highlights(&app, &done, &game, start, &markers).await;
                     }
                     crate::logs::line(&format!("session saved: {done}"));
                     use tauri::Emitter;
@@ -106,6 +109,33 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
                 Err(e) => crate::logs::line(&format!("session finish failed (left in .sessions): {e}")),
             }
         });
+    }
+}
+
+/// Cut the finished session's kills out as highlight clips (Settings ›
+/// Automation › Record whole sessions › Cut highlights).
+async fn save_highlights(app: &AppHandle, session: &str, game: &str, start: Instant, markers: &[f64]) {
+    let settings = crate::clips::load_settings_inner(app);
+    let id = crate::clips::auto_clip_game_id(game);
+    let rule = settings.clip_rule(&id);
+    if !settings.session_highlights || !settings.auto_clip || !rule.enabled || markers.is_empty() {
+        return;
+    }
+    let timing = crate::autoclip::timing(&id, settings.auto_clip_delay_s);
+    let started = std::time::SystemTime::now() - start.elapsed();
+    let (session, markers) = (session.to_string(), markers.to_vec());
+    let written = crate::obs::blocking(move || {
+        let duration = crate::clips::probe_clip_duration(&session)?;
+        let plan = crate::highlights::plan(&markers, duration, timing, rule.min_kills);
+        Ok(crate::highlights::cut(&session, &plan, started))
+    })
+    .await
+    .unwrap_or_default();
+    if !written.is_empty() {
+        crate::logs::line(&format!("session highlights: {} clips", written.len()));
+        use tauri::Emitter;
+        let _ = app.emit("clips-changed", ());
+        let _ = app.emit("highlights-saved", written.len());
     }
 }
 

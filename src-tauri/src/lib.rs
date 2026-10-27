@@ -3,6 +3,7 @@ mod gamesources;
 mod gameicons;
 mod audiodevices;
 mod screenkills;
+mod highlights;
 mod session;
 mod matchdata;
 mod backup;

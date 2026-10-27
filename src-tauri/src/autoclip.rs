@@ -148,15 +148,63 @@ const GSI_PORT: u16 = 3888;
 /// Sent back by CS2 with every payload; anything else on the port is ignored.
 const GSI_TOKEN: &str = "clipforge-gsi-v1";
 
-/// Seconds kept before the first event of a window (the play leading up).
+/// Seconds kept before the first event of a window (the play leading up),
+/// for games without their own timing.
 const PRE_ROLL: f64 = 10.0;
-/// Longest auto clip; a window that runs longer keeps its newest part.
+/// Longest auto clip for games without their own timing; a window that runs
+/// longer keeps its newest part.
 const MAX_AUTO_CLIP: f64 = 120.0;
+
+/// How auto clips frame the action in one game.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timing {
+    /// Events closer together than this share one clip. A live clip saves
+    /// once this long passes without a new event, so it is also how much
+    /// play a live clip keeps after the last one.
+    pub window: f64,
+    /// Kept before the first event: the play leading up to it.
+    pub pre: f64,
+    /// Kept after the last event when cutting from a session recording.
+    pub post: f64,
+    /// Longest clip; a longer moment keeps its end.
+    pub max: f64,
+}
+
+/// Per-game timing, seeded from how established clippers tune each genre:
+/// short windows for round shooters, long ones for MOBA team fights.
+/// Other games use the user's clip delay and the standard lead-in.
+pub fn timing(game_id: &str, default_window: f64) -> Timing {
+    let t = |window, pre, post, max| Timing { window, pre, post, max };
+    match game_id {
+        "cs2" => t(5.0, 5.0, 5.0, 300.0),
+        "valorant" => t(10.0, 10.0, 10.0, 300.0),
+        "dota2" => t(20.0, 10.0, 10.0, 300.0),
+        "lol" => t(35.0, 25.0, 10.0, 300.0),
+        "rocketleague" => t(15.0, 15.0, 8.0, 120.0),
+        "valheim" => t(10.0, 30.0, 10.0, 300.0),
+        "arenabreakout" => t(45.0, 15.0, 10.0, 300.0),
+        _ => t(default_window, PRE_ROLL, default_window, MAX_AUTO_CLIP),
+    }
+}
+
+/// Timing for the game being played now.
+fn current_timing(app: &AppHandle, default_window: f64) -> Timing {
+    let game = app.state::<crate::obs::CurrentGame>().0.lock().ok().and_then(|g| g.clone()).unwrap_or_default();
+    timing(&crate::clips::auto_clip_game_id(&game), default_window)
+}
+
+/// Highlights come from the session recording after the match instead:
+/// live auto-clips only bookmark their kills, so nothing is saved twice.
+fn highlights_instead(app: &AppHandle) -> bool {
+    let s = crate::clips::load_settings_inner(app);
+    s.session_recording && s.session_highlights && crate::engine::ENGINE.session_active()
+}
 
 /// An open event window.
 struct Pending {
-    /// First event in the window: the clip starts `PRE_ROLL` before it.
+    /// First event in the window: the clip starts `timing.pre` before it.
     first: Instant,
+    timing: Timing,
     /// When the clip is saved (slides forward on each event).
     deadline: Instant,
     /// Kills in this window from a source that counts them (Valorant).
@@ -240,12 +288,18 @@ fn schedule_clip(app: &AppHandle, delay_s: f64) {
 /// counts kills; None for sources that only say "something happened".
 fn open_window(app: &AppHandle, delay_s: f64, counted: Option<(u32, u32)>) {
     record_kill();
+    if highlights_instead(app) {
+        // Bookmarked above; the session's highlights cut it after the match.
+        *PENDING.lock().unwrap() = None;
+        return;
+    }
+    let timing = current_timing(app, delay_s);
     let now = Instant::now();
-    let deadline = now + Duration::from_secs_f64(delay_s.max(2.0));
+    let deadline = now + Duration::from_secs_f64(timing.window.max(2.0));
     let mut pending = PENDING.lock().unwrap();
     let p = pending.get_or_insert_with(|| {
         let _ = app.emit("auto-clip-armed", ());
-        Pending { first: now, deadline, kills: 0, round_kills: 0, min_kills: 1 }
+        Pending { first: now, timing, deadline, kills: 0, round_kills: 0, min_kills: 1 }
     });
     p.deadline = deadline;
     if let Some((round_kills, min_kills)) = counted {
@@ -279,12 +333,17 @@ pub fn kill_label(kills: u32, round_kills: u32) -> Option<String> {
     }
 }
 
-/// Save one clip covering a whole round's kills, from `PRE_ROLL` before the
-/// first (round mode: "only rounds with N+ kills" is known at round end).
+/// Save one clip covering a whole round's kills, from the game's lead-in
+/// before the first (round mode: "only rounds with N+ kills" is known at
+/// round end).
 pub fn save_round(app: &AppHandle, first_kill: Instant, kills: u32) {
+    if highlights_instead(app) {
+        return;
+    }
+    let timing = current_timing(app, crate::clips::load_settings_inner(app).auto_clip_delay_s);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let keep = window_length(first_kill, Instant::now());
+        let keep = window_length(first_kill, Instant::now(), timing);
         let label = kill_label(kills, kills);
         crate::logs::line(&format!("auto-clip: round with {kills} kills, saving last {keep:.0}s"));
         if crate::obs::save_replay_keep(&app, keep, label.as_deref()).await.is_ok() {
@@ -293,10 +352,10 @@ pub fn save_round(app: &AppHandle, first_kill: Instant, kills: u32) {
     });
 }
 
-/// Seconds an auto clip saved now keeps: back to `PRE_ROLL` before the
-/// window's first event, capped at `MAX_AUTO_CLIP`.
-fn window_length(first: Instant, now: Instant) -> f64 {
-    (now.saturating_duration_since(first).as_secs_f64() + PRE_ROLL).min(MAX_AUTO_CLIP)
+/// Seconds an auto clip saved now keeps: back to the game's lead-in before
+/// the window's first event, capped at its longest clip.
+fn window_length(first: Instant, now: Instant, timing: Timing) -> f64 {
+    (now.saturating_duration_since(first).as_secs_f64() + timing.pre).min(timing.max)
 }
 
 pub async fn run(app: AppHandle) {
@@ -328,7 +387,7 @@ pub async fn run(app: AppHandle) {
             let now = Instant::now();
             match pending.as_ref() {
                 Some(p) if now >= p.deadline => {
-                    let keep = window_length(p.first, now);
+                    let keep = window_length(p.first, now, p.timing);
                     let worth = p.kills >= p.min_kills;
                     let label = kill_label(p.kills, p.round_kills);
                     *pending = None;
@@ -700,8 +759,13 @@ mod tests {
     #[test]
     fn auto_clip_covers_pre_roll_and_caps() {
         let t = Instant::now();
-        assert_eq!(window_length(t, t + Duration::from_secs(8)), 18.0);
-        assert_eq!(window_length(t, t + Duration::from_secs(500)), MAX_AUTO_CLIP);
+        let other = timing("mygame.exe", 8.0);
+        assert_eq!(window_length(t, t + Duration::from_secs(8), other), 18.0);
+        assert_eq!(window_length(t, t + Duration::from_secs(500), other), MAX_AUTO_CLIP);
+        // League fights are long: a bigger lead-in and room for the fight.
+        let lol = timing("lol", 8.0);
+        assert_eq!((lol.window, lol.pre), (35.0, 25.0));
+        assert_eq!(window_length(t, t + Duration::from_secs(200), lol), 225.0);
     }
 
     #[test]

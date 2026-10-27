@@ -1095,6 +1095,25 @@ export function SettingsPage(props: {
               <span className="knob" />
             </button>
           </div>
+          {settings.session_recording && (
+            <div className="toggle-card toggle-sub">
+              <div className="toggle-text">
+                <span className="toggle-title">Cut highlights after each match</span>
+                <span className="toggle-desc">
+                  When the game closes, your kills are cut from the session as clips, with the whole fight in each. Auto-clips aren't saved during play, so nothing is saved twice.
+                </span>
+              </div>
+              <button
+                className={`switch ${settings.session_highlights ? "on" : ""}`}
+                role="switch"
+                aria-checked={settings.session_highlights}
+                aria-label="Cut highlights after each match"
+                onClick={() => saveSettings({ ...settings, session_highlights: !settings.session_highlights })}
+              >
+                <span className="knob" />
+              </button>
+            </div>
+          )}
           <div className="toggle-card">
             <div className="toggle-text">
               <span className="toggle-title">Start with Windows</span>
@@ -1746,8 +1765,8 @@ export function OnboardingModal(props: {
               no manual recording, no huge files piling up.
             </p>
             <p className="onboard-copy">
-              Every clip records five audio tracks (full mix, game, voice chat, desktop,
-              mic) so you can mute your friends — or yourself — at export time.
+              Every clip keeps each sound on its own track (game, voice chat, mic and
+              more) so you can mute your friends — or yourself — at export time.
             </p>
             <p className="onboard-copy">
               This walkthrough covers setup, capture settings, and how to edit + share a

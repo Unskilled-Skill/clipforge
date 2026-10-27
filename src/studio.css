@@ -988,3 +988,6 @@ input, textarea { caret-color: var(--st-accent); }
    selection tint also darkened game icons). Rename fields still select. */
 .st-table, .st-side { user-select: none; -webkit-user-select: none; }
 .st-table input[type="text"], .st-table input:not([type]) { user-select: text; -webkit-user-select: text; }
+
+/* A setting that only applies when the one above is on. */
+.toggle-card.toggle-sub { padding-left: 20px; border-left: 2px solid var(--st-line); margin-left: 2px; }

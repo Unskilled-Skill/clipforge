@@ -44,6 +44,7 @@ const mockSettings = {
   auto_clip_min_kills: 1,
   auto_clip_games: {},
   session_recording: false,
+  session_highlights: true,
   replay_seconds: 180,
   video_fps: 60,
   video_height: 0,

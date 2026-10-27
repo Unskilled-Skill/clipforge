@@ -210,6 +210,10 @@ pub struct Settings {
     /// Also record each whole game session to one file, kills bookmarked.
     #[serde(default)]
     pub session_recording: bool,
+    /// With session recording: cut each match's kills out of the session as
+    /// clips when the game closes, instead of auto-clipping during play.
+    #[serde(default = "default_true")]
+    pub session_highlights: bool,
     /// Valorant: only auto-clip rounds with at least this many kills (1 =
     /// every kill). Superseded by `auto_clip_games["valorant"]`; still read
     /// as that rule's default so older settings keep their choice.
@@ -355,6 +359,7 @@ impl Default for Settings {
             auto_clip_min_kills: default_min_kills(),
             auto_clip_games: Default::default(),
             session_recording: false,
+            session_highlights: true,
             replay_seconds: default_replay_seconds(),
             video_fps: default_fps(),
             video_height: 0,
