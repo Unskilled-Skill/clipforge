@@ -991,3 +991,7 @@ input, textarea { caret-color: var(--st-accent); }
 
 /* A setting that only applies when the one above is on. */
 .toggle-card.toggle-sub { padding-left: 20px; border-left: 2px solid var(--st-line); margin-left: 2px; }
+
+/* Sidebar recording mode: clips vs whole match. */
+.st-mode .seg { padding: 3px; gap: 3px; border-radius: 9px; }
+.st-mode .seg button { min-height: 28px; padding: 0 8px; font-size: 12px; white-space: nowrap; }

@@ -49,7 +49,7 @@ import {
   Waveform,
   X,
 } from "@phosphor-icons/react";
-import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
+import { AppPickerModal, Modal, OnboardingModal, SegRadios, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
 import { TimelineController } from "./timeline/controller";
 import { Filmstrip, KillMarkers, Ruler } from "./timeline/parts";
 import type {
@@ -2009,7 +2009,21 @@ function App() {
   const sessions = recentSessions(clips,3,recordingMetadata);
   const latestClip = latestClipForExport(clips,recordingMetadata);
   const commandClip = selected ? (trimEnd > trimStart ? selected : null) : sessionClip ?? inspected;
+  // Clips: auto-clips save as you play. Whole match: the session is recorded
+  // too, and its kills become highlight clips when the game closes.
+  const setWholeMatch = (whole: boolean) => {
+    if (whole === settings.session_recording) return;
+    void saveSettings({ ...settings, session_recording: whole });
+    showToast(
+      whole
+        ? settings.session_highlights
+          ? "Recording whole matches. Highlights are cut when the game closes"
+          : "Recording whole matches"
+        : "Back to clips. Auto-clips save as you play",
+    );
+  };
   const commandItems: StudioCommand[] = [
+    { id: "record-mode", group: "Actions", label: settings.session_recording ? "Switch to clips only" : "Switch to recording whole matches", keywords: "session record mode replay buffer highlights", detail: settings.session_recording ? "Now: whole match" : "Now: clips", run: () => setWholeMatch(!settings.session_recording) },
     ...(commandClip && !exporting && !sharing ? [{ id: "export", group: "Actions" as const, label: sessionClip ? "Edit session before exporting" : "Export selected clip for Discord", detail: `${selected ? targetMb : libExportMb} MB`, shortcut: "Ctrl E", keywords: "share copy", run: () => { if (selected) void exportDiscord(); else if (sessionClip) selectClip(sessionClip); else void exportClipForDiscord(commandClip, libExportMb); } }] : []),
     ...(latestClip && !exporting && !sharing ? [{ id: "latest", group: "Actions" as const, label: "Export latest clip for Discord", detail: `${settings.discord_target_mb} MB · ${momentTitle(latestClip.name, markerCounts[latestClip.path] ?? 0)}`, shortcut: "Ctrl Shift E", run: () => void exportClipForDiscord(latestClip, settings.discord_target_mb) }] : []),
     { id: "settings", group: "Actions", label: "Open settings", shortcut: "Ctrl ,", run: () => { setSelected(null); setShowSettings(true); } },
@@ -2306,6 +2320,9 @@ function App() {
                       ? "Live"
                       : "Idle"}
             </button>
+          </div>
+          <div className="st-mode" title="Clips: auto-clips save as you play. Whole match: each match is recorded and cut into highlights when the game closes.">
+            <SegRadios label="Recording mode" value={settings.session_recording ? "match" : "clips"} options={[["clips", "Clips"], ["match", "Whole match"]]} onPick={(v) => setWholeMatch(v === "match")} />
           </div>
           <div className="st-buffer">
             <div className="st-buffer-row">

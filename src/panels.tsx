@@ -675,7 +675,7 @@ export function HealthPanel({ onTestSetup }: { onTestSetup: () => void }) {
 
 const ADMIN_RULES: [string, string][] = [["ask", "Ask"], ["auto", "Restart automatically"], ["never", "Never"]];
 
-function SegRadios<T extends string | number>(props: { label: string; value: T; options: [T, string][]; onPick: (v: T) => void }) {
+export function SegRadios<T extends string | number>(props: { label: string; value: T; options: [T, string][]; onPick: (v: T) => void }) {
   return (
     <div className="seg" role="radiogroup" aria-label={props.label} onKeyDown={(e) => {
       if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
