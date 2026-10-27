@@ -199,6 +199,7 @@ async fn start_engine(app: &AppHandle, settings: &crate::clips::Settings, state:
         .await;
         state.engine_downloading = false;
         result.map_err(|e| format!("Couldn't download the capture engine: {e}"))?;
+        crate::logs::line("capture engine downloaded");
     }
     let settings = settings.clone();
     // libobs picks its GPU once, here. Started at login before the dGPU
@@ -208,12 +209,16 @@ async fn start_engine(app: &AppHandle, settings: &crate::clips::Settings, state:
     if !discrete {
         crate::logs::line("capture engine starting on an integrated GPU");
     }
+    // Each step logged: a start that hangs on some PC shows where.
+    crate::logs::line("capture engine: starting");
     crate::obs::blocking(move || {
         let video = crate::engine::video_config(settings.video_fps, settings.video_height);
         ENGINE.ensure_started(video, &crate::engine::AudioConfig::from_settings(&settings))?;
+        crate::logs::line("capture engine: started, applying settings");
         crate::setup::apply_all(&settings)
     })
     .await?;
+    crate::logs::line("capture engine: ready");
     let _ = app.emit("obs-config-applied", ());
     Ok(())
 }

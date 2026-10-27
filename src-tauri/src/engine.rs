@@ -378,12 +378,14 @@ impl Engine {
             .unwrap_or_else(|_| runtime_dir().join("obs-config"));
         let _ = std::fs::create_dir_all(&config_dir);
         park_unused_plugins();
+        crate::logs::line("capture engine: loading libobs");
         let mut ctx = StartupInfo::new()
             .set_video_info(video_info(video))
             .set_module_config_path(ObsPath::new(&config_dir.to_string_lossy()))
             .set_logger(Box::new(crate::logs::EngineLogger))
             .start()
             .map_err(|e| format!("Capture engine failed to start: {e}"))?;
+        crate::logs::line("capture engine: libobs up, adding sources");
         let mut scene = ctx.scene("ClipForge", Some(0)).map_err(err)?;
 
         let game_capture = add_item(&mut scene, "game_capture", "AutoGame", game_capture_settings(None))?;

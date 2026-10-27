@@ -1743,7 +1743,16 @@ export function OnboardingModal(props: {
   const [replayDraft, setReplayDraft, finishReplayDraft] = useSettingDraft(settings.replay_seconds);
   const engineReady = status.connected;
   const ffmpegReady = !!setup?.ffmpeg_installed;
-  const setupFailed = (!engineReady && !!engineError && !engineDownloading) || (!ffmpegReady && ffmpegFailed);
+  // The engine unpacked but hasn't reported ready a minute later: let the
+  // player go on rather than trap them here (it keeps starting meanwhile).
+  const [engineSlow, setEngineSlow] = useState(false);
+  const engineWaiting = !engineReady && !engineError && !engineDownloading && onboardStep === 1;
+  useEffect(() => {
+    if (!engineWaiting) return;
+    const t = setTimeout(() => setEngineSlow(true), 60_000);
+    return () => clearTimeout(t);
+  }, [engineWaiting]);
+  const setupFailed = (!engineReady && !!engineError && !engineDownloading) || (!ffmpegReady && ffmpegFailed) || (engineSlow && !engineReady);
   const setupBlocked = onboardStep === 1 && !(engineReady && ffmpegReady) && !setupFailed;
   return (
     <Modal label="ClipForge tutorial" className="modal onboarding-modal" onClose={onFinish}>
@@ -1807,7 +1816,9 @@ export function OnboardingModal(props: {
                   ? "— ready"
                   : engineError && !engineDownloading
                     ? "— couldn't set up"
-                    : `— ${engineProgress ?? "downloading"} (one time, about 150 MB)`}
+                    : engineSlow
+                      ? "— still starting"
+                      : `— ${engineProgress ?? "downloading"} (one time, about 150 MB)`}
               </span>
               {!engineReady && engineError && !engineDownloading && (
                 <button
@@ -1849,7 +1860,11 @@ export function OnboardingModal(props: {
                   : "Finishing setup, this can take a minute…"}
               </span>
             )}
-            {setupFailed && (
+            {setupFailed && engineSlow && !engineReady && !engineError ? (
+              <span className="field-hint" role="status">
+                The capture engine is taking longer than expected to start. You can continue; it keeps trying, and Settings → Health shows its status.
+              </span>
+            ) : setupFailed && (
               <span className="field-hint" role="alert">
                 Something couldn't be installed. You can continue and fix it later in Settings → Health.
               </span>
