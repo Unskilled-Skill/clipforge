@@ -25,6 +25,7 @@ import {
   DiscordLogo,
   DotsThree,
   Gif,
+  CaretRight,
   Pause,
   SkipBack,
   SkipForward,
@@ -3341,6 +3342,12 @@ function App() {
             <div className="trim-section">
               <div className="tx-bar">
                 <span className="tx-clock mono" ref={clockRef} aria-label="Current time" />
+                <span className="tx-total mono">/ {clipTime(duration)}</span>
+                <div className="tl-readouts">
+                  <span>In <span className="mono" ref={trimInRef} /></span>
+                  <span>Out <span className="mono" ref={trimOutRef} /></span>
+                  <span>Selection <span className="mono tl-info-len" ref={trimLenRef} /></span>
+                </div>
                 <div className="tx-controls">
                   <button type="button" className="tx-btn" aria-label="Back one frame" title="Back one frame (←)" onClick={() => timeline?.step(-1, clipFps)}>
                     <SkipBack size={14} weight="fill" />
@@ -3370,57 +3377,64 @@ function App() {
                     Loop
                   </button>
                 </div>
-                <span className="tx-total mono">/ {clipTime(duration)}</span>
-              </div>
-              <div className="tl-info">
-                <span>In <span className="mono" ref={trimInRef} /></span>
-                <span>Out <span className="mono" ref={trimOutRef} /></span>
-                <span>Selection <span className="mono tl-info-len" ref={trimLenRef} /></span>
-                {audioNotice && <span className="tl-info-note" role="status" title={audioNotice}>{audioNotice}</span>}
-                <label className="tl-snap" title="Trim handles snap to kills and the playhead">
-                  <input type="checkbox" checked={snapKills} onChange={(e) => setSnapKills(e.target.checked)} />
-                  Snap to kills
-                </label>
-                <span className="tl-info-sep" aria-hidden="true" />
-                <label className="tl-zoom" title="Zoom the timeline (Ctrl + scroll)">
-                  Zoom
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    aria-label="Timeline zoom"
-                    disabled={!timeline || timeline.maxZoom <= 1}
-                    value={zoomDraft ?? (timeline && timeline.maxZoom > 1 ? Math.round((Math.log(timelineZoom) / Math.log(timeline.maxZoom)) * 100) : 0)}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      setZoomDraft(v);
-                      if (timeline) timeline.setZoom(Math.exp((v / 100) * Math.log(timeline.maxZoom)));
-                    }}
-                    onPointerUp={() => setZoomDraft(null)}
-                    onKeyUp={() => setZoomDraft(null)}
-                    onBlur={() => setZoomDraft(null)}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="tl-fit"
-                  onClick={() =>
-                    trimStart <= 0.05 && trimEnd >= duration - 0.05
-                      ? timeline?.setZoom(1)
-                      : timeline?.fitRange(trimStart, trimEnd)
-                  }
-                  title="Zoom to the selection"
-                  aria-label="Zoom to the selection"
-                >
-                  <ArrowsInLineHorizontal size={13} weight="bold" />
-                </button>
+                <div className="tl-tools">
+                  <label className="tl-snap" title="Trim handles snap to kills and the playhead">
+                    <input type="checkbox" checked={snapKills} onChange={(e) => setSnapKills(e.target.checked)} />
+                    Snap to kills
+                  </label>
+                  <span className="tl-info-sep" aria-hidden="true" />
+                  <label className="tl-zoom" title="Zoom the timeline (Ctrl + scroll)">
+                    Zoom
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      aria-label="Timeline zoom"
+                      disabled={!timeline || timeline.maxZoom <= 1}
+                      value={zoomDraft ?? (timeline && timeline.maxZoom > 1 ? Math.round((Math.log(timelineZoom) / Math.log(timeline.maxZoom)) * 100) : 0)}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setZoomDraft(v);
+                        if (timeline) timeline.setZoom(Math.exp((v / 100) * Math.log(timeline.maxZoom)));
+                      }}
+                      onPointerUp={() => setZoomDraft(null)}
+                      onKeyUp={() => setZoomDraft(null)}
+                      onBlur={() => setZoomDraft(null)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="tl-fit"
+                    onClick={() =>
+                      trimStart <= 0.05 && trimEnd >= duration - 0.05
+                        ? timeline?.setZoom(1)
+                        : timeline?.fitRange(trimStart, trimEnd)
+                    }
+                    title="Zoom to the selection"
+                    aria-label="Zoom to the selection"
+                  >
+                    <ArrowsInLineHorizontal size={13} weight="bold" />
+                  </button>
+                </div>
               </div>
               {duration > 0 && (
                 <div className="multitrack" id="clip-multitrack" aria-label="Timeline">
                   <div className="mt-labels">
                     <div className="mt-ruler-spacer" />
-                    <div className="mt-label mt-vid-label"><span className="mt-id">V1</span>Video</div>
+                    <button
+                      type="button"
+                      className="mt-label mt-vid-label"
+                      aria-expanded={mixerOpen}
+                      aria-controls="clip-multitrack"
+                      title={mixerOpen ? "Hide audio tracks" : "Show audio tracks"}
+                      onClick={() => setMixerOpen((open) => !open)}
+                    >
+                      <span className="mt-id">V1</span>
+                      Video
+                      <span className="mt-vid-audio">{audioKeep.has(0) ? "All audio" : audioKeep.size ? `${audioKeep.size} audio` : "No audio"}</span>
+                      <CaretRight size={11} weight="bold" className="mt-vid-caret" />
+                    </button>
                     {trackLabels(trackRoles).map((t, n) => {
                       const on = audioKeep.has(t.i);
                       const gain = trackGain[t.i] ?? 1;
@@ -3546,6 +3560,7 @@ function App() {
                   .filter(Boolean)
                   .join(" · ")}
               </span>
+              {audioNotice && <span className="ed-note" role="status" title={audioNotice}>{audioNotice}</span>}
               <span className="ed-keys">
                 <span><kbd>Space</kbd> play</span>
                 <span><kbd>[</kbd> <kbd>]</kbd> set in/out</span>

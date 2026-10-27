@@ -991,8 +991,13 @@ input, textarea { caret-color: var(--st-accent); }
 /* ---- Editor timeline: one flat panel, lanes edge to edge, thin rules,
    monospace numbers (design: StudioEditor). ---- */
 .st-editing .trim-section { display: flex; flex-direction: column; }
-.tx-bar { display: flex; align-items: center; gap: 14px; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--st-line); flex-shrink: 0; }
-.tx-clock { min-width: 64px; font-size: 14px; color: var(--st-text); font-variant-numeric: tabular-nums; }
+.tx-bar { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--st-line); flex-shrink: 0; min-width: 0; white-space: nowrap; font-size: 12px; color: var(--st-muted); }
+.tx-bar .mono { color: var(--st-text); font-variant-numeric: tabular-nums; }
+.tx-bar .tx-total { color: var(--st-muted); margin-left: -6px; }
+.tl-readouts { display: flex; align-items: center; gap: 12px; padding-left: 12px; border-left: 1px solid #26262b; }
+.tl-readouts .tl-info-len { color: #9fe9dd; }
+.tl-tools { display: flex; align-items: center; gap: 12px; }
+.tx-clock { font-size: 14px; color: var(--st-text); font-variant-numeric: tabular-nums; }
 .tx-clock small { font-size: inherit; color: var(--st-muted); }
 .tx-controls { margin: 0 auto; display: flex; align-items: center; gap: 4px; }
 .tx-btn { width: 32px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #cfcfd6; display: grid; place-items: center; cursor: pointer; transition: background-color 120ms ease, color 120ms ease, transform 120ms var(--ease-out); }
@@ -1007,11 +1012,7 @@ input, textarea { caret-color: var(--st-accent); }
 .tx-toggle[aria-pressed="true"] { background: #1c2f2c; border-color: #23463f; color: #9fe9dd; }
 .tx-total { font-size: 12px; color: var(--st-muted); white-space: nowrap; }
 
-.tl-info { display: flex; align-items: center; gap: 16px; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--st-line); font-size: 12px; color: var(--st-muted); white-space: nowrap; flex-shrink: 0; min-width: 0; }
-.tl-info .mono { color: var(--st-text); font-variant-numeric: tabular-nums; }
-.tl-info .tl-info-len { color: #9fe9dd; }
-.tl-info-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #bec8da; }
-.tl-snap { margin-left: auto; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.tl-snap { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .tl-snap input { margin: 0; accent-color: var(--st-accent); }
 .st-editing .tl-zoom { display: flex; align-items: center; gap: 8px; margin: 0; }
 .tl-zoom input { width: 120px; margin: 0; accent-color: var(--st-accent); }
@@ -1020,7 +1021,7 @@ input, textarea { caret-color: var(--st-accent); }
 .tl-fit:hover { border-color: #3a3a41; color: var(--st-text); }
 
 /* Lanes: label column and lanes share one grid of 1px rules. */
-.st-editing .multitrack { gap: 0; max-height: min(42vh, 340px); background: var(--st-panel); }
+.st-editing .multitrack { gap: 0; max-height: min(34vh, 340px); background: var(--st-panel); }
 .st-editing .mt-labels { gap: 0; border-right: 1px solid var(--st-line); }
 .st-editing .mt-ruler, .st-editing .mt-ruler-spacer { height: 26px; border-bottom: 1px solid var(--st-line); }
 .st-editing .mt-scroller { --ruler-h: 26px; }
@@ -1037,6 +1038,15 @@ input, textarea { caret-color: var(--st-accent); }
 .st-editing .mt-label.mt-audio, .st-editing .mt-lane.mt-audio { height: 44px; }
 .st-editing .mt-kills-label, .st-editing .mt-lane.mt-kills { height: 28px; }
 .st-editing .mt-kills-label { border-bottom: 0; }
+/* V1 doubles as the audio tracks' dropdown; they stay hidden until opened. */
+.editor:not(.mixer-open) .mt-audio { display: none; }
+.st-editing button.mt-vid-label { width: 100%; font: inherit; font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer; transition: background-color 120ms ease; }
+.st-editing button.mt-vid-label:hover { background: #151518; }
+.mt-vid-audio { margin-left: auto; font-size: 11px; color: var(--st-muted); white-space: nowrap; }
+.mt-vid-caret { flex: 0 0 auto; color: var(--st-muted); transition: transform 150ms var(--ease-out); }
+.mt-vid-label[aria-expanded="true"] .mt-vid-caret { transform: rotate(90deg); }
+.editor.mixer-open .mt-audio { animation: mt-tracks-in 180ms ease-out; }
+@keyframes mt-tracks-in { from { opacity: 0; } }
 .st-editing .mt-label.off { color: var(--st-muted); }
 /* Export volume: shown on the row you're pointing at, out of the way otherwise. */
 /* (Beats App.css's stretchy `.mt-label input[type=range]`.) */
@@ -1067,9 +1077,15 @@ input, textarea { caret-color: var(--st-accent); }
 
 /* Status line under the editor. */
 .ed-status { display: flex; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; border-top: 1px solid var(--st-line); background: #0b0b0c; color: var(--st-muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; }
+.ed-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #bec8da; }
 .ed-keys { margin-left: auto; display: flex; align-items: center; gap: 14px; }
 .ed-keys kbd { padding: 0; border: 0; background: none; color: #cfcfd6; font-family: "Geist Variable", "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; font-size: 11px; box-shadow: none; }
 @media (max-width: 1150px) {
-  .tl-info-note, .ed-keys > span:nth-child(n+4) { display: none; }
-  .tl-zoom input { width: 84px; }
+  .ed-keys > span:nth-child(n+4) { display: none; }
+  .tl-zoom input { width: 72px; }
+  .tl-readouts > span:not(:last-child) { display: none; }
+}
+@media (max-width: 980px) {
+  .tl-zoom { font-size: 0; }
+  .tx-toggle { padding: 0 7px; }
 }
