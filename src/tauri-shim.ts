@@ -45,6 +45,7 @@ const mockSettings = {
   auto_clip_games: {},
   session_recording: false,
   session_highlights: true,
+  valorant_match_check: true,
   replay_seconds: 180,
   video_fps: 60,
   video_height: 0,

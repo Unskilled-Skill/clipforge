@@ -49,6 +49,7 @@ export interface Settings {
   auto_clip_games: Record<string, { enabled: boolean; min_kills: number }>;
   session_recording: boolean;
   session_highlights: boolean;
+  valorant_match_check: boolean;
   replay_seconds: number;
   video_fps: number;
   video_height: number;

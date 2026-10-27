@@ -367,6 +367,33 @@ pub fn ingest(app: &AppHandle, game: &str, source: &str, update: Update) {
         let _ = app.emit("match-metadata-changed", ());
     }
 }
+/// A match's final score, result and round results, known only after it
+/// ended (Valorant's match details). Updates the match record every clip of
+/// that match points to.
+pub fn complete(app: &AppHandle, game: &str, external_id: &str, score: Score, result: String, round_results: BTreeMap<u32, String>) {
+    let tracker = TRACKER.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut info) = tracker.history.get(game).and_then(|points| {
+        points
+            .iter()
+            .rev()
+            .filter_map(|p| p.context.as_ref())
+            .find(|c| c.external_id.as_deref() == Some(external_id))
+            .map(|c| c.info.clone())
+    }) else {
+        return;
+    };
+    info.score = Some(score);
+    info.result = Some(result);
+    info.round_results.extend(round_results);
+    let root = crate::clips::load_settings_inner(app).clips_dir;
+    if let Some(path) = record_path(Path::new(&root), &info.id) {
+        if let Err(e) = write_json(&path, &info) {
+            crate::logs::line(&format!("Could not save match data: {e}"));
+        }
+    }
+    let _ = app.emit("match-metadata-changed", ());
+}
+
 pub fn write_recording(clip: &str, game: &str, start: Instant, end: Instant, is_session: bool) {
     if end <= start {
         return;

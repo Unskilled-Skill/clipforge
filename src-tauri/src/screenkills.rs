@@ -360,9 +360,28 @@ const DEAD_GRACE_S: f64 = 1.5;
 /// settling the view, not a death.
 const SETTLE_S: f64 = 12.0;
 
+/// Map names as players know them (the log uses code names).
+fn map_name(code: &str) -> &str {
+    match code {
+        "Ascent" => "Ascent",
+        "Bonsai" => "Split",
+        "Canyon" => "Fracture",
+        "Duality" => "Bind",
+        "Foxtrot" => "Breeze",
+        "Infinity" => "Abyss",
+        "Jam" => "Lotus",
+        "Juliett" => "Sunset",
+        "Pitt" => "Pearl",
+        "Port" => "Icebox",
+        "Triad" => "Haven",
+        "Rook" => "Corrode",
+        other => other,
+    }
+}
+
 /// Seconds since the Unix epoch of a log line's "[2026.10.26-20.32.29:187]"
 /// stamp (UTC).
-fn line_time(line: &str) -> Option<f64> {
+pub fn line_time(line: &str) -> Option<f64> {
     if !line.starts_with('[') {
         return None;
     }
@@ -401,11 +420,32 @@ struct Round {
     started: bool,
     /// When a later camera line said we died (or the round was decided).
     dead_at: Option<f64>,
+    /// The match ended since the last check (its record can be fetched).
+    match_ended: bool,
+    /// The match being played, for the match tracker: (id, map, mode, round).
+    match_id: Option<String>,
+    map: Option<String>,
+    mode: Option<String>,
+    round_no: u32,
 }
 
 impl Default for Round {
     fn default() -> Self {
-        Round { kills: 0, first: None, offset: None, in_world: true, rounds: true, settle_until: 0.0, started: false, dead_at: None }
+        Round {
+            kills: 0,
+            first: None,
+            offset: None,
+            in_world: true,
+            rounds: true,
+            settle_until: 0.0,
+            started: false,
+            dead_at: None,
+            match_ended: false,
+            match_id: None,
+            map: None,
+            mode: None,
+            round_no: 0,
+        }
     }
 }
 
@@ -453,10 +493,22 @@ impl Round {
             if has_round_end(line) {
                 ended = true;
                 self.new_round(t);
+                self.round_no += 1;
+                if line.contains("Match Ended") {
+                    self.match_ended = true;
+                    self.match_id = None;
+                }
+            } else if let Some(i) = line.find("Match Load Times] MatchId: ") {
+                let rest = &line[i + 27..];
+                self.match_id = Some(rest.chars().take_while(|c| c.is_ascii_hexdigit() || *c == '-').collect());
             } else if line.contains("LogMapLoadModel: Update:") {
                 let world = line.contains("[Local World: TRUE");
                 if world && !self.in_world {
                     self.new_round(t);
+                    self.round_no = 0;
+                    let field = |m: &str| line.find(m).map(|i| line[i + m.len()..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>());
+                    self.map = field("[Map Name: ").map(|m| map_name(&m).to_string());
+                    self.mode = field("/GameModes/");
                 }
                 self.in_world = world;
                 if world && line.contains("/GameModes/") {
@@ -479,6 +531,18 @@ impl Round {
         self.started = false;
         self.dead_at = None;
         self.settle_until = t + SETTLE_S;
+    }
+
+    /// What the match tracker should know right now.
+    fn match_update(&self) -> crate::matchdata::Update {
+        crate::matchdata::Update {
+            external_id: self.match_id.clone(),
+            map: self.map.clone(),
+            mode: self.mode.clone(),
+            round: (self.rounds && self.match_id.is_some()).then_some(self.round_no + 1),
+            active: self.in_world && self.match_id.is_some(),
+            ..Default::default()
+        }
     }
 
     /// Why a banner seen at `now` can't be our kill, if it can't.
@@ -545,6 +609,7 @@ pub fn run(app: AppHandle) {
         let mut tracker = Tracker::default();
         let mut round = Round::default();
         let mut enabled = false;
+        let mut game_exe = String::new();
         let mut min_kills = 1;
         let mut checked = Instant::now() - Duration::from_secs(10);
         let mut log_checked = Instant::now();
@@ -556,7 +621,10 @@ pub fn run(app: AppHandle) {
                 let game = app.state::<crate::obs::CurrentGame>().0.lock().ok().and_then(|g| g.clone());
                 let settings = crate::clips::load_settings_inner(&app);
                 let rule = settings.clip_rule("valorant");
-                enabled = settings.auto_clip && rule.enabled && game.is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
+                enabled = settings.auto_clip && rule.enabled && game.as_ref().is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
+                if let Some(g) = game {
+                    game_exe = g;
+                }
                 min_kills = rule.min_kills;
             }
             if !enabled {
@@ -574,6 +642,12 @@ pub fn run(app: AppHandle) {
                     }
                     round.kills = 0;
                     round.first = None;
+                }
+                if round.log_found() {
+                    crate::matchdata::ingest(&app, &game_exe, "valorant-log", round.match_update());
+                }
+                if std::mem::take(&mut round.match_ended) {
+                    crate::valmatch::match_ended(&app, game_exe.clone());
                 }
             }
             let region = banner_region(|monitor| {

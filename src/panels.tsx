@@ -1116,6 +1116,23 @@ export function SettingsPage(props: {
           )}
           <div className="toggle-card">
             <div className="toggle-text">
+              <span className="toggle-title">Check Valorant clips after each match</span>
+              <span className="toggle-desc">
+                Compares auto-clips with Riot&apos;s match record: removes clips with no kill of yours, fixes 2K/3K labels and adds the result. Uses your signed-in Riot Client.
+              </span>
+            </div>
+            <button
+              className={`switch ${settings.valorant_match_check ? "on" : ""}`}
+              role="switch"
+              aria-checked={settings.valorant_match_check}
+              aria-label="Check Valorant clips after each match"
+              onClick={() => saveSettings({ ...settings, valorant_match_check: !settings.valorant_match_check })}
+            >
+              <span className="knob" />
+            </button>
+          </div>
+          <div className="toggle-card">
+            <div className="toggle-text">
               <span className="toggle-title">Start with Windows</span>
               <span className="toggle-desc">Launch to the tray at login, ready before you play</span>
             </div>

@@ -230,6 +230,62 @@ struct LastAuto {
 }
 
 static LAST_AUTO: Mutex<Option<LastAuto>> = Mutex::new(None);
+
+/// An auto clip saved this run, with the wall-clock span it covers (Unix
+/// seconds), so a game's own match record can check it afterwards.
+#[derive(Clone, Debug)]
+pub struct AutoClip {
+    pub path: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+static AUTO_CLIPS: Mutex<Vec<AutoClip>> = Mutex::new(Vec::new());
+
+fn wall_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+fn remember_auto_clip(path: &str, keep: f64) {
+    let end = wall_now();
+    let mut clips = AUTO_CLIPS.lock().unwrap();
+    clips.retain(|c| end - c.end < 6.0 * 3600.0);
+    clips.push(AutoClip { path: path.into(), start: end - keep, end });
+}
+
+/// Auto clips saved this run that end inside `[from, to]`.
+pub fn auto_clips_between(from: f64, to: f64) -> Vec<AutoClip> {
+    AUTO_CLIPS.lock().unwrap().iter().filter(|c| c.end >= from && c.end <= to).cloned().collect()
+}
+
+pub fn forget_auto_clip(path: &str) {
+    AUTO_CLIPS.lock().unwrap().retain(|c| c.path != path);
+}
+
+pub fn rename_auto_clip(old: &str, new: &str) {
+    for c in AUTO_CLIPS.lock().unwrap().iter_mut().filter(|c| c.path == old) {
+        c.path = new.into();
+    }
+    if let Some(l) = LAST_AUTO.lock().unwrap().as_mut().filter(|l| l.path == old) {
+        l.path = new.into();
+    }
+}
+
+/// Swap the running session's bookmarks inside `[from, to]` (wall time)
+/// for `kills`: a game's own record of the match beats what was detected live.
+pub fn replace_session_kills(from: f64, to: f64, kills: &[f64]) {
+    let mut session = SESSION_KILLS.lock().unwrap();
+    let Some(list) = session.as_mut() else { return };
+    let (now, wall) = (Instant::now(), wall_now());
+    let to_instant = |w: f64| {
+        let ago = Duration::from_secs_f64((wall - w).max(0.0));
+        now.checked_sub(ago)
+    };
+    let (Some(a), Some(b)) = (to_instant(from), to_instant(to)) else { return };
+    list.retain(|k| *k < a || *k > b);
+    list.extend(kills.iter().filter_map(|k| to_instant(*k)));
+    list.sort();
+}
 /// An earlier clip is only replaced while it is this fresh: older, the
 /// player may already have it open, shared or edited.
 const MERGE_WITHIN: Duration = Duration::from_secs(60);
@@ -382,7 +438,9 @@ async fn save_window(app: &AppHandle, settings: &crate::clips::Settings, keep: f
     let label = kill_label(kills, round_kills);
     crate::logs::line(&format!("auto-clip: saving last {keep:.0}s{}", if merge.is_some() { " (joins the previous clip)" } else { "" }));
     let Ok(path) = crate::obs::save_replay_keep(app, keep, label.as_deref()).await else { return };
+    remember_auto_clip(&path, keep);
     if let Some((l, _)) = merge {
+        forget_auto_clip(&l.path);
         let (app2, old) = (app.clone(), l.path.clone());
         match crate::obs::blocking(move || crate::clips::delete_clip(app2, old)).await {
             Ok(()) => crate::logs::line(&format!("auto-clip: replaced {} with the joined clip", l.path)),
@@ -407,7 +465,8 @@ pub fn save_round(app: &AppHandle, first_kill: Instant, kills: u32) {
         let keep = window_length(first_kill, Instant::now(), timing);
         let label = kill_label(kills, kills);
         crate::logs::line(&format!("auto-clip: round with {kills} kills, saving last {keep:.0}s"));
-        if crate::obs::save_replay_keep(&app, keep, label.as_deref()).await.is_ok() {
+        if let Ok(path) = crate::obs::save_replay_keep(&app, keep, label.as_deref()).await {
+            remember_auto_clip(&path, keep);
             let _ = app.emit("auto-clipped", ());
         }
     });

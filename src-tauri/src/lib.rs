@@ -5,6 +5,7 @@ mod audiodevices;
 mod screenkills;
 mod highlights;
 mod session;
+mod valmatch;
 mod matchdata;
 mod backup;
 mod clips;

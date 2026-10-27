@@ -214,6 +214,10 @@ pub struct Settings {
     /// clips when the game closes, instead of auto-clipping during play.
     #[serde(default = "default_true")]
     pub session_highlights: bool,
+    /// After each Valorant match, check its auto clips against Riot's match
+    /// details (remove ones without a kill, fix labels, add the result).
+    #[serde(default = "default_true")]
+    pub valorant_match_check: bool,
     /// Valorant: only auto-clip rounds with at least this many kills (1 =
     /// every kill). Superseded by `auto_clip_games["valorant"]`; still read
     /// as that rule's default so older settings keep their choice.
@@ -360,6 +364,7 @@ impl Default for Settings {
             auto_clip_games: Default::default(),
             session_recording: false,
             session_highlights: true,
+            valorant_match_check: true,
             replay_seconds: default_replay_seconds(),
             video_fps: default_fps(),
             video_height: 0,

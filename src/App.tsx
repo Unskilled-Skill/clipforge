@@ -648,7 +648,16 @@ function App() {
       }),
       listen("auto-clip-armed", () => showToast("Kill detected — clipping in a few seconds…")),
       listen("auto-clipped", () => showToast("Auto-clipped!")),
-      listen<number>("highlights-saved", (e) => showToast(`${e.payload} ${e.payload === 1 ? "highlight" : "highlights"} saved from your session`)),
+      listen<{ removed: number; relabeled: number; result: string | null }>("valorant-checked", (e) => {
+        const { removed, relabeled, result } = e.payload;
+        const parts = [
+          result ? `Match ${result}` : "Match checked",
+          removed ? `${removed} ${removed === 1 ? "clip" : "clips"} without your kill removed` : "",
+          relabeled ? `${relabeled} relabeled` : "",
+        ].filter(Boolean);
+        showToast(parts.join(" · "));
+      }),
+      listen<number>("highlights-saved",(e) => showToast(`${e.payload} ${e.payload === 1 ? "highlight" : "highlights"} saved from your session`)),
       // Every settings save (UI or backend) arrives here, so the UI's copy
       // stays current and never overwrites a backend change when it saves.
       listen<Settings>("settings-changed", (e) => {
