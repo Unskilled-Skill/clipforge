@@ -135,7 +135,6 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
     const end = Math.max(...clips.map((c) => c.end));
     return { start, end, total: Math.max(1000, end - start) };
   }, [clips]);
-  const pct = (ms: number) => `${((ms - span.start) / span.total) * 100}%`;
   // A full recording already holds every kill; the clips repeat them.
   const kills = clips.flatMap((c, i) => (full && c !== full ? [] : (markers[c.clip.path] ?? []).map((t) => ({ i, t, at: c.start + t * 1000 }))));
   // Rounds on the game's clock: each round's earliest start and latest end
@@ -276,7 +275,60 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
     sideKey.current = sideNow;
     requestAnimationFrame(() => side.current?.querySelector<HTMLElement>(".current")?.scrollIntoView({ block: "nearest" }));
   }
-  const px = (ms: number) => ((ms - span.start) / span.total) * laneW;
+  // Without a full recording there's nothing to see between clips, so the
+  // clips sit side by side, sized by length, with the dead time squeezed to
+  // a thin gap. With one, the timeline is the game on real time.
+  const GAP_PX = 4;
+  const squeeze = !full && laneW > 0 && clips.length > 1;
+  const segs = (() => {
+    if (!squeeze) return [];
+    const out: { s: number; e: number; x: number; scale: number }[] = [];
+    for (const c of [...clips].sort((a, b) => a.start - b.start)) {
+      const last = out[out.length - 1];
+      if (last && c.start <= last.e + 1000) last.e = Math.max(last.e, c.end);
+      else out.push({ s: c.start, e: c.end, x: 0, scale: 0 });
+    }
+    const length = out.reduce((a, g) => a + g.e - g.s, 0);
+    const scale = Math.max(0, laneW - GAP_PX * (out.length - 1)) / Math.max(1, length);
+    let x = 0;
+    for (const g of out) {
+      g.x = x;
+      g.scale = scale;
+      x += (g.e - g.s) * scale + GAP_PX;
+    }
+    return out;
+  })();
+  const xAt = (ms: number) => {
+    if (!squeeze) return ((ms - span.start) / span.total) * laneW;
+    for (let i = 0; i < segs.length; i++) {
+      const g = segs[i];
+      if (ms < g.s) return i === 0 ? 0 : g.x - GAP_PX / 2;
+      if (ms <= g.e) return g.x + (ms - g.s) * g.scale;
+    }
+    const g = segs[segs.length - 1];
+    return g.x + (g.e - g.s) * g.scale;
+  };
+  const msAt = (x: number) => {
+    if (!squeeze) return span.start + (x / Math.max(1, laneW)) * span.total;
+    for (const g of segs) {
+      const w = (g.e - g.s) * g.scale;
+      if (x <= g.x + w + GAP_PX / 2) return g.s + Math.max(0, Math.min(w, x - g.x)) / g.scale;
+    }
+    return segs[segs.length - 1].e;
+  };
+  const L = (ms: number) => `${xAt(ms)}px`;
+  const W = (from: number, to: number) => `${Math.max(1, xAt(to) - xAt(from))}px`;
+  // Kills close enough to collide share a tag ("K2–4"), as in the editor.
+  // A tag is about 6.5px a character plus padding; it absorbs the next kill
+  // until there's room for that kill's own tag.
+  const tagWidth = (from: number, to: number) => (from === to ? `K${from}` : `K${from}–${to}`).length * 6.5 + 14;
+  const killTags: { x: number; first: (typeof kills)[number]; from: number; to: number }[] = [];
+  [...kills].sort((a, b) => a.at - b.at).forEach((k, n) => {
+    const x = xAt(k.at);
+    const last = killTags[killTags.length - 1];
+    if (last && x - last.x < tagWidth(last.from, n + 1) / 2 + tagWidth(n + 1, n + 1) / 2 + 3) last.to = n + 1;
+    else killTags.push({ x, first: k, from: n + 1, to: n + 1 });
+  });
   // Clips that aren't the full recording: the blocks in the Clips lane.
   const parts = clips.map((c, i) => ({ c, i })).filter(({ c }) => c !== full);
 
@@ -437,7 +489,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
           onPointerDown={(e) => {
             if ((e.target as HTMLElement).closest("button")) return;
             const r = e.currentTarget.getBoundingClientRect();
-            seekToTime(span.start + ((e.clientX - r.left) / r.width) * span.total);
+            seekToTime(msAt(e.clientX - r.left));
           }}
           onKeyDown={(e) => {
             if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -454,20 +506,40 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
                   const w = ((r.end - r.start) / span.total) * laneW;
                   const show = w >= 20 || r.number % 5 === 0 || n === 0 || currentRound?.number === r.number;
                   return (
-                    <span key={r.number} className={`mvt-rnum ${r.result ?? ""} ${currentRound?.number === r.number ? "current" : ""}`} style={{ left: pct(r.start), width: `${((r.end - r.start) / span.total) * 100}%` }}>
+                    <span key={r.number} className={`mvt-rnum ${r.result ?? ""} ${currentRound?.number === r.number ? "current" : ""}`} style={{ left: L(r.start), width: W(r.start, r.end) }}>
                       {show && <small>{r.number}</small>}
                     </span>
                   );
                 })
-              : minuteMarks((span.start - zero) / 60_000, (span.end - zero) / 60_000)
-                  .filter((m) => zero + m * 60_000 - span.start < span.total * 0.94)
-                  .map((m) => (
-                    <span key={m} className="mvt-tick" style={{ left: pct(zero + m * 60_000) }}>
-                      <small>{run.clockStart ? `${m}:00` : `${m}m`}</small>
-                    </span>
-                  ))}
+              : squeeze
+                ? (() => {
+                    let lastLabel = -Infinity;
+                    return segs.map((g) => {
+                      const label = g.x - lastLabel >= 64 && g.x < laneW - 70;
+                      if (label) lastLabel = g.x;
+                      return (
+                        <span key={g.s} className="mvt-tick" style={{ left: g.x }}>
+                          {label && <small>{run.clockStart ? gameClock(g.s) : clock(g.s)}</small>}
+                        </span>
+                      );
+                    });
+                  })()
+                : minuteMarks((span.start - zero) / 60_000, (span.end - zero) / 60_000)
+                    .filter((m) => zero + m * 60_000 - span.start < span.total * 0.94)
+                    .map((m) => (
+                      <span key={m} className="mvt-tick" style={{ left: L(zero + m * 60_000) }}>
+                        <small>{run.clockStart ? `${m}:00` : `${m}m`}</small>
+                      </span>
+                    ))}
             {rounds.length === 0 && <span className="mvt-end">{run.clockStart ? gameClock(span.end) : clock(span.end)}</span>}
           </div>
+
+          {segs.slice(1).map((g, i) => {
+            const gap = g.s - segs[i].e;
+            return (
+              <span key={`gap-${g.s}`} className="mvt-gap" style={{ left: g.x - GAP_PX, width: GAP_PX }} title={`${Math.max(1, Math.round(gap / 60_000))} min between clips`} aria-hidden="true" />
+            );
+          })}
 
           {/* Rounds as alternating sections behind all lanes (Riot's replay
               viewer does the same); a click on a section is a seek. */}
@@ -475,7 +547,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
             <span
               key={`col-${r.number}`}
               className={`mvt-rcol ${n % 2 ? "odd" : ""} ${currentRound?.number === r.number ? "current" : ""}`}
-              style={{ left: pct(r.start), width: `${((r.end - r.start) / span.total) * 100}%` }}
+              style={{ left: L(r.start), width: W(r.start, r.end) }}
               aria-hidden="true"
             />
           ))}
@@ -486,7 +558,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
                 key={c.clip.path}
                 type="button"
                 className={`mvt-clip ${i === activeIdx ? "active" : ""}`}
-                style={{ left: pct(c.start), width: `${((c.end - c.start) / span.total) * 100}%` }}
+                style={{ left: L(c.start), width: W(c.start, c.end) }}
                 title={`${c.title} · ${run.clockStart ? `${gameClock(c.start)} in game` : clock(c.start)} — click to edit`}
                 aria-label={`Edit ${c.title}`}
                 onClick={() => onEdit(c.clip)}
@@ -500,8 +572,8 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
           <div className="mvt-lane mvt-video-row">
             {footage.map((c) => {
               const m = media[c.clip.path];
-              const left = px(c.start);
-              const width = Math.max(2, px(c.end) - left);
+              const left = xAt(c.start);
+              const width = Math.max(2, xAt(c.end) - left);
               const frames = m?.frames ?? 10;
               const tiles = Math.max(1, Math.round(width / (60 * 16 / 9)));
               const tileW = width / tiles;
@@ -529,7 +601,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
             {footage.map((c) => {
               const wave = media[c.clip.path]?.wave;
               return (
-                <div key={c.clip.path} className="mvt-footage" style={{ left: pct(c.start), width: `${((c.end - c.start) / span.total) * 100}%` }}>
+                <div key={c.clip.path} className="mvt-footage" style={{ left: L(c.start), width: W(c.start, c.end) }}>
                   {wave && <img src={convertFileSrc(wave)} alt="" draggable={false} />}
                 </div>
               );
@@ -537,22 +609,22 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
           </div>
 
           <div className="mvt-lane mvt-kills-row">
-            {kills.map((k, n) => (
+            {killTags.map(({ x, first: k, from, to }) => (
               <button
                 key={`${k.i}-${k.t}`}
                 type="button"
                 className="mvt-kill"
-                style={{ left: pct(k.at) }}
-                aria-label={`Kill ${n + 1} at ${run.clockStart ? gameClock(k.at) : clock(k.at)}. Jump there`}
-                title={`Kill · ${run.clockStart ? `${gameClock(k.at)} in game` : clock(k.at)}`}
+                style={{ left: x }}
+                aria-label={`${from === to ? `Kill ${from}` : `Kills ${from} to ${to}`} at ${run.clockStart ? gameClock(k.at) : clock(k.at)}. Jump there`}
+                title={`${from === to ? "Kill" : `${to - from + 1} kills`} · ${run.clockStart ? `${gameClock(k.at)} in game` : clock(k.at)}`}
                 onClick={() => choose(k.i, Math.max(0, k.t - 2), true)}
               >
-                K{n + 1}
+                {from === to ? `K${from}` : `K${from}–${to}`}
               </button>
             ))}
           </div>
 
-          <div className="mvt-playhead" style={{ left: pct(nowAt) }}>
+          <div className="mvt-playhead" style={{ left: L(nowAt) }}>
             <span />
           </div>
         </div>

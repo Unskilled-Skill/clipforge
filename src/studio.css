@@ -1181,7 +1181,7 @@ input, textarea { caret-color: var(--st-accent); }
 .mvt-lanes { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; cursor: pointer; touch-action: none; user-select: none; overflow: hidden; }
 .mvt-lanes:focus-visible { outline: 2px solid var(--st-accent); outline-offset: -2px; }
 .mvt-lane { position: relative; flex-shrink: 0; border-bottom: 1px solid #1a1a1d; background: #131315; }
-.mvt-lane.mvt-video-row { background: #000; }
+.mvt-lane.mvt-video-row { background: #131315; }
 .mvt-lane.mvt-kills-row { background: #101012; border-bottom: 0; }
 
 .mvt-ruler { position: relative; }
@@ -1195,6 +1195,10 @@ input, textarea { caret-color: var(--st-accent); }
 .mvt-rcol { position: absolute; top: 26px; bottom: 0; z-index: 1; pointer-events: none; border-left: 1px solid rgba(255, 255, 255, 0.04); }
 .mvt-rcol.odd { background: rgba(255, 255, 255, 0.025); }
 .mvt-rcol.current { background: rgba(63, 210, 190, 0.06); }
+/* Squeezed dead time between clips: a hairline gap in the strip and a
+   notch in the ruler, so the clips still read as one continuous run. */
+.mvt-gap { position: absolute; top: 18px; bottom: 0; z-index: 1; pointer-events: none; }
+.mvt-gap::before { content: ""; position: absolute; top: 0; height: 8px; left: 50%; width: 1px; background: #5a5a62; }
 .mvt-tick { position: absolute; bottom: 0; width: 1px; height: 12px; background: #4a4a52; }
 .mvt-tick small { position: absolute; top: -10px; left: 4px; font-size: 11px; color: var(--st-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .mvt-end { position: absolute; right: 6px; top: 6px; font-size: 11px; color: var(--st-muted); font-variant-numeric: tabular-nums; }
@@ -1208,7 +1212,7 @@ input, textarea { caret-color: var(--st-accent); }
 .mvt-clip.active { background: var(--st-accent); border-color: var(--st-accent); color: #06221f; }
 
 /* Footage (the full recording, or each clip): filmstrip and waveform. */
-.mvt-footage { position: absolute; top: 0; bottom: 0; display: flex; overflow: hidden; background: #0b0b0c; box-shadow: inset 0 0 0 1px #1e1e22; }
+.mvt-footage { position: absolute; top: 0; bottom: 0; display: flex; overflow: hidden; }
 .mvt-frame { flex-shrink: 0; height: 100%; background-repeat: no-repeat; }
 .mvt-audio-row .mvt-footage img { width: 100%; height: 100%; object-fit: fill; display: block; pointer-events: none; }
 
