@@ -2127,7 +2127,9 @@ function App() {
       g.runKey = `run:${oldest.path}`;
       g.runRecent = now - last < 2 * 60 * 60 * 1000;
       g.runLabel = `${gameName(g.runGame)} · ${match ? matchLabel(match) : `${day}${span}`}`;
-      const kills = g.items.reduce((a, { c }) => a + clipKillCount(c.name, markerCounts[c.path] ?? 0), 0);
+      const killsOf = (list: Items) => list.reduce((a, { c }) => a + clipKillCount(c.name, markerCounts[c.path] ?? 0), 0);
+      const full = g.items.filter(({ c }) => isSession(c.name) || recordingMetadata[c.path]?.is_session);
+      const kills = full.length ? Math.max(killsOf(full), killsOf(g.items.filter((it) => !full.includes(it)))) : killsOf(g.items);
       const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
       g.runMeta = `${g.items.length} clips${kills ? ` · ${kills} kills` : ""} · ${size}`;
     }
@@ -2158,6 +2160,10 @@ function App() {
         label: g.runLabel,
         meta: g.runMeta,
         result: (recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.result : undefined) as "won" | "lost" | "draw" | undefined,
+        clockStart: (() => {
+          const s = recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.clock_start : null;
+          return s ? s * 1000 : undefined;
+        })(),
         clips: [...g.items]
           .sort((a, b) => a.c.modified_ms - b.c.modified_ms)
           .map(({ c }) => ({
@@ -2167,6 +2173,7 @@ function App() {
             end: c.modified_ms,
             thumb: thumbs[c.path]?.thumb ?? null,
             rounds: recordingMetadata[c.path]?.rounds,
+            full: isSession(c.name) || !!recordingMetadata[c.path]?.is_session,
           })),
       }));
     return { game: gameName(opened.runGame), gameKey: opened.runGame, runs, initial: Math.max(0, runs.findIndex((r) => r.key === matchView.runKey)) };

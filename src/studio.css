@@ -1153,10 +1153,14 @@ input, textarea { caret-color: var(--st-accent); }
 .st-mv-block { position: absolute; top: 4px; bottom: 4px; min-width: 4px; border-radius: 3px; background: #23463f; transition: background-color 120ms ease; }
 .st-mv-block:hover { background: #2c5a51; }
 .st-mv-block.active { background: var(--st-accent); }
+/* A full match recording: the whole game as a quiet band under the clips. */
+.st-mv-block.full { top: 9px; bottom: 9px; background: #1e2d2a; z-index: 0; }
+.st-mv-block.full.active { background: #2c4a44; }
+.st-mv-block:not(.full) { z-index: 1; }
 .st-mv-playhead { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: #ececee; box-shadow: 0 0 4px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 3; }
 .st-mv-ruler { position: relative; height: 18px; }
 .st-mv-ruler span { position: absolute; top: 3px; font-size: 11px; color: var(--st-muted); transform: translateX(-50%); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.st-mv-ruler span:first-child { transform: none; }
+.st-mv-ruler span.first { transform: none; }
 .st-mv-ruler span.end { right: 0; left: auto !important; transform: none; }
 
 .st-mv-cards { display: flex; gap: 8px; padding: 8px 16px 12px; overflow-x: auto; flex-shrink: 0; background: var(--st-panel); scrollbar-width: thin; }

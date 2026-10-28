@@ -117,6 +117,8 @@ export interface MatchInfo {
   id: string; game: string; source: string; map: string | null; mode: string | null;
   score: { won: number; lost: number } | null; result: "won" | "lost" | "draw" | null;
   round_results: Record<string, "won" | "lost" | "draw">;
+  /** When the game's own clock read 0:00 (Unix seconds), for games with one. */
+  clock_start?: number | null;
 }
 export interface RecordingMetadata {
   version: number; is_session: boolean;

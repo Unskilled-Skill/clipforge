@@ -546,7 +546,7 @@ pub async fn run(app: AppHandle) {
         }
         if game.contains("league of legends") {
             if let Some(client) = &lol_client {
-                poll_lol(&app, client, settings.auto_clip_delay_s).await;
+                poll_lol(&app, client, settings.auto_clip_delay_s, &game).await;
             }
         } else {
             LOL_LAST_EVENT.store(-1, Ordering::Relaxed);
@@ -738,7 +738,75 @@ fn handle_event_invoke(app: &AppHandle, json: &serde_json::Value) {
 }
 
 /// Poll League's local live-client API for ChampionKill events by us.
-async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64) {
+/// The League game being played: (game clock 0:00 as Unix seconds, last
+/// game clock seen). A clock that runs backwards is a new game.
+static LOL_GAME: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+fn lol_map(number: i64) -> Option<&'static str> {
+    match number {
+        11 => Some("Summoner's Rift"),
+        12 => Some("Howling Abyss"),
+        21 => Some("Nexus Blitz"),
+        30 => Some("Rings of Wrath"),
+        _ => None,
+    }
+}
+
+fn lol_mode(mode: &str) -> String {
+    match mode {
+        "CLASSIC" => "Classic".into(),
+        "ARAM" => "ARAM".into(),
+        "CHERRY" => "Arena".into(),
+        "KIWI" => "ARAM: Mayhem".into(),
+        "STRAWBERRY" => "Swarm".into(),
+        "NEXUSBLITZ" => "Nexus Blitz".into(),
+        "ULTBOOK" => "Ultimate Spellbook".into(),
+        "ONEFORALL" => "One for All".into(),
+        "DOOMBOTSTEEMO" => "Doom Bots".into(),
+        "URF" | "ARURF" => "URF".into(),
+        "PRACTICETOOL" => "Practice Tool".into(),
+        "TUTORIAL" | "TUTORIAL_MODULE_1" | "TUTORIAL_MODULE_2" | "TUTORIAL_MODULE_3" => "Tutorial".into(),
+        other => {
+            let mut c = other.to_lowercase();
+            if let Some(f) = c.get_mut(0..1) {
+                f.make_ascii_uppercase();
+            }
+            c
+        }
+    }
+}
+
+/// Match tracker update for a League game from the Live Client API: map,
+/// mode, the game clock's start (which also names the game) and, once the
+/// game-end event arrives, the result. `game` is the previous (clock
+/// start, clock) for this game, if any; returns the new one.
+fn lol_update(stats: &serde_json::Value, events: &[serde_json::Value], now: f64, game: Option<(f64, f64)>) -> Option<(crate::matchdata::Update, (f64, f64))> {
+    let clock = stats["gameTime"].as_f64()?;
+    // Same game while its clock keeps going forward; keep the first start
+    // so the id doesn't wobble with polling jitter.
+    let start = match game {
+        Some((start, last)) if clock + 5.0 >= last => start,
+        _ => now - clock,
+    };
+    let result = events
+        .iter()
+        .find(|e| e["EventName"] == "GameEnd")
+        .and_then(|e| e["Result"].as_str())
+        .map(|r| if r.eq_ignore_ascii_case("win") { "won" } else { "lost" }.to_string());
+    let update = crate::matchdata::Update {
+        external_id: Some(format!("lol-{}", start.round() as i64)),
+        map: stats["mapNumber"].as_i64().and_then(lol_map).map(String::from),
+        mode: stats["gameMode"].as_str().map(lol_mode),
+        clock_start: Some(start),
+        ended: result.is_some(),
+        result,
+        active: true,
+        ..Default::default()
+    };
+    Some((update, (start, clock)))
+}
+
+async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64, game_exe: &str) {
     let Ok(resp) = client
         .get("https://127.0.0.1:2999/liveclientdata/activeplayername")
         .send()
@@ -765,6 +833,17 @@ async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64) {
     let Some(events) = data["Events"].as_array() else {
         return;
     };
+    // Bind this game's clips to the match: map, mode, clock, result.
+    if let Ok(stats) = client.get("https://127.0.0.1:2999/liveclientdata/gamestats").send().await {
+        if let Ok(stats) = stats.json::<serde_json::Value>().await {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+            let previous = *LOL_GAME.lock().unwrap();
+            if let Some((update, game)) = lol_update(&stats, events, now, previous) {
+                *LOL_GAME.lock().unwrap() = Some(game);
+                crate::matchdata::ingest(app, game_exe, "lol-live-client", update);
+            }
+        }
+    }
 
     let last = LOL_LAST_EVENT.load(Ordering::Relaxed);
     let mut newest = last;
@@ -837,6 +916,28 @@ fn install_gsi_configs() -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn league_games_are_named_by_their_clock_and_get_their_result() {
+        let stats = json!({ "gameMode": "CLASSIC", "gameTime": 600.4, "mapNumber": 11 });
+        let (u, game) = lol_update(&stats, &[], 10_000.0, None).unwrap();
+        assert_eq!(u.external_id.as_deref(), Some("lol-9400"));
+        assert_eq!((u.map.as_deref(), u.mode.as_deref()), (Some("Summoner's Rift"), Some("Classic")));
+        assert_eq!(u.clock_start, Some(9_399.6));
+        assert!(u.active && !u.ended && u.result.is_none());
+        // Two seconds later, with a little polling jitter: the same game.
+        let later = json!({ "gameMode": "CLASSIC", "gameTime": 602.0, "mapNumber": 11 });
+        let end = [json!({ "EventName": "GameEnd", "Result": "Win" })];
+        let (u2, _) = lol_update(&later, &end, 10_002.3, Some(game)).unwrap();
+        assert_eq!(u2.external_id, u.external_id);
+        assert_eq!((u2.result.as_deref(), u2.ended), (Some("won"), true));
+        // The clock starting over is a new game.
+        let next = json!({ "gameMode": "ARAM", "gameTime": 30.0, "mapNumber": 12 });
+        let (u3, _) = lol_update(&next, &[], 11_000.0, Some(game)).unwrap();
+        assert_ne!(u3.external_id, u.external_id);
+        assert_eq!((u3.map.as_deref(), u3.mode.as_deref()), (Some("Howling Abyss"), Some("ARAM")));
+        assert!(lol_update(&json!({}), &[], 0.0, None).is_none());
+    }
 
     /// The 2026-10-26 21:17 fight: a 2K clip saved, a third kill 9.75 s
     /// after the second, and a second clip whose lead-in reached back

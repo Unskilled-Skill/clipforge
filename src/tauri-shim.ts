@@ -76,15 +76,27 @@ if (mockPreview !== "empty") {
       size_bytes: 84_000_000 + j * 6_000_000,
     });
   }
+  // ...and the whole match recorded alongside (Whole match mode).
+  mockClips.push({
+    path: "D:/RECORDINGS/Clips/mock-run-session.mp4",
+    name: "Bf6 Session 2026-10-27 20-34-00.mp4",
+    modified_ms: Date.now() - 74 * 60_000,
+    size_bytes: 2_100_000_000,
+  });
 }
 
 const mockThumbs = Object.fromEntries(
   mockClips.map((c, i) => [c.path, { thumb: `mock://thumb-${i}`, duration: 34 + i * 11 }])
 );
+if (mockThumbs["D:/RECORDINGS/Clips/mock-run-session.mp4"]) mockThumbs["D:/RECORDINGS/Clips/mock-run-session.mp4"].duration = 25 * 60;
 
 // Sample context for visual verification only; native builds read persisted sources.
 function mockRecordingMetadata(input: string): RecordingMetadata | null {
   // The sample run: one match, each clip in its own round.
+  if (input.includes("mock-run-session")) {
+    const info: MatchInfo = { id: "demo-run", game: "bf6.exe", source: "demo", map: "Siege of Cairo", mode: "Conquest", score: { won: 3, lost: 2 }, result: "won", round_results: {} };
+    return { version: 1, is_session: true, matches: [{ start: 0, end: 1500, info }], rounds: [] };
+  }
   const run = input.match(/mock-run-(\d+)/);
   if (run) {
     const j = Number(run[1]);
@@ -166,6 +178,7 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
     case "load_markers":
       // Two clips of the sample Bf6 run have kills, for the match view.
       if (/mock-run-[13]\./.test((_args as { input: string }).input)) return [6.5, 21.2];
+      if ((_args as { input: string }).input.includes("mock-run-session")) return [320, 335, 700, 1012, 1027];
       // Every third mock clip has kill markers, for editor design work.
       return (_args as { input: string }).input.match(/mock-(\d+)/)?.[1] &&
         Number((_args as { input: string }).input.match(/mock-(\d+)/)![1]) % 3 === 0

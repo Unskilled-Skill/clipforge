@@ -23,6 +23,10 @@ pub struct MatchInfo {
     pub result: Option<String>,
     #[serde(default)]
     pub round_results: BTreeMap<u32, String>,
+    /// When the game's own clock read 0:00 (Unix seconds), for games that
+    /// have one (League): places clips at their in-game time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_start: Option<f64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordedMatch {
@@ -55,6 +59,7 @@ pub struct Update {
     pub score: Option<Score>,
     pub result: Option<String>,
     pub round_result: Option<String>,
+    pub clock_start: Option<f64>,
     pub active: bool,
     pub ended: bool,
 }
@@ -217,6 +222,9 @@ impl Tracker {
             }
             if let Some(mode) = update.mode {
                 info.mode = Some(mode);
+            }
+            if update.clock_start.is_some() {
+                info.clock_start = update.clock_start;
             }
             if update.score.is_some() {
                 info.score = update.score;
