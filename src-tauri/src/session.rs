@@ -97,7 +97,12 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
                 Ok(done) => {
                     if let Some((start,game))=started {
                         if let Ok(duration)=crate::clips::probe_clip_duration(&done) {
-                            if duration.is_finite() && duration > 0.0 { crate::matchdata::write_recording(&done,&game,start,start+Duration::from_secs_f64(duration),true); }
+                            if duration.is_finite() && duration > 0.0 {
+                                crate::matchdata::write_recording(&done,&game,start,start+Duration::from_secs_f64(duration),true);
+                                // Re-muxing ends well after the game: stamp when the recording does.
+                                let started_wall = std::time::SystemTime::now() - start.elapsed();
+                                crate::clips::set_footage_end(&done, started_wall + Duration::from_secs_f64(duration));
+                            }
                         }
                         // After the match info is written: each highlight gets its slice.
                         save_highlights(&app, &done, &game, start, &markers).await;

@@ -128,6 +128,12 @@ async fn on_clip_saved(
         _ => path,
     };
 
+    // The footage ends where the save was asked for, not when trimming and
+    // renaming finished.
+    crate::clips::set_footage_end(
+        &final_path.to_string_lossy(),
+        std::time::SystemTime::now() - saved_at.elapsed(),
+    );
     crate::logs::line(&format!("clip saved: {}", final_path.display()));
     play(SAVED_SOUND);
     let _ = app

@@ -68,8 +68,9 @@ pub fn clip_name(session_file: &str, label: Option<&str>, index: usize) -> Optio
 }
 
 /// Cut every planned highlight out of the finished session at `session`.
-/// `started` is the session's wall-clock start, so each clip gets the
-/// modified time of its moment and the library lists them in play order.
+/// `started` is the session's wall-clock start, so each clip's modified time
+/// is when its moment ends (like a clip saved live) and the library lists
+/// them in play order.
 /// Returns the clips written.
 pub fn cut(session: &str, highlights: &[Highlight], started: std::time::SystemTime) -> Vec<String> {
     let Some(ffmpeg) = crate::clips::find_ffmpeg() else { return Vec::new() };
@@ -99,10 +100,7 @@ pub fn cut(session: &str, highlights: &[Highlight], started: std::time::SystemTi
         let markers: Vec<f64> = h.kills.iter().map(|k| k - h.start).collect();
         crate::clips::write_markers(&out, &markers);
         crate::matchdata::copy_selection(session, &out, h.start, h.end);
-        let at = started + std::time::Duration::from_secs_f64(h.start);
-        if let Ok(f) = std::fs::File::options().write(true).open(&out) {
-            let _ = f.set_modified(at);
-        }
+        crate::clips::set_footage_end(&out, started + std::time::Duration::from_secs_f64(h.end));
         written.push(out);
     }
     written

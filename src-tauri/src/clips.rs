@@ -644,6 +644,16 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
 /// Sidecar with kill timestamps (seconds into the clip), written when an
 /// auto-clip trigger knows where the kills landed. Lives in `.thumbs` next
 /// to the other derived files so it's swept with them.
+/// Stamp a clip's modified time with the moment its footage ends. The
+/// library and the match timeline read a clip's span as
+/// [modified - length, modified], so a time left from re-muxing or trimming
+/// (seconds or minutes later) would put it in the wrong place.
+pub fn set_footage_end(clip: &str, end: std::time::SystemTime) {
+    if let Ok(f) = std::fs::File::options().write(true).open(clip) {
+        let _ = f.set_modified(end);
+    }
+}
+
 pub fn markers_path(clip: &str) -> Option<PathBuf> {
     let p = PathBuf::from(clip);
     let stem = p.file_stem()?.to_string_lossy().to_string();
