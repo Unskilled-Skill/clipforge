@@ -929,6 +929,13 @@ input, textarea { caret-color: var(--st-accent); }
 .st-group-day td { border-bottom: 0; }
 .st-group-sub td { height: 28px; padding-left: 28px; background: var(--st-bg); }
 .st-group-sub .st-group-meta { font-size: 11.5px; }
+/* A match, or a stretch of play in one game: its clips fold under one row. */
+.st-group-run td { height: 40px; padding-left: 22px; background: var(--st-bg); border-bottom: 1px solid var(--st-line); }
+.st-run-toggle { gap: 8px; }
+.st-run-label { font-weight: 500; color: var(--st-text); }
+.st-group-run .st-group-meta { font-size: 11.5px; }
+/* Clips inside a run sit under it: a thin rule down the left, nudged in. */
+.st-row.in-run > td:first-child { box-shadow: inset 2px 0 0 #2a2a30; padding-left: 22px; }
 
 /* Settings › Split audio */
 .st-settings #settings-audio > label.audio-mix { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 24px; padding: 12px 0 16px; }

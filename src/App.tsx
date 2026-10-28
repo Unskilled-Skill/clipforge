@@ -2037,14 +2037,32 @@ function App() {
   // stay one grid. Flat indices are kept for the keyboard focus.
   const clipGroups = (() => {
     const items = visibleClips.map((c, i) => ({ c, i }));
+    type Items = typeof items;
+    type Group = {
+      key: string;
+      /** The time bucket or session (fold key), its header and summary. */
+      date: string;
+      recent: boolean;
+      label: string;
+      meta: string;
+      dayItems: Items;
+      /** One match, or one stretch of play in one game: its own fold. */
+      runKey: string;
+      runRecent: boolean;
+      runGame: string;
+      runLabel: string;
+      runMeta: string;
+      items: Items;
+    };
     if (sortBy !== "newest" && sortBy !== "oldest" && sortBy !== "sessions") {
-      return [{ key: "all", date: "", recent: true, label: "", meta: "", sub: "", dayItems: items, items }];
+      return [{ key: "all", date: "", recent: true, label: "", meta: "", dayItems: items, runKey: "", runRecent: true, runGame: "", runLabel: "", runMeta: "", items }] as Group[];
     }
-    // Each clip's group: a play session, or a time bucket (days for the
-    // last week, then weeks, months, years). A group with several matches
-    // (or games) lists each as a sub-row under it. Cleanup acts on the
-    // whole group.
+    // Clips group by time bucket (days for the last week, then weeks,
+    // months, years) or play session; inside that, by match when the game
+    // reports one, otherwise by stretch of play in one game. Cleanup acts
+    // on the whole bucket.
     const now = Date.now();
+    const RUN_GAP_MS = 45 * 60 * 1000;
     const sessionOf = sortBy === "sessions" ? sessionIndices(items.map(({ c }) => c.modified_ms)) : [];
     const sessionStart = new Map<number, number>();
     sessionOf.forEach((n, k) => sessionStart.set(n, items[k].c.modified_ms));
@@ -2053,44 +2071,68 @@ function App() {
       const start = sessionStart.get(sessionOf[k]) ?? items[k].c.modified_ms;
       return { key: `s:${start}`, label: sessionLabel(start, now), recent: now - items[k].c.modified_ms < 7 * 86400000 };
     };
-    const groups: { key: string; date: string; recent: boolean; label: string; meta: string; sub: string; dayItems: typeof items; items: typeof items }[] = [];
+    const matchOf = (c: ClipInfo) => (recordingMetadata[c.path]?.matches.length === 1 ? recordingMetadata[c.path].matches[0].info : null);
+    const groups: Group[] = [];
+    let lastAt = 0;
     items.forEach((it, k) => {
       const bucket = bucketOf(k);
-      const matchId=recordingMetadata[it.c.path]?.matches.length === 1 ? recordingMetadata[it.c.path].matches[0].info.id : "";
-      const key = `${bucket.key}:${matchId}`;
-      let g = groups[groups.length - 1];
-      if (!g || g.key !== key) {
-        g = { key, date: bucket.key, recent: bucket.recent, label: bucket.label, meta: "", sub: "", dayItems: [], items: [] };
+      const match = matchOf(it.c);
+      const game = gameOf(it.c);
+      let g: Group | undefined = groups[groups.length - 1];
+      const prevMatch = g ? matchOf(g.items[0].c) : null;
+      const sameRun =
+        !!g &&
+        g.date === bucket.key &&
+        g.runGame === game &&
+        (match || prevMatch ? match?.id === prevMatch?.id : Math.abs(lastAt - it.c.modified_ms) <= RUN_GAP_MS);
+      if (!sameRun) {
+        g = { key: `${bucket.key}:${groups.length}`, date: bucket.key, recent: bucket.recent, label: bucket.label, meta: "", dayItems: [], runKey: "", runRecent: false, runGame: game, runLabel: "", runMeta: "", items: [] };
         groups.push(g);
       }
-      g.items.push(it);
+      g!.items.push(it);
+      lastAt = it.c.modified_ms;
     });
-    const summary = (list: typeof items, match?: string) => {
+    const summary = (list: Items) => {
       const names = [...new Set(list.map(({ c }) => gameName(gameOf(c))))];
       const gamesText = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
       const n = list.length;
       const size = formatSize(list.reduce((a, { c }) => a + c.size_bytes, 0));
-      const matches = new Set(list.map(({ c }) => recordingMetadata[c.path]?.matches.length === 1 ? recordingMetadata[c.path].matches[0].info.id : "").filter(Boolean)).size;
-      const matchesText = !match && sortBy === "sessions" && matches > 1 ? ` · ${matches} matches` : "";
-      return `${gamesText}${match ? ` · ${match}` : ""}${matchesText} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
+      const matches = new Set(list.map(({ c }) => matchOf(c)?.id ?? "").filter(Boolean)).size;
+      const matchesText = matches > 1 ? ` · ${matches} matches` : "";
+      return `${gamesText}${matchesText} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
     };
+    const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
     for (const g of groups) {
-      const metadata = recordingMetadata[g.items[0].c.path];
-      g.meta = summary(g.items, metadata?.matches.length === 1 ? matchLabel(metadata.matches[0].info) : undefined);
+      const times = g.items.map(({ c }) => c.modified_ms);
+      const first = Math.min(...times);
+      const last = Math.max(...times);
+      const oldest = g.items.find(({ c }) => c.modified_ms === first)!.c;
+      const match = matchOf(g.items[0].c);
+      // Days and sessions already say which day; coarser buckets don't.
+      const day = g.date.startsWith("d:") || g.date.startsWith("s:") ? "" : `${new Date(first).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, `;
+      const span = first === last ? clock(first) : `${clock(first)} – ${clock(last)}`;
+      g.runKey = `run:${oldest.path}`;
+      g.runRecent = now - last < 2 * 60 * 60 * 1000;
+      g.runLabel = `${gameName(g.runGame)} · ${match ? matchLabel(match) : `${day}${span}`}`;
+      const kills = g.items.reduce((a, { c }) => a + clipKillCount(c.name, markerCounts[c.path] ?? 0), 0);
+      const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
+      g.runMeta = `${g.items.length} clips${kills ? ` · ${kills} kills` : ""} · ${size}`;
     }
     for (const date of new Set(groups.map((g) => g.date))) {
-      const day = groups.filter((g) => g.date === date);
-      day[0].dayItems = day.flatMap((g) => g.items);
-      if (day.length === 1) continue;
-      for (const g of day) g.sub = g.meta;
-      day[0].meta = summary(day[0].dayItems);
-      for (const g of day.slice(1)) g.label = "";
+      const bucket = groups.filter((g) => g.date === date);
+      bucket[0].dayItems = bucket.flatMap((g) => g.items);
+      bucket[0].meta = summary(bucket[0].dayItems);
+      for (const g of bucket.slice(1)) g.label = "";
     }
     return groups;
   })();
+  // A match or stretch of play with several clips gets its own fold.
+  const runFolded = (g: (typeof clipGroups)[number]) => !!g.runKey && g.items.length > 1 && isFolded(g.runKey, g.runRecent);
   // Clips in folded groups: not drawn, so keyboard focus steps over them.
   const foldedPaths = new Set(
-    clipGroups.filter((g) => g.date && isFolded(g.date, g.recent)).flatMap((g) => g.items.map(({ c }) => c.path)),
+    clipGroups
+      .filter((g) => (g.date && isFolded(g.date, g.recent)) || runFolded(g))
+      .flatMap((g) => g.items.map(({ c }) => c.path)),
   );
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
@@ -2774,7 +2816,7 @@ function App() {
                       // clips in between), so its key alone isn't unique.
                       <Fragment key={`${g.key}#${gi}`}>
                         {g.label && (
-                          <tr className={`st-group ${g.sub ? "st-group-day" : ""} ${folded ? "folded" : ""}`}>
+                          <tr className={`st-group st-group-day ${folded ? "folded" : ""}`}>
                             <td colSpan={compactLibrary ? 4 : 7}>
                               <div className="st-group-inner">
                                 <button
@@ -2797,14 +2839,27 @@ function App() {
                             </td>
                           </tr>
                         )}
-                        {g.sub && !folded && (
-                          <tr className="st-group st-group-sub">
+                        {!folded && g.runKey && g.items.length > 1 && (
+                          <tr className={`st-group st-group-run ${runFolded(g) ? "folded" : ""}`}>
                             <td colSpan={compactLibrary ? 4 : 7}>
-                              <div className="st-group-inner"><span className="st-group-meta">{g.sub}</span></div>
+                              <div className="st-group-inner">
+                                <button
+                                  type="button"
+                                  className="st-group-toggle st-run-toggle"
+                                  aria-expanded={!runFolded(g)}
+                                  title={runFolded(g) ? "Show these clips" : "Hide these clips"}
+                                  onClick={() => toggleGroup(g.runKey, g.runRecent)}
+                                >
+                                  <CaretRight size={11} weight="bold" className="st-group-caret" />
+                                  <GameMark game={g.runGame} icons={gameIcons} />
+                                  <span className="st-run-label">{g.runLabel}</span>
+                                </button>
+                                <span className="st-group-meta">{g.runMeta}</span>
+                              </div>
                             </td>
                           </tr>
                         )}
-                        {!folded && g.items.map(({ c, i }) => {
+                        {!folded && !runFolded(g) && g.items.map(({ c, i }) => {
                           const markers = markerCounts[c.path] ?? 0;
                           const title = momentTitle(c.name, markers);
                           const kills = clipKillCount(c.name, markers);
@@ -2814,7 +2869,7 @@ function App() {
                             <tr
                               key={c.path}
                               data-clip-path={c.path}
-                              className={`st-row ${i === focusIdx ? "kb-focus" : ""} ${montageSel.has(c.path) ? "picked" : ""}`}
+                              className={`st-row ${i === focusIdx ? "kb-focus" : ""} ${montageSel.has(c.path) ? "picked" : ""} ${g.runKey && g.items.length > 1 ? "in-run" : ""}`}
                               // Roving tabindex: Tab lands on one row, arrows walk
                               // the table (library shortcuts), Enter opens it.
                               tabIndex={i === Math.max(0, focusIdx) ? 0 : -1}

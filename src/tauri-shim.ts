@@ -66,6 +66,17 @@ const mockClips = Array.from({ length: mockPreview === "empty" ? 0 : 14 }, (_, i
   modified_ms: Date.now() - i * 3600_000 * 5,
   size_bytes: 120_000_000 + i * 37_000_000,
 }));
+// A burst from one sitting (minutes apart), so the library shows a game run.
+if (mockPreview !== "empty") {
+  for (let j = 0; j < 5; j++) {
+    mockClips.push({
+      path: `D:/RECORDINGS/Clips/mock-run-${j}.mp4`,
+      name: `Bf6 2026-10-27 20-${37 + j * 5}-0${j}.mp4`,
+      modified_ms: Date.now() - (75 + j * 5) * 60_000,
+      size_bytes: 84_000_000 + j * 6_000_000,
+    });
+  }
+}
 
 const mockThumbs = Object.fromEntries(
   mockClips.map((c, i) => [c.path, { thumb: `mock://thumb-${i}`, duration: 34 + i * 11 }])
