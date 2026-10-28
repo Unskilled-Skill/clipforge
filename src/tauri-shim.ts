@@ -156,6 +156,8 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
     case "audio_track_roles":
       return ["mix", "game", "voice", "desktop", "mic"];
     case "load_markers":
+      // Two clips of the sample Bf6 run have kills, for the match view.
+      if (/mock-run-[13]\./.test((_args as { input: string }).input)) return [6.5, 21.2];
       // Every third mock clip has kill markers, for editor design work.
       return (_args as { input: string }).input.match(/mock-(\d+)/)?.[1] &&
         Number((_args as { input: string }).input.match(/mock-(\d+)/)![1]) % 3 === 0

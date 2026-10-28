@@ -72,6 +72,7 @@ import "./App.css";
 import "./editor.css";
 import "./studio.css";
 const SessionView=lazy(()=>import("./SessionView").then(module=>({default:module.SessionView})));
+const MatchView = lazy(() => import("./MatchView").then((module) => ({ default: module.MatchView })));
 
 // Editor times all read m:ss.t ("0:12.4"); lengths as seconds ("19.2 s").
 function clipTime(s: number) {
@@ -270,6 +271,9 @@ function App() {
   },[clips,metadataRevision]);
   const [selected, setSelected] = useState<ClipInfo | null>(null);
   const [sessionClip, setSessionClip] = useState<ClipInfo | null>(null);
+  // A match (or stretch of play) opened as one timeline: its time bucket
+  // and run, so its sibling matches show as tabs.
+  const [matchView, setMatchView] = useState<{ bucket: string; runKey: string } | null>(null);
   const pendingTrim = useRef<[number, number] | null>(null);
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1556,7 +1560,7 @@ function App() {
   // the selection, arrows walk the grid, Enter opens the focused clip.
   // Re-attached per render so closures stay fresh — cheap.
   useEffect(() => {
-    if (selected || sessionClip || commandsOpen) return;
+    if (selected || sessionClip || matchView || commandsOpen) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (ctxMenu) return;
@@ -2134,6 +2138,28 @@ function App() {
       .filter((g) => (g.date && isFolded(g.date, g.recent)) || runFolded(g))
       .flatMap((g) => g.items.map(({ c }) => c.path)),
   );
+  const matchRuns = (() => {
+    if (!matchView) return null;
+    const opened = clipGroups.find((g) => g.runKey === matchView.runKey);
+    if (!opened) return { game: "", runs: [], initial: 0 };
+    const runs = clipGroups
+      .filter((g) => g.date === matchView.bucket && g.runGame === opened.runGame)
+      .map((g) => ({
+        key: g.runKey,
+        label: g.runLabel,
+        meta: g.runMeta,
+        clips: [...g.items]
+          .sort((a, b) => a.c.modified_ms - b.c.modified_ms)
+          .map(({ c }) => ({
+            clip: c,
+            title: momentTitle(c.name, markerCounts[c.path] ?? 0),
+            start: c.modified_ms - Math.max(1, thumbs[c.path]?.duration ?? 30) * 1000,
+            end: c.modified_ms,
+            thumb: thumbs[c.path]?.thumb ?? null,
+          })),
+      }));
+    return { game: gameName(opened.runGame), runs, initial: Math.max(0, runs.findIndex((r) => r.key === matchView.runKey)) };
+  })();
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
   // Details panel for the library row that has focus (click, arrows).
@@ -2355,7 +2381,7 @@ function App() {
 
 
   return (
-    <div className={`app-frame ${status.replay_buffer_active ? "live" : ""} ${showSettings ? "st-settings" : selected ? "st-editing" : sessionClip ? "st-session" : "st-library"}`}>
+    <div className={`app-frame ${status.replay_buffer_active ? "live" : ""} ${showSettings ? "st-settings" : selected ? "st-editing" : sessionClip || matchView ? "st-session" : "st-library"}`}>
       <div className="titlebar" data-tauri-drag-region>
         <span className="titlebar-brand" data-tauri-drag-region title={`ClipForge ${appVersion}`}>
           <img src={appIcon} alt="" draggable={false} />
@@ -2681,7 +2707,20 @@ function App() {
             </span>
           </div>
         )}
-        {showSettings ? null : sessionClip ? <Suspense fallback={<p className="st-session-note" role="status">Opening full session…</p>}><SessionView key={sessionClip.path} clip={sessionClip} game={gameName(gameOf(sessionClip))} metadata={recordingMetadata[sessionClip.path]} durationHint={thumbs[sessionClip.path]?.duration ?? 0} starred={favorites.includes(sessionClip.path)} onStar={() => toggleFavorite(sessionClip)} onBack={() => setSessionClip(null)} onEdit={range => selectClip(sessionClip, range)} /></Suspense> : !selected ? (
+        {showSettings ? null : sessionClip ? <Suspense fallback={<p className="st-session-note" role="status">Opening full session…</p>}><SessionView key={sessionClip.path} clip={sessionClip} game={gameName(gameOf(sessionClip))} metadata={recordingMetadata[sessionClip.path]} durationHint={thumbs[sessionClip.path]?.duration ?? 0} starred={favorites.includes(sessionClip.path)} onStar={() => toggleFavorite(sessionClip)} onBack={() => setSessionClip(null)} onEdit={range => selectClip(sessionClip, range)} /></Suspense> : matchView && matchRuns && !selected ? (
+          <Suspense fallback={<p className="st-session-note" role="status">Opening match…</p>}>
+            <MatchView
+              key={matchView.runKey}
+              runs={matchRuns.runs}
+              initialRun={matchRuns.initial}
+              game={matchRuns.game}
+              starred={(path) => favorites.includes(path)}
+              onStar={(clip) => void toggleFavorite(clip)}
+              onEdit={(clip) => selectClip(clip)}
+              onBack={() => setMatchView(null)}
+            />
+          </Suspense>
+        ) : !selected ? (
           <>
             <div className="st-toolbar">
               <h1>{libraryViews.find((v) => v.key === gameFilter)?.label ?? gameName(gameFilter)}</h1>
@@ -2855,6 +2894,15 @@ function App() {
                                   <span className="st-run-label">{g.runLabel}</span>
                                 </button>
                                 <span className="st-group-meta">{g.runMeta}</span>
+                                <button
+                                  type="button"
+                                  className="st-run-open"
+                                  title="Watch this match as one timeline"
+                                  onClick={() => setMatchView({ bucket: g.date, runKey: g.runKey })}
+                                >
+                                  <Play size={11} weight="fill" />
+                                  Watch
+                                </button>
                               </div>
                             </td>
                           </tr>
