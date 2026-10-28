@@ -1131,51 +1131,57 @@ input, textarea { caret-color: var(--st-accent); }
 .st-mv-player { flex: 1; min-height: 160px; display: flex; align-items: center; justify-content: center; padding: 12px; background: #070708; }
 .st-mv-player video { width: 100%; height: 100%; object-fit: contain; background: #000; cursor: pointer; }
 
-.st-mv-bar { display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 14px; border-top: 1px solid var(--st-line); background: var(--st-panel); font-size: 12px; color: var(--st-muted); flex-shrink: 0; min-width: 0; }
-.st-mv-transport { display: flex; gap: 4px; }
-.st-mv-transport .tx-btn:disabled { opacity: 0.35; cursor: default; }
-.st-mv-now { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-mv-bar { background: var(--st-panel); border-top: 1px solid var(--st-line); }
+.st-mv-bar .tx-btn:disabled { opacity: 0.35; cursor: default; }
+.st-mv-bar .tx-toggle { display: inline-flex; align-items: center; gap: 6px; }
+.st-mv-now { min-width: 0; padding-left: 12px; border-left: 1px solid #26262b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-mv-now strong { color: var(--st-text); font-weight: 500; }
-.st-mv-now .mono { color: var(--st-text); font-variant-numeric: tabular-nums; }
 
-/* The game timeline: one track on real time, clips as blocks where they
-   happened, kills in a lane above at their moment. */
-.st-mv-timeline { flex-shrink: 0; padding: 6px 16px 4px; background: var(--st-panel); border-top: 1px solid var(--st-line); }
-.st-mv-round-lane { position: relative; height: 18px; border-bottom: 1px solid #1a1a1d; margin-bottom: 2px; }
-.st-mv-round { position: absolute; top: 1px; padding: 0 5px; border-left: 2px solid #3a3a41; font-size: 10.5px; line-height: 15px; color: var(--st-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.st-mv-round.won { border-left-color: var(--st-accent); color: #8deadc; }
-.st-mv-round.lost { border-left-color: #c8923a; color: #f0be6a; }
-.st-mv-kill-lane { position: relative; height: 22px; }
-.st-mv-kill { position: absolute; top: 3px; width: 16px; height: 16px; margin-left: -8px; padding: 0; border: 0; border-radius: 3px; background: var(--st-accent); color: #06221f; display: grid; place-items: center; cursor: pointer; z-index: 2; }
-.st-mv-kill::after { content: ""; position: absolute; left: 50%; top: 16px; width: 1px; height: 6px; background: var(--st-accent); }
-.st-mv-kill:hover { background: #7fe6d7; }
-.st-mv-track { position: relative; height: 28px; border-radius: 4px; background: #131315; box-shadow: inset 0 0 0 1px #1e1e22; cursor: pointer; touch-action: none; user-select: none; }
-.st-mv-block { position: absolute; top: 4px; bottom: 4px; min-width: 4px; border-radius: 3px; background: #23463f; transition: background-color 120ms ease; }
-.st-mv-block:hover { background: #2c5a51; }
-.st-mv-block.active { background: var(--st-accent); }
-/* A full match recording: the whole game as a quiet band under the clips. */
-.st-mv-block.full { top: 9px; bottom: 9px; background: #1e2d2a; z-index: 0; }
-.st-mv-block.full.active { background: #2c4a44; }
-.st-mv-block:not(.full) { z-index: 1; }
-.st-mv-playhead { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: #ececee; box-shadow: 0 0 4px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 3; }
-.st-mv-ruler { position: relative; height: 18px; }
-.st-mv-ruler span { position: absolute; top: 3px; font-size: 11px; color: var(--st-muted); transform: translateX(-50%); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.st-mv-ruler span.first { transform: none; }
-.st-mv-ruler span.end { right: 0; left: auto !important; transform: none; }
+/* The game timeline, drawn like the editor's: a label column, flat lanes
+   split by thin rules, one playhead down every lane. */
+.mvt { display: flex; flex-shrink: 0; background: var(--st-panel); border-top: 1px solid var(--st-line); }
+.mvt-labels { flex: 0 0 132px; display: flex; flex-direction: column; border-right: 1px solid var(--st-line); }
+.mvt-ruler-spacer, .mvt-ruler { height: 26px; border-bottom: 1px solid var(--st-line); flex-shrink: 0; }
+.mvt-label { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid #1a1a1d; color: var(--st-text); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.mvt-rounds-row { height: 22px; }
+.mvt-clips-row { height: 30px; }
+.mvt-video-row { height: 56px; }
+.mvt-audio-row { height: 40px; }
+.mvt-kills-row { height: 28px; border-bottom: 0; }
 
-.st-mv-cards { display: flex; gap: 8px; padding: 8px 16px 12px; overflow-x: auto; flex-shrink: 0; background: var(--st-panel); scrollbar-width: thin; }
-.st-mv-cards > button { position: relative; flex: 0 0 176px; display: flex; flex-direction: column; gap: 6px; padding: 0 0 8px; border: 1px solid #26262b; border-radius: 6px; overflow: hidden; background: #131315; color: var(--st-text); font: inherit; text-align: left; cursor: pointer; transition: border-color 120ms ease; }
-.st-mv-cards > button:hover { border-color: #3a3a41; }
-.st-mv-cards > button.active { border-color: var(--st-accent); box-shadow: 0 0 0 1px var(--st-accent); }
-.st-mv-cards img, .st-mv-blank { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #18181b; display: grid; place-items: center; color: var(--st-muted); }
-.st-mv-card-text { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; min-width: 0; }
-.st-mv-card-text strong { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-mv-card-text small { font-size: 11px; color: var(--st-muted); }
-.st-mv-kills { position: absolute; top: 6px; right: 6px; padding: 1px 6px; border-radius: 3px; background: rgba(11, 11, 12, 0.8); color: #8deadc; font-size: 11px; font-variant-numeric: tabular-nums; }
+.mvt-lanes { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; cursor: pointer; touch-action: none; user-select: none; overflow: hidden; }
+.mvt-lanes:focus-visible { outline: 2px solid var(--st-accent); outline-offset: -2px; }
+.mvt-lane { position: relative; flex-shrink: 0; border-bottom: 1px solid #1a1a1d; background: #131315; }
+.mvt-lane.mvt-video-row { background: #000; }
+.mvt-lane.mvt-kills-row { background: #101012; border-bottom: 0; }
+
+.mvt-ruler { position: relative; }
+.mvt-tick { position: absolute; bottom: 0; width: 1px; height: 12px; background: #4a4a52; }
+.mvt-tick small { position: absolute; top: -10px; left: 4px; font-size: 11px; color: var(--st-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mvt-end { position: absolute; right: 6px; top: 6px; font-size: 11px; color: var(--st-muted); font-variant-numeric: tabular-nums; }
+
+.mvt-round { position: absolute; top: 3px; bottom: 3px; display: flex; align-items: center; padding: 0 5px; border-left: 2px solid #3a3a41; font-size: 10.5px; color: var(--st-muted); white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.mvt-round.won { border-left-color: var(--st-accent); color: #8deadc; background: rgba(63, 210, 190, 0.06); }
+.mvt-round.lost { border-left-color: #c8923a; color: #f0be6a; background: rgba(240, 190, 106, 0.05); }
+
+/* Clips: named blocks; a click opens the clip in the editor. */
+.mvt-clip { position: absolute; top: 4px; bottom: 4px; min-width: 6px; display: flex; align-items: center; gap: 5px; padding: 0 6px; overflow: hidden; border: 1px solid #23463f; border-radius: 3px; background: #1c2f2c; color: #9fe9dd; font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
+.mvt-clip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mvt-clip > svg { flex-shrink: 0; }
+.mvt-clip:hover { background: #25403b; border-color: var(--st-accent); }
+.mvt-clip.active { background: var(--st-accent); border-color: var(--st-accent); color: #06221f; }
+
+/* Footage (the full recording, or each clip): filmstrip and waveform. */
+.mvt-footage { position: absolute; top: 0; bottom: 0; display: flex; overflow: hidden; background: #0b0b0c; box-shadow: inset 0 0 0 1px #1e1e22; }
+.mvt-frame { flex-shrink: 0; height: 100%; background-repeat: no-repeat; }
+.mvt-audio-row .mvt-footage img { width: 100%; height: 100%; object-fit: fill; display: block; pointer-events: none; }
+
+.mvt-kill { position: absolute; top: 6px; height: 16px; padding: 0 5px; translate: -50% 0; border: 0; border-radius: 3px; background: var(--st-accent); color: #06221f; font: inherit; font-size: 11px; font-weight: 500; line-height: 16px; white-space: nowrap; cursor: pointer; z-index: 2; font-variant-numeric: tabular-nums; }
+.mvt-kill:hover { background: #7fe6d7; }
+
+.mvt-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #ececee; box-shadow: 0 0 4px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 3; }
+.mvt-playhead > span { position: absolute; top: 0; left: 50%; width: 13px; height: 14px; translate: -50% 0; background: #ececee; clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%); border-radius: 2px; }
 @media (max-width: 1100px) {
   .st-mv-stats { gap: 16px; }
   .st-mv-stats div:last-child { display: none; }
-}
-@media (max-height: 760px) {
-  .st-mv-cards > button { flex-basis: 140px; }
 }
