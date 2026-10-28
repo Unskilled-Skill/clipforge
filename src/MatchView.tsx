@@ -6,7 +6,7 @@
 // switch to the other matches that day.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Pause, Play, Scissors, SkipBack, SkipForward, Star } from "@phosphor-icons/react";
+import { ArrowLeft, CaretLeft, CaretRight, Crosshair, FilmStrip, Pause, Play, Scissors, SkipBack, SkipForward, Star } from "@phosphor-icons/react";
 import { convertFileSrc, invoke } from "./tauri-shim";
 import type { ClipInfo } from "./types";
 
@@ -65,6 +65,8 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
   const [markers, setMarkers] = useState<Record<string, number[]>>({});
   const video = useRef<HTMLVideoElement>(null);
   const track = useRef<HTMLDivElement>(null);
+  const side = useRef<HTMLElement>(null);
+  const sideKey = useRef("");
   const [laneW, setLaneW] = useState(0);
   // Filmstrip and waveform for each piece of footage, as the editor draws them.
   const [media, setMedia] = useState<Record<string, { reel?: string; frames?: number; wave?: string }>>({});
@@ -140,7 +142,10 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
   // across the clips that show it.
   const rounds = useMemo(() => {
     const byNumber = new Map<number, { number: number; start: number; end: number; result: "won" | "lost" | "draw" | null }>();
-    for (const c of clips) {
+    // A full recording knows every round; otherwise piece them together
+    // from the clips.
+    const sources = clips.some((c) => c.full && c.rounds?.length) ? clips.filter((c) => c.full) : clips;
+    for (const c of sources) {
       for (const r of c.rounds ?? []) {
         const start = c.start + r.start * 1000;
         const end = c.start + r.end * 1000;
@@ -200,6 +205,26 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
     if (target) choose(target.i, 0, !video.current?.paused);
   }
 
+  /** Round games (Valorant, CS2): jump to the start of a round, in the full
+   * recording or in the first clip that shows it. */
+  function goToRound(r: { start: number; end: number }) {
+    const play = !video.current?.paused;
+    if (full && r.start >= full.start && r.start <= full.end) return choose(clips.indexOf(full), (r.start - full.start) / 1000, play);
+    const covering = clips.findIndex((c) => c !== full && c.start <= r.start && c.end > r.start);
+    if (covering >= 0) return choose(covering, (r.start - clips[covering].start) / 1000, play);
+    const inside = clips.findIndex((c) => c !== full && c.start >= r.start && c.start < r.end);
+    if (inside >= 0) choose(inside, 0, play);
+  }
+
+  function stepRound(dir: 1 | -1) {
+    if (!rounds.length) return;
+    const at = source.start + (video.current?.currentTime ?? now) * 1000;
+    // The round the playhead is in, or the last one that started before it.
+    let here = -1;
+    rounds.forEach((r, i) => { if (r.start <= at) here = i; });
+    goToRound(rounds[Math.max(0, Math.min(rounds.length - 1, here + dir))]);
+  }
+
   function togglePlay() {
     const v = video.current;
     if (!v) return;
@@ -216,7 +241,8 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
       if (e.key === " " && target.closest("button, a, summary, video")) return;
       if (e.key === "Escape") { e.preventDefault(); onBack(); }
       else if (e.key === " ") { e.preventDefault(); togglePlay(); }
-      else if (e.key === "[" || e.key === "]") { e.preventDefault(); jump(e.key === "]" ? 1 : -1); }
+      // Round games step by round; one-game titles by clip.
+      else if (e.key === "[" || e.key === "]") { e.preventDefault(); if (rounds.length) stepRound(e.key === "]" ? 1 : -1); else jump(e.key === "]" ? 1 : -1); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -243,6 +269,13 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
     : picked;
   const active = clips[activeIdx] ?? current;
   const partCount = clips.filter((c) => c !== full).length;
+  const currentRound = rounds.find((r) => nowAt >= r.start && nowAt < r.end) ?? [...rounds].reverse().find((r) => r.start <= nowAt);
+  // Keep the playing round (or clip) in view in the sidebar as play moves on.
+  const sideNow = `${runIndex}:${rounds.length ? currentRound?.number : activeIdx}`;
+  if (sideKey.current !== sideNow) {
+    sideKey.current = sideNow;
+    requestAnimationFrame(() => side.current?.querySelector<HTMLElement>(".current")?.scrollIntoView({ block: "nearest" }));
+  }
   const px = (ms: number) => ((ms - span.start) / span.total) * laneW;
   // Clips that aren't the full recording: the blocks in the Clips lane.
   const parts = clips.map((c, i) => ({ c, i })).filter(({ c }) => c !== full);
@@ -258,6 +291,16 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
         <dl className="st-mv-stats">
           {run.result && <div className={`st-mv-result ${run.result}`}><dt>Result</dt><dd>{RESULT[run.result]}</dd></div>}
           <div><dt>Length</dt><dd>{span.total >= 3_600_000 ? `${(span.total / 3_600_000).toFixed(1)} h` : `${Math.max(1, Math.round(span.total / 60_000))} min`}</dd></div>
+          {rounds.length > 0 && (
+            <div>
+              <dt>Rounds</dt>
+              <dd>
+                {rounds.some((r) => r.result)
+                  ? `${rounds.filter((r) => r.result === "won").length}–${rounds.filter((r) => r.result === "lost").length}`
+                  : rounds.length}
+              </dd>
+            </div>
+          )}
           <div><dt>Clips</dt><dd>{partCount}{full ? " + full match" : ""}</dd></div>
           <div><dt>Kills</dt><dd>{kills.length}</dd></div>
           <div><dt>Played</dt><dd>{new Date(span.start).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, {clock(span.start)}</dd></div>
@@ -275,6 +318,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
         </nav>
       )}
 
+      <div className="st-mv-stage">
       <div className="st-mv-player">
         <video
           ref={video}
@@ -300,6 +344,50 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
         />
       </div>
 
+      {/* Round games list their rounds, like Valorant's own match timeline;
+          one-game titles list their clips. */}
+      <aside className="mv-side" ref={side} aria-label={rounds.length ? "Rounds" : "Clips"}>
+        {rounds.length > 0 ? (
+          <>
+            <div className="mv-side-head">
+              <span>Rounds</span>
+              <span className="mono">{rounds.length}</span>
+            </div>
+            {rounds.map((r) => {
+              const k = kills.filter((x) => x.at >= r.start && x.at < r.end).length;
+              const clipped = parts.some(({ c }) => c.start < r.end && c.end > r.start);
+              const isCurrent = currentRound?.number === r.number;
+              return (
+                <button key={r.number} type="button" className={`mv-round-row ${r.result ?? ""} ${isCurrent ? "current" : ""}`} aria-current={isCurrent ? "true" : undefined} onClick={() => goToRound(r)}>
+                  <span className="mono mv-round-num">{r.number}</span>
+                  <span className="mv-round-result">{r.result ? RESULT[r.result] : "—"}</span>
+                  <span className="mv-round-kills">{k > 0 && <><Crosshair size={11} weight="bold" />{k}</>}</span>
+                  <span className="mv-round-clip" title={clipped ? "Has a clip" : undefined}>{clipped && <FilmStrip size={12} />}</span>
+                </button>
+              );
+            })}
+          </>
+        ) : (
+          <>
+            <div className="mv-side-head">
+              <span>Clips</span>
+              <span className="mono">{parts.length}</span>
+            </div>
+            {clips.map((c, i) => ({ c, i })).sort((a, b) => Number(b.c === full) - Number(a.c === full)).map(({ c, i }) => (
+              <button key={c.clip.path} type="button" className={`mv-clip-row ${i === activeIdx ? "current" : ""}`} aria-current={i === activeIdx ? "true" : undefined} onClick={() => choose(i, 0, playing)}>
+                {c.thumb ? <img src={convertFileSrc(c.thumb)} alt="" draggable={false} /> : <span className="mv-clip-blank" />}
+                <span className="mv-clip-text">
+                  <strong>{c === full ? "Full match" : c.title}</strong>
+                  <small>{run.clockStart ? `${gameClock(c.start)} in game` : clock(c.start)} · {mmss((c.end - c.start) / 1000)}</small>
+                </span>
+                {(markers[c.clip.path]?.length ?? 0) > 0 && c !== full && <span className="mv-clip-kills mono">{markers[c.clip.path].length}K</span>}
+              </button>
+            ))}
+          </>
+        )}
+      </aside>
+      </div>
+
       {/* Same toolbar as the editor: clock, what's playing, transport, actions. */}
       <div className="tx-bar st-mv-bar">
         <span className="tx-clock mono">{run.clockStart ? gameClock(nowAt) : mmss((nowAt - span.start) / 1000)}</span>
@@ -315,6 +403,13 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
           </button>
           <button type="button" className="tx-btn" aria-label="Next clip" title="Next clip (])" disabled={!full && picked >= clips.length - 1} onClick={() => jump(1)}><SkipForward size={14} weight="fill" /></button>
         </div>
+        {rounds.length > 0 && (
+          <div className="mv-round-step" role="group" aria-label="Rounds">
+            <button type="button" className="tx-btn" aria-label="Previous round" title="Previous round ([)" onClick={() => stepRound(-1)}><CaretLeft size={13} weight="bold" /></button>
+            <span className="mono">{currentRound ? `Round ${currentRound.number}` : "Round –"}<small> of {rounds[rounds.length - 1].number}</small></span>
+            <button type="button" className="tx-btn" aria-label="Next round" title="Next round (])" onClick={() => stepRound(1)}><CaretRight size={13} weight="bold" /></button>
+          </div>
+        )}
         <button type="button" className="tx-toggle" aria-pressed={starred(active.clip.path)} onClick={() => onStar(active.clip)}>
           <Star size={13} weight={starred(active.clip.path) ? "fill" : "regular"} /> {starred(active.clip.path) ? "Starred" : "Star"}
         </button>
@@ -324,7 +419,6 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
       <div className="mvt" aria-label="Game timeline">
         <div className="mvt-labels">
           <div className="mvt-ruler-spacer" />
-          {rounds.length > 0 && <div className="mvt-label mvt-rounds-row"><span className="mt-id">R</span>Rounds</div>}
           <div className="mvt-label mvt-clips-row"><span className="mt-id">C</span>Clips</div>
           <div className="mvt-label mvt-video-row"><span className="mt-id">V1</span>{full ? "Full match" : "Video"}</div>
           <div className="mvt-label mvt-audio-row"><span className="mt-id">A1</span>Audio</div>
@@ -353,25 +447,38 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
           }}
         >
           <div className="mvt-ruler" aria-hidden="true">
-            {minuteMarks((span.start - zero) / 60_000, (span.end - zero) / 60_000)
-              .filter((m) => zero + m * 60_000 - span.start < span.total * 0.94)
-              .map((m) => (
-                <span key={m} className="mvt-tick" style={{ left: pct(zero + m * 60_000) }}>
-                  <small>{run.clockStart ? `${m}:00` : `${m}m`}</small>
-                </span>
-              ))}
-            <span className="mvt-end">{run.clockStart ? gameClock(span.end) : clock(span.end)}</span>
+            {rounds.length > 0
+              ? rounds.map((r, n) => {
+                  // Number every round that has room; with dozens of rounds,
+                  // every fifth (and the current one).
+                  const w = ((r.end - r.start) / span.total) * laneW;
+                  const show = w >= 20 || r.number % 5 === 0 || n === 0 || currentRound?.number === r.number;
+                  return (
+                    <span key={r.number} className={`mvt-rnum ${r.result ?? ""} ${currentRound?.number === r.number ? "current" : ""}`} style={{ left: pct(r.start), width: `${((r.end - r.start) / span.total) * 100}%` }}>
+                      {show && <small>{r.number}</small>}
+                    </span>
+                  );
+                })
+              : minuteMarks((span.start - zero) / 60_000, (span.end - zero) / 60_000)
+                  .filter((m) => zero + m * 60_000 - span.start < span.total * 0.94)
+                  .map((m) => (
+                    <span key={m} className="mvt-tick" style={{ left: pct(zero + m * 60_000) }}>
+                      <small>{run.clockStart ? `${m}:00` : `${m}m`}</small>
+                    </span>
+                  ))}
+            {rounds.length === 0 && <span className="mvt-end">{run.clockStart ? gameClock(span.end) : clock(span.end)}</span>}
           </div>
 
-          {rounds.length > 0 && (
-            <div className="mvt-lane mvt-rounds-row">
-              {rounds.map((r) => (
-                <span key={r.number} className={`mvt-round ${r.result ?? ""}`} style={{ left: pct(r.start), width: `${((r.end - r.start) / span.total) * 100}%` }} title={`Round ${r.number}${r.result ? ` · ${RESULT[r.result]}` : ""}`}>
-                  R{r.number}
-                </span>
-              ))}
-            </div>
-          )}
+          {/* Rounds as alternating sections behind all lanes (Riot's replay
+              viewer does the same); a click on a section is a seek. */}
+          {rounds.map((r, n) => (
+            <span
+              key={`col-${r.number}`}
+              className={`mvt-rcol ${n % 2 ? "odd" : ""} ${currentRound?.number === r.number ? "current" : ""}`}
+              style={{ left: pct(r.start), width: `${((r.end - r.start) / span.total) * 100}%` }}
+              aria-hidden="true"
+            />
+          ))}
 
           <div className="mvt-lane mvt-clips-row">
             {parts.map(({ c, i }) => (

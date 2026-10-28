@@ -1128,7 +1128,32 @@ input, textarea { caret-color: var(--st-accent); }
 .st-mv-tabs strong { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .st-mv-tabs small { font-size: 11px; color: var(--st-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.st-mv-player { flex: 1; min-height: 160px; display: flex; align-items: center; justify-content: center; padding: 12px; background: #070708; }
+.st-mv-stage { flex: 1; min-height: 160px; display: grid; grid-template-columns: minmax(0, 1fr) 260px; }
+.st-mv-player { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; background: #070708; }
+
+/* Sidebar: the match's rounds (round games) or clips (one-game titles). */
+.mv-side { min-height: 0; overflow-y: auto; border-left: 1px solid var(--st-line); background: var(--st-panel); scrollbar-width: thin; }
+.mv-side-head { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--st-line); background: var(--st-panel); font-size: 11.5px; color: var(--st-muted); }
+.mv-round-row { width: 100%; display: grid; grid-template-columns: 34px 1fr 40px 18px; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 10px; border: 0; border-left: 3px solid #3a3a41; border-bottom: 1px solid #1a1a1d; background: transparent; color: var(--st-text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.mv-round-row:hover { background: #151518; }
+.mv-round-row.won { border-left-color: var(--st-accent); }
+.mv-round-row.lost { border-left-color: #c8923a; }
+.mv-round-row.current { background: #1c2f2c; }
+.mv-round-num { color: var(--st-muted); }
+.mv-round-row.current .mv-round-num { color: var(--st-text); }
+.mv-round-result { font-size: 11.5px; }
+.mv-round-row.won .mv-round-result { color: #8deadc; }
+.mv-round-row.lost .mv-round-result { color: #f0be6a; }
+.mv-round-kills { display: flex; align-items: center; gap: 3px; color: #8deadc; font-variant-numeric: tabular-nums; }
+.mv-round-clip { color: var(--st-muted); display: grid; place-items: center; }
+.mv-clip-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 0; border-bottom: 1px solid #1a1a1d; background: transparent; color: var(--st-text); font: inherit; text-align: left; cursor: pointer; }
+.mv-clip-row:hover { background: #151518; }
+.mv-clip-row.current { background: #1c2f2c; box-shadow: inset 3px 0 0 var(--st-accent); }
+.mv-clip-row img, .mv-clip-blank { flex: 0 0 64px; width: 64px; height: 36px; border-radius: 3px; object-fit: cover; background: #18181b; }
+.mv-clip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mv-clip-text strong { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mv-clip-text small { font-size: 11px; color: var(--st-muted); }
+.mv-clip-kills { flex-shrink: 0; padding: 1px 6px; border-radius: 3px; background: #1c3b37; color: #8deadc; font-size: 11px; }
 .st-mv-player video { width: 100%; height: 100%; object-fit: contain; background: #000; cursor: pointer; }
 
 .st-mv-bar { background: var(--st-panel); border-top: 1px solid var(--st-line); }
@@ -1136,6 +1161,11 @@ input, textarea { caret-color: var(--st-accent); }
 .st-mv-bar .tx-toggle { display: inline-flex; align-items: center; gap: 6px; }
 .st-mv-now { min-width: 0; padding-left: 12px; border-left: 1px solid #26262b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-mv-now strong { color: var(--st-text); font-weight: 500; }
+/* Round games: step through rounds from the toolbar. */
+.mv-round-step { display: flex; align-items: center; gap: 2px; padding: 0 6px; border-left: 1px solid #26262b; border-right: 1px solid #26262b; }
+.mv-round-step > span { min-width: 92px; text-align: center; color: var(--st-text); font-size: 12px; }
+.mv-round-step small { font-size: inherit; color: var(--st-muted); }
+.mv-round-step .tx-btn { width: 26px; }
 
 /* The game timeline, drawn like the editor's: a label column, flat lanes
    split by thin rules, one playhead down every lane. */
@@ -1143,7 +1173,6 @@ input, textarea { caret-color: var(--st-accent); }
 .mvt-labels { flex: 0 0 132px; display: flex; flex-direction: column; border-right: 1px solid var(--st-line); }
 .mvt-ruler-spacer, .mvt-ruler { height: 26px; border-bottom: 1px solid var(--st-line); flex-shrink: 0; }
 .mvt-label { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid #1a1a1d; color: var(--st-text); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
-.mvt-rounds-row { height: 22px; }
 .mvt-clips-row { height: 30px; }
 .mvt-video-row { height: 56px; }
 .mvt-audio-row { height: 40px; }
@@ -1156,16 +1185,23 @@ input, textarea { caret-color: var(--st-accent); }
 .mvt-lane.mvt-kills-row { background: #101012; border-bottom: 0; }
 
 .mvt-ruler { position: relative; }
+/* Round games: rounds numbered along the ruler, a won/lost bar under each. */
+.mvt-rnum { position: absolute; top: 0; bottom: 0; border-left: 1px solid #26262b; box-shadow: inset 0 -2px 0 #3a3a41; }
+.mvt-rnum.won { box-shadow: inset 0 -2px 0 var(--st-accent); }
+.mvt-rnum.lost { box-shadow: inset 0 -2px 0 #c8923a; }
+.mvt-rnum small { position: absolute; top: 5px; left: 4px; font-size: 10.5px; color: var(--st-muted); font-variant-numeric: tabular-nums; }
+.mvt-rnum.current small { color: var(--st-text); font-weight: 600; }
+/* ...and as alternating sections behind every lane. */
+.mvt-rcol { position: absolute; top: 26px; bottom: 0; z-index: 1; pointer-events: none; border-left: 1px solid rgba(255, 255, 255, 0.04); }
+.mvt-rcol.odd { background: rgba(255, 255, 255, 0.025); }
+.mvt-rcol.current { background: rgba(63, 210, 190, 0.06); }
 .mvt-tick { position: absolute; bottom: 0; width: 1px; height: 12px; background: #4a4a52; }
 .mvt-tick small { position: absolute; top: -10px; left: 4px; font-size: 11px; color: var(--st-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .mvt-end { position: absolute; right: 6px; top: 6px; font-size: 11px; color: var(--st-muted); font-variant-numeric: tabular-nums; }
 
-.mvt-round { position: absolute; top: 3px; bottom: 3px; display: flex; align-items: center; padding: 0 5px; border-left: 2px solid #3a3a41; font-size: 10.5px; color: var(--st-muted); white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
-.mvt-round.won { border-left-color: var(--st-accent); color: #8deadc; background: rgba(63, 210, 190, 0.06); }
-.mvt-round.lost { border-left-color: #c8923a; color: #f0be6a; background: rgba(240, 190, 106, 0.05); }
 
 /* Clips: named blocks; a click opens the clip in the editor. */
-.mvt-clip { position: absolute; top: 4px; bottom: 4px; min-width: 6px; display: flex; align-items: center; gap: 5px; padding: 0 6px; overflow: hidden; border: 1px solid #23463f; border-radius: 3px; background: #1c2f2c; color: #9fe9dd; font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
+.mvt-clip { z-index: 2; position: absolute; top: 4px; bottom: 4px; min-width: 6px; display: flex; align-items: center; gap: 5px; padding: 0 6px; overflow: hidden; border: 1px solid #23463f; border-radius: 3px; background: #1c2f2c; color: #9fe9dd; font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
 .mvt-clip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mvt-clip > svg { flex-shrink: 0; }
 .mvt-clip:hover { background: #25403b; border-color: var(--st-accent); }
