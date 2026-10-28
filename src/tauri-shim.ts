@@ -84,6 +84,14 @@ const mockThumbs = Object.fromEntries(
 
 // Sample context for visual verification only; native builds read persisted sources.
 function mockRecordingMetadata(input: string): RecordingMetadata | null {
+  // The sample run: one match, each clip in its own round.
+  const run = input.match(/mock-run-(\d+)/);
+  if (run) {
+    const j = Number(run[1]);
+    const info: MatchInfo = { id: "demo-run", game: "bf6.exe", source: "demo", map: "Siege of Cairo", mode: "Conquest", score: { won: 3, lost: 2 }, result: "won", round_results: { "3": "won", "4": "lost", "5": "won", "6": "won", "7": "lost" } };
+    const number = 7 - j;
+    return { version: 1, is_session: false, matches: [{ start: 0, end: 30, info }], rounds: [{ match_id: info.id, number, start: 0, end: 30, result: info.round_results[String(number)] as "won" | "lost" }] };
+  }
   const i=Number(input.match(/mock-(\d+)/)?.[1]??-1);
   // Match data comes from CS2's Game State Integration: the CS2 clips
   // (every fifth from 3) and the CS2 full session (13).

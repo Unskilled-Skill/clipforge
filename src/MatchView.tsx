@@ -1,10 +1,9 @@
-// One match (or one stretch of play in a game) as a single timeline: its
-// clips side by side in play order with their kills marked, a player that
-// runs straight through them, and tabs for the other matches that day.
-// The gaps between clips are squeezed to a thin divider, so a 30-minute
-// match with ten short clips still reads at a glance.
+// One game at a glance: an overview of the match, a player that runs
+// straight through its clips, and one continuous timeline of the whole
+// game on real time, with the clips as blocks where they happened and each
+// kill marked at its moment. Tabs switch to the other matches that day.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Crosshair, FilmStrip, Pause, Play, Scissors, SkipBack, SkipForward, Star } from "@phosphor-icons/react";
 import { convertFileSrc, invoke } from "./tauri-shim";
 import type { ClipInfo } from "./types";
@@ -16,26 +15,36 @@ export type MatchClip = {
   start: number;
   end: number;
   thumb: string | null;
+  /** Rounds this clip covers, as the game reported them (seconds into the clip). */
+  rounds?: { number: number; start: number; end: number; result: "won" | "lost" | "draw" | null }[];
 };
 
 export type MatchRun = {
   key: string;
   label: string;
   meta: string;
+  result?: "won" | "lost" | "draw";
   clips: MatchClip[];
 };
 
-/** Width (px) of the divider standing in for the time between two clips. */
-const GAP_PX = 18;
-
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-const gapText = (ms: number) => (ms < 60_000 ? "" : ms < 3_600_000 ? `+${Math.round(ms / 60_000)} min` : `+${(ms / 3_600_000).toFixed(1)} h`);
+const RESULT = { won: "Won", lost: "Lost", draw: "Draw" } as const;
 
-export function MatchView({ runs, initialRun, game, starred, onStar, onEdit, onBack }: {
+/** Minute marks for a game `total` ms long: about six to ten across. */
+function minuteMarks(total: number): number[] {
+  const minutes = total / 60_000;
+  const step = [1, 2, 5, 10, 15, 30, 60].find((s) => minutes / s <= 10) ?? 120;
+  const marks: number[] = [];
+  for (let m = 0; m <= minutes + 1e-6; m += step) marks.push(m);
+  return marks;
+}
+
+export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdit, onBack }: {
   runs: MatchRun[];
   initialRun: number;
   game: string;
+  icon?: ReactNode;
   starred: (path: string) => boolean;
   onStar: (clip: ClipInfo) => void;
   onEdit: (clip: ClipInfo) => void;
@@ -50,7 +59,7 @@ export function MatchView({ runs, initialRun, game, starred, onStar, onEdit, onB
   const [markers, setMarkers] = useState<Record<string, number[]>>({});
   const video = useRef<HTMLVideoElement>(null);
   const track = useRef<HTMLDivElement>(null);
-  const [trackWidth, setTrackWidth] = useState(0);
+  const cards = useRef<HTMLDivElement>(null);
   const pendingSeek = useRef<number | null>(null);
   const keepPlaying = useRef(false);
   const current = clips[Math.min(picked, clips.length - 1)];
@@ -73,29 +82,35 @@ export function MatchView({ runs, initialRun, game, starred, onStar, onEdit, onB
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.key]);
 
+  // Keep the playing clip's card in view.
   useEffect(() => {
-    const el = track.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setTrackWidth(el.clientWidth));
-    ro.observe(el);
-    setTrackWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, []);
+    cards.current?.querySelector<HTMLElement>(".active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [picked, runIndex]);
 
-  // Clip segments laid out end to end, sized by length, with a fixed
-  // divider for each gap in play.
-  const layout = useMemo(() => {
-    const lengths = clips.map((c) => Math.max(1, (c.end - c.start) / 1000));
-    const total = lengths.reduce((a, b) => a + b, 0);
-    const room = Math.max(1, trackWidth - GAP_PX * Math.max(0, clips.length - 1));
-    let x = 0;
-    return clips.map((c, i) => {
-      const width = (lengths[i] / total) * room;
-      const seg = { x, width, length: lengths[i], gap: i > 0 ? c.start - clips[i - 1].end : 0 };
-      x += width + GAP_PX;
-      return seg;
-    });
-  }, [clips, trackWidth]);
+  // The game on real time: from the first clip's start to the last one's end.
+  const span = useMemo(() => {
+    if (!clips.length) return { start: 0, end: 1, total: 1 };
+    const start = Math.min(...clips.map((c) => c.start));
+    const end = Math.max(...clips.map((c) => c.end));
+    return { start, end, total: Math.max(1000, end - start) };
+  }, [clips]);
+  const pct = (ms: number) => `${((ms - span.start) / span.total) * 100}%`;
+  const kills = clips.flatMap((c, i) => (markers[c.clip.path] ?? []).map((t) => ({ i, t, at: c.start + t * 1000 })));
+  // Rounds on the game's clock: each round's earliest start and latest end
+  // across the clips that show it.
+  const rounds = useMemo(() => {
+    const byNumber = new Map<number, { number: number; start: number; end: number; result: "won" | "lost" | "draw" | null }>();
+    for (const c of clips) {
+      for (const r of c.rounds ?? []) {
+        const start = c.start + r.start * 1000;
+        const end = c.start + r.end * 1000;
+        const seen = byNumber.get(r.number);
+        byNumber.set(r.number, seen ? { ...seen, start: Math.min(seen.start, start), end: Math.max(seen.end, end), result: seen.result ?? r.result } : { number: r.number, start, end, result: r.result });
+      }
+    }
+    return [...byNumber.values()].sort((a, b) => a.start - b.start);
+  }, [clips]);
+  const roundOf = (c: MatchClip) => c.rounds?.[0]?.number;
 
   function choose(index: number, at = 0, play = false) {
     if (!clips[index]) return;
@@ -110,16 +125,22 @@ export function MatchView({ runs, initialRun, game, starred, onStar, onEdit, onB
     setNow(at);
   }
 
-  function seekFromTrack(clientX: number) {
-    const el = track.current;
-    if (!el) return;
-    const x = clientX - el.getBoundingClientRect().left;
-    const i = layout.findIndex((s) => x < s.x + s.width + GAP_PX / 2);
-    const index = i < 0 ? layout.length - 1 : i;
-    const s = layout[index];
-    if (!s) return;
-    const at = Math.min(s.length, Math.max(0, ((x - s.x) / s.width) * s.length));
-    choose(index, at, !video.current?.paused);
+  /** A point on the game timeline: inside a clip plays from there; between
+   * clips, the next clip from its start. */
+  function seekToTime(ms: number) {
+    const inside = clips.findIndex((c) => ms >= c.start && ms <= c.end);
+    if (inside >= 0) return choose(inside, (ms - clips[inside].start) / 1000, !video.current?.paused);
+    const next = clips.findIndex((c) => c.start > ms);
+    choose(next < 0 ? clips.length - 1 : next, 0, !video.current?.paused);
+  }
+
+  function togglePlay() {
+    const v = video.current;
+    if (!v) return;
+    if (v.paused) {
+      keepPlaying.current = true;
+      void v.play().catch(() => {});
+    } else v.pause();
   }
 
   useEffect(() => {
@@ -135,111 +156,109 @@ export function MatchView({ runs, initialRun, game, starred, onStar, onEdit, onB
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  function togglePlay() {
-    const v = video.current;
-    if (!v) return;
-    if (v.paused) {
-      keepPlaying.current = true;
-      void v.play().catch(() => {});
-    } else v.pause();
-  }
-
   if (!run || !current) {
     return (
       <section className="st-session-view st-mv">
-        <header className="st-session-header"><button className="st-ghost" onClick={onBack}><ArrowLeft size={14} /> Library</button></header>
+        <header className="st-mv-head"><button className="st-ghost" onClick={onBack}><ArrowLeft size={14} /> Library</button></header>
         <p className="st-session-note st-mv-empty">These clips are no longer in the library.</p>
       </section>
     );
   }
 
-  const seg = layout[picked];
-  const playheadX = seg ? seg.x + (Math.min(now, seg.length) / seg.length) * seg.width : 0;
-  const totalKills = clips.reduce((a, c) => a + (markers[c.clip.path]?.length ?? 0), 0);
+  const nowAt = current.start + now * 1000;
+  const title = run.label.split(" · ").slice(1).join(" · ") || run.label;
 
   return (
     <section className="st-session-view st-mv" aria-label={`${game} match`}>
-      <header className="st-session-header">
+      <header className="st-mv-head">
         <button className="st-ghost" onClick={onBack}><ArrowLeft size={14} /> Library</button>
-        <div>
-          <h1>{run.label}</h1>
-          <span>{run.meta}</span>
+        <div className="st-mv-title">
+          {icon}
+          <h1>{game}<span>{title}</span></h1>
         </div>
-        <button className="st-ghost" onClick={() => onStar(current.clip)}>
-          <Star size={14} weight={starred(current.clip.path) ? "fill" : "regular"} /> {starred(current.clip.path) ? "Starred" : "Star clip"}
-        </button>
-        <button className="st-ghost" onClick={() => onEdit(current.clip)}><Scissors size={14} /> Edit clip</button>
+        <dl className="st-mv-stats">
+          {run.result && <div className={`st-mv-result ${run.result}`}><dt>Result</dt><dd>{RESULT[run.result]}</dd></div>}
+          <div><dt>Length</dt><dd>{span.total >= 3_600_000 ? `${(span.total / 3_600_000).toFixed(1)} h` : `${Math.max(1, Math.round(span.total / 60_000))} min`}</dd></div>
+          <div><dt>Clips</dt><dd>{clips.length}</dd></div>
+          <div><dt>Kills</dt><dd>{kills.length}</dd></div>
+          <div><dt>Played</dt><dd>{new Date(span.start).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, {clock(span.start)}</dd></div>
+        </dl>
       </header>
 
       {runs.length > 1 && (
         <nav className="st-mv-tabs" aria-label={`${game} matches`}>
           {runs.map((r, i) => (
             <button key={r.key} className={i === runIndex ? "active" : ""} aria-current={i === runIndex ? "true" : undefined} onClick={() => setRunIndex(i)}>
-              {r.clips[0]?.thumb ? <img src={convertFileSrc(r.clips[0].thumb)} alt="" draggable={false} /> : <span className="st-mv-tab-blank"><FilmStrip size={16} /></span>}
-              <span><strong>{r.label.split(" · ").slice(1).join(" · ") || r.label}</strong><small>{r.meta}</small></span>
+              <strong>{r.label.split(" · ").slice(1).join(" · ") || r.label}</strong>
+              <small>{r.meta}</small>
             </button>
           ))}
         </nav>
       )}
 
-      <div className="st-mv-main">
-        <div className="st-mv-stage">
-          <div className="st-mv-player">
-            <video
-              ref={video}
-              key={current.clip.path}
-              src={convertFileSrc(current.clip.path)}
-              preload="auto"
-              aria-label={`Playing ${current.title}`}
-              onClick={togglePlay}
-              onLoadedMetadata={(e) => {
-                if (pendingSeek.current !== null) {
-                  e.currentTarget.currentTime = pendingSeek.current;
-                  pendingSeek.current = null;
-                }
-                if (keepPlaying.current) void e.currentTarget.play().catch(() => {});
-              }}
-              onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)}
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
-              onEnded={() => {
-                // Straight on into the next clip of the match.
-                if (picked < clips.length - 1) choose(picked + 1, 0, true);
-              }}
-            />
-          </div>
-          <div className="st-mv-transport">
-            <span className="mono">{mmss(now)} / {mmss(seg?.length ?? 0)}</span>
-            <div>
-              <button className="tx-btn" aria-label="Previous clip" title="Previous clip ([)" disabled={picked <= 0} onClick={() => choose(picked - 1, 0, playing)}><SkipBack size={14} weight="fill" /></button>
-              <button className="tx-btn tx-play" aria-label={playing ? "Pause" : "Play"} title="Play / pause (Space)" onClick={togglePlay}>
-                {playing ? <Pause size={14} weight="fill" /> : <Play size={14} weight="fill" />}
-              </button>
-              <button className="tx-btn" aria-label="Next clip" title="Next clip (])" disabled={picked >= clips.length - 1} onClick={() => choose(picked + 1, 0, playing)}><SkipForward size={14} weight="fill" /></button>
-            </div>
-            <span className="st-mv-transport-meta">Clip {picked + 1} of {clips.length} · {clock(current.start)}</span>
-          </div>
-        </div>
+      <div className="st-mv-player">
+        <video
+          ref={video}
+          key={current.clip.path}
+          src={convertFileSrc(current.clip.path)}
+          preload="auto"
+          aria-label={`Playing ${current.title}`}
+          onClick={togglePlay}
+          onLoadedMetadata={(e) => {
+            if (pendingSeek.current !== null) {
+              e.currentTarget.currentTime = pendingSeek.current;
+              pendingSeek.current = null;
+            }
+            if (keepPlaying.current) void e.currentTarget.play().catch(() => {});
+          }}
+          onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => {
+            // Straight on into the next clip of the match.
+            if (picked < clips.length - 1) choose(picked + 1, 0, true);
+          }}
+        />
+      </div>
 
-        <aside className="st-mv-list" aria-label="Clips in this match">
-          <div className="st-mv-list-head">{clips.length} clips{totalKills ? ` · ${totalKills} kills` : ""}</div>
-          {clips.map((c, i) => (
-            <button key={c.clip.path} className={i === picked ? "active" : ""} aria-current={i === picked ? "true" : undefined} onClick={() => choose(i, 0, playing)}>
-              {c.thumb ? <img src={convertFileSrc(c.thumb)} alt="" draggable={false} /> : <span className="st-mv-tab-blank"><FilmStrip size={14} /></span>}
-              <span>
-                <strong>{c.title}</strong>
-                <small>{clock(c.start)} · {mmss((c.end - c.start) / 1000)}</small>
-              </span>
-              {(markers[c.clip.path]?.length ?? 0) > 0 && <span className="st-mv-kills">{markers[c.clip.path].length}K</span>}
-            </button>
-          ))}
-        </aside>
+      <div className="st-mv-bar">
+        <div className="st-mv-transport">
+          <button className="tx-btn" aria-label="Previous clip" title="Previous clip ([)" disabled={picked <= 0} onClick={() => choose(picked - 1, 0, playing)}><SkipBack size={14} weight="fill" /></button>
+          <button className="tx-btn tx-play" aria-label={playing ? "Pause" : "Play"} title="Play / pause (Space)" onClick={togglePlay}>
+            {playing ? <Pause size={14} weight="fill" /> : <Play size={14} weight="fill" />}
+          </button>
+          <button className="tx-btn" aria-label="Next clip" title="Next clip (])" disabled={picked >= clips.length - 1} onClick={() => choose(picked + 1, 0, playing)}><SkipForward size={14} weight="fill" /></button>
+        </div>
+        <span className="st-mv-now"><strong>{current.title}</strong> · clip {picked + 1} of {clips.length} · <span className="mono">{mmss(now)} / {mmss((current.end - current.start) / 1000)}</span></span>
+        <button className="st-ghost" onClick={() => onStar(current.clip)}>
+          <Star size={14} weight={starred(current.clip.path) ? "fill" : "regular"} /> {starred(current.clip.path) ? "Starred" : "Star"}
+        </button>
+        <button className="st-ghost" onClick={() => onEdit(current.clip)}><Scissors size={14} /> Edit clip</button>
       </div>
 
       <div className="st-mv-timeline">
-        <div className="st-mv-times" aria-hidden="true">
-          {layout.map((s, i) => (
-            <span key={clips[i].clip.path} style={{ left: s.x }}>{clock(clips[i].start)}</span>
+        {rounds.length > 0 && (
+          <div className="st-mv-round-lane" aria-label="Rounds">
+            {rounds.map((r) => (
+              <span key={r.number} className={`st-mv-round ${r.result ?? ""}`} style={{ left: pct(r.start) }} title={`Round ${r.number}${r.result ? ` · ${RESULT[r.result]}` : ""}`}>
+                R{r.number}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="st-mv-kill-lane" aria-label="Kills">
+          {kills.map((k) => (
+            <button
+              key={`${k.i}-${k.t}`}
+              type="button"
+              className="st-mv-kill"
+              style={{ left: pct(k.at) }}
+              aria-label={`Kill at ${clock(k.at)}. Jump there`}
+              title={`Kill · ${clock(k.at)}`}
+              onClick={() => choose(k.i, Math.max(0, k.t - 2), true)}
+            >
+              <Crosshair size={10} weight="bold" />
+            </button>
           ))}
         </div>
         <div
@@ -247,55 +266,55 @@ export function MatchView({ runs, initialRun, game, starred, onStar, onEdit, onB
           className="st-mv-track"
           role="slider"
           tabIndex={0}
-          aria-label="Match timeline"
+          aria-label="Game timeline"
           aria-valuemin={0}
-          aria-valuemax={clips.length}
-          aria-valuenow={picked + 1}
-          aria-valuetext={`Clip ${picked + 1} of ${clips.length}, ${mmss(now)}`}
+          aria-valuemax={Math.round(span.total / 1000)}
+          aria-valuenow={Math.round((nowAt - span.start) / 1000)}
+          aria-valuetext={`${mmss((nowAt - span.start) / 1000)} into the game, clip ${picked + 1} of ${clips.length}`}
           onPointerDown={(e) => {
-            if ((e.target as HTMLElement).closest("button")) return;
-            seekFromTrack(e.clientX);
+            const r = e.currentTarget.getBoundingClientRect();
+            seekToTime(span.start + ((e.clientX - r.left) / r.width) * span.total);
           }}
           onKeyDown={(e) => {
-            if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-              e.preventDefault();
-              e.stopPropagation();
-              choose(Math.max(0, Math.min(clips.length - 1, picked + (e.key === "ArrowRight" ? 1 : -1))), 0, playing);
-            }
+            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            e.preventDefault();
+            e.stopPropagation();
+            choose(Math.max(0, Math.min(clips.length - 1, picked + (e.key === "ArrowRight" ? 1 : -1))), 0, playing);
           }}
         >
-          {layout.map((s, i) => (
+          {clips.map((c, i) => (
             <div
-              key={clips[i].clip.path}
-              className={`st-mv-seg ${i === picked ? "active" : ""}`}
-              style={{ left: s.x, width: s.width, backgroundImage: clips[i].thumb ? `url("${convertFileSrc(clips[i].thumb!)}")` : undefined }}
-              title={`${clips[i].title} · ${clock(clips[i].start)}`}
-            >
-              {(markers[clips[i].clip.path] ?? []).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  className="st-mv-kill"
-                  style={{ left: `${(Math.min(t, s.length) / s.length) * 100}%` }}
-                  aria-label={`Kill at ${mmss(t)} in clip ${i + 1}. Jump there`}
-                  title={`Kill · ${clock(clips[i].start + t * 1000)}`}
-                  onClick={() => choose(i, Math.max(0, t - 2), true)}
-                >
-                  <Crosshair size={10} weight="bold" />
-                </button>
-              ))}
-            </div>
+              key={c.clip.path}
+              className={`st-mv-block ${i === picked ? "active" : ""}`}
+              style={{ left: pct(c.start), width: `${((c.end - c.start) / span.total) * 100}%` }}
+              title={`${c.title} · ${clock(c.start)}`}
+            />
           ))}
-          {layout.slice(1).map((s, i) => (
-            <span key={`gap-${i}`} className="st-mv-gap" style={{ left: s.x - GAP_PX, width: GAP_PX }} title={gapText(s.gap) ? `${gapText(s.gap)} between clips` : undefined}>
-              {gapText(s.gap) && <small>{gapText(s.gap)}</small>}
-            </span>
-          ))}
-          <div className="st-mv-playhead" style={{ transform: `translateX(${playheadX}px)` }} />
+          <div className="st-mv-playhead" style={{ left: pct(nowAt) }} />
+        </div>
+        <div className="st-mv-ruler" aria-hidden="true">
+          {/* Marks too close to the end would run into its clock time. */}
+          {minuteMarks(span.total)
+            .filter((m) => m === 0 || span.total - m * 60_000 > span.total * 0.08)
+            .map((m) => (
+              <span key={m} style={{ left: pct(span.start + m * 60_000) }}>{m}m</span>
+            ))}
+          <span className="end">{clock(span.end)}</span>
         </div>
       </div>
 
-      <footer className="st-session-footer"><span><kbd>Space</kbd> play</span><span><kbd>[ ]</kbd> previous/next clip</span><span>Plays straight through the match</span><span><kbd>Esc</kbd> back</span></footer>
+      <div className="st-mv-cards" ref={cards} aria-label="Clips in this match">
+        {clips.map((c, i) => (
+          <button key={c.clip.path} className={i === picked ? "active" : ""} aria-current={i === picked ? "true" : undefined} onClick={() => choose(i, 0, playing)}>
+            {c.thumb ? <img src={convertFileSrc(c.thumb)} alt="" draggable={false} /> : <span className="st-mv-blank"><FilmStrip size={16} /></span>}
+            <span className="st-mv-card-text">
+              <strong>{c.title}</strong>
+              <small>{roundOf(c) !== undefined ? `Round ${roundOf(c)} · ` : ""}{clock(c.start)} · {mmss((c.end - c.start) / 1000)}</small>
+            </span>
+            {(markers[c.clip.path]?.length ?? 0) > 0 && <span className="st-mv-kills">{markers[c.clip.path].length}K</span>}
+          </button>
+        ))}
+      </div>
     </section>
   );
 }

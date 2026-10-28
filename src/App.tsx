@@ -2076,11 +2076,20 @@ function App() {
       return { key: `s:${start}`, label: sessionLabel(start, now), recent: now - items[k].c.modified_ms < 7 * 86400000 };
     };
     const matchOf = (c: ClipInfo) => (recordingMetadata[c.path]?.matches.length === 1 ? recordingMetadata[c.path].matches[0].info : null);
+    // A match stays whole: all its clips go where its latest clip falls,
+    // even if the game ran past midnight or into a new week.
+    const latestOfMatch = new Map<string, number>();
+    items.forEach((it, k) => {
+      const id = matchOf(it.c)?.id;
+      const best = id ? latestOfMatch.get(id) : undefined;
+      if (id && (best === undefined || it.c.modified_ms > items[best].c.modified_ms)) latestOfMatch.set(id, k);
+    });
+    const matchBucket = new Map([...latestOfMatch].map(([id, k]) => [id, bucketOf(k)]));
     const groups: Group[] = [];
     let lastAt = 0;
     items.forEach((it, k) => {
-      const bucket = bucketOf(k);
       const match = matchOf(it.c);
+      const bucket = (match && matchBucket.get(match.id)) || bucketOf(k);
       const game = gameOf(it.c);
       let g: Group | undefined = groups[groups.length - 1];
       const prevMatch = g ? matchOf(g.items[0].c) : null;
@@ -2141,13 +2150,14 @@ function App() {
   const matchRuns = (() => {
     if (!matchView) return null;
     const opened = clipGroups.find((g) => g.runKey === matchView.runKey);
-    if (!opened) return { game: "", runs: [], initial: 0 };
+    if (!opened) return { game: "", gameKey: "", runs: [], initial: 0 };
     const runs = clipGroups
       .filter((g) => g.date === matchView.bucket && g.runGame === opened.runGame)
       .map((g) => ({
         key: g.runKey,
         label: g.runLabel,
         meta: g.runMeta,
+        result: (recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.result : undefined) as "won" | "lost" | "draw" | undefined,
         clips: [...g.items]
           .sort((a, b) => a.c.modified_ms - b.c.modified_ms)
           .map(({ c }) => ({
@@ -2156,9 +2166,10 @@ function App() {
             start: c.modified_ms - Math.max(1, thumbs[c.path]?.duration ?? 30) * 1000,
             end: c.modified_ms,
             thumb: thumbs[c.path]?.thumb ?? null,
+            rounds: recordingMetadata[c.path]?.rounds,
           })),
       }));
-    return { game: gameName(opened.runGame), runs, initial: Math.max(0, runs.findIndex((r) => r.key === matchView.runKey)) };
+    return { game: gameName(opened.runGame), gameKey: opened.runGame, runs, initial: Math.max(0, runs.findIndex((r) => r.key === matchView.runKey)) };
   })();
   const kbps = discordKbps(Math.max(0.1, trimEnd - trimStart), targetMb);
   const goodQuality = kbps >= 2000;
@@ -2714,6 +2725,7 @@ function App() {
               runs={matchRuns.runs}
               initialRun={matchRuns.initial}
               game={matchRuns.game}
+              icon={<GameMark game={matchRuns.gameKey} icons={gameIcons} />}
               starred={(path) => favorites.includes(path)}
               onStar={(clip) => void toggleFavorite(clip)}
               onEdit={(clip) => selectClip(clip)}
