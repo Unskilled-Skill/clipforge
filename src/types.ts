@@ -41,6 +41,8 @@ export interface Settings {
   hotkey_short: string;
   short_clip_seconds: number;
   max_storage_gb: number;
+  /** Full match recordings older than this go to the Recycle Bin (0 = keep). */
+  session_keep_days?: number;
   backup_dir: string;
   catbox_userhash: string;
   auto_clip: boolean;

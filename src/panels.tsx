@@ -1630,6 +1630,21 @@ export function SettingsPage(props: {
               0 turns it off.
             </span>
           </label>
+          <label className="set-col">
+            <span className="field-label">Keep full matches</span>
+            <select
+              className="audio-select wide"
+              value={settings.session_keep_days ?? 0}
+              onChange={(e) => saveSettings({ ...settings, session_keep_days: Number(e.target.value) })}
+            >
+              <option value={0}>Forever</option>
+              {[1, 3, 7, 14, 30].map((d) => <option key={d} value={d}>{d === 1 ? "1 day" : `${d} days`}</option>)}
+            </select>
+            <span className="field-hint">
+              Whole match recordings older than this go to the Recycle Bin. The highlight clips cut
+              from them stay, and so do favorites.
+            </span>
+          </label>
           <BackupSettings settings={settings} saveSettings={saveSettings} />
 
         </section>

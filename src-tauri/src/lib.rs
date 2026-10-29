@@ -365,6 +365,14 @@ pub fn run() {
                 let dir = clips::load_settings_inner(app.handle()).clips_dir;
                 tauri::async_runtime::spawn_blocking(move || session::recover(&dir));
             }
+            {
+                // Old full matches go even on days nothing new is saved.
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    let _ = clips::prune_old_sessions(&h);
+                });
+            }
             screenkills::run(app.handle().clone());
 
             // Silent self-update from GitHub Releases. Checks shortly after

@@ -193,6 +193,10 @@ pub struct Settings {
     /// 0 disables the cap.
     #[serde(default = "default_max_storage_gb")]
     pub max_storage_gb: f64,
+    /// Full match recordings older than this many days go to the Recycle
+    /// Bin; their highlight clips stay. 0 keeps them for good.
+    #[serde(default)]
+    pub session_keep_days: u32,
     /// Folder favorited clips are copied to after games (e.g. a Google
     /// Drive folder). Empty = backups off. See `backup.rs`.
     #[serde(default)]
@@ -356,6 +360,7 @@ impl Default for Settings {
             hotkey_short: default_hotkey_short(),
             short_clip_seconds: default_short_secs(),
             max_storage_gb: default_max_storage_gb(),
+            session_keep_days: 0,
             backup_dir: String::new(),
             catbox_userhash: String::new(),
             auto_clip: false,
@@ -711,10 +716,59 @@ pub fn enforce_storage_cap(app: &AppHandle) -> Result<u32, String> {
     enforce_storage_cap_preserving(app, None)
 }
 
+/// Full match recordings past `session_keep_days` (newest first in, oldest
+/// out). Favorites stay, and so does everything that isn't a recording.
+fn expired_sessions<'a>(
+    clips: &'a [ClipInfo],
+    now_ms: u64,
+    keep_days: u32,
+    favorites: &[String],
+    is_session: impl Fn(&ClipInfo) -> bool,
+) -> Vec<&'a ClipInfo> {
+    if keep_days == 0 {
+        return Vec::new();
+    }
+    let cutoff = now_ms.saturating_sub(u64::from(keep_days) * 86_400_000);
+    clips
+        .iter()
+        .filter(|c| c.modified_ms < cutoff && !favorites.contains(&c.path) && is_session(c))
+        .collect()
+}
+
+/// Recycle full match recordings older than Settings › Storage › Keep full
+/// matches. Highlights were cut from them as their own files, so those stay.
+pub fn prune_old_sessions(app: &AppHandle) -> Result<u32, String> {
+    let settings = load_settings_inner(app);
+    if settings.session_keep_days == 0 {
+        return Ok(0);
+    }
+    let favorites = cleanup_favorites(load_favorites(app.clone()))?;
+    let clips = list_clips(settings.clips_dir)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let is_session = |c: &ClipInfo| {
+        c.name.to_ascii_lowercase().contains(" session ")
+            || crate::matchdata::read(&c.path).is_some_and(|d| d.is_session)
+    };
+    let mut removed = 0;
+    for clip in expired_sessions(&clips, now_ms, settings.session_keep_days, &favorites, is_session) {
+        if trash::delete(&clip.path).is_ok() {
+            remove_clip_leftovers(app, &clip.path);
+            crate::logs::line(&format!("storage: recycled old full match {}", clip.name));
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 pub fn enforce_storage_cap_preserving(app: &AppHandle, keep: Option<&std::path::Path>) -> Result<u32, String> {
+    // Old full matches go first: they are the bulk, and their highlights stay.
+    let pruned = prune_old_sessions(app)?;
     let settings = load_settings_inner(app);
     if settings.max_storage_gb <= 0.0 {
-        return Ok(0);
+        return Ok(pruned);
     }
     let cap_bytes = (settings.max_storage_gb * 1024.0 * 1024.0 * 1024.0) as u64;
     let favorites = cleanup_favorites(load_favorites(app.clone()))?;
@@ -722,10 +776,10 @@ pub fn enforce_storage_cap_preserving(app: &AppHandle, keep: Option<&std::path::
     let clips = list_clips(settings.clips_dir)?;
     let mut total: u64 = clips.iter().map(|c| c.size_bytes).sum();
     if total <= cap_bytes {
-        return Ok(0);
+        return Ok(pruned);
     }
 
-    let mut removed = 0;
+    let mut removed = pruned;
     // list_clips is newest-first; walk from the oldest end.
     for clip in clips.iter().rev() {
         if total <= cap_bytes {
@@ -768,6 +822,25 @@ mod storage_tests {
         std::fs::remove_file(&path).unwrap();
         assert!(cleanup_favorites(read_favorites(&path)).unwrap().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_old_full_matches_expire_and_favorites_stay() {
+        let day = 86_400_000;
+        let now = 100 * day;
+        let clip = |name: &str, age_days: u64| ClipInfo { path: name.into(), name: name.into(), modified_ms: now - age_days * day, size_bytes: 1 };
+        let clips = [
+            clip("lol Session 2026-10-01 20-00-00.mp4", 10),
+            clip("lol Session 2026-10-08 20-00-00.mp4", 3),
+            clip("lol 2026-10-01 20-05-00.mp4", 10),
+            clip("Valorant Session 2026-09-01 20-00-00.mp4", 40),
+        ];
+        let session = |c: &ClipInfo| c.name.contains(" Session ");
+        let favorites = ["Valorant Session 2026-09-01 20-00-00.mp4".to_string()];
+        let gone: Vec<_> = expired_sessions(&clips, now, 7, &favorites, session).iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(gone, ["lol Session 2026-10-01 20-00-00.mp4"]);
+        // 0 = keep forever.
+        assert!(expired_sessions(&clips, now, 0, &[], session).is_empty());
     }
 
     #[test]
