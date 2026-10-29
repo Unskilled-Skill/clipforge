@@ -400,7 +400,13 @@ pub async fn run(app: AppHandle) {
             .unwrap_or_default();
         // Every 6 s: the live API is served by the game itself, and the
         // stats and clock it gives don't need more.
-        if tick % 3 == 0 && game.to_ascii_lowercase().contains("league of legends") {
+        let in_league = game.to_ascii_lowercase().contains("league of legends");
+        if !in_league {
+            // Only leaving the game forgets its clock. (Resetting it on the
+            // ticks between polls made every poll re-derive the start, and
+            // its jitter split one game into several match ids.)
+            live_clock = None;
+        } else if tick % 3 == 0 {
             if let Ok(response) = client
                 .get("https://127.0.0.1:2999/liveclientdata/allgamedata")
                 .send()
@@ -424,8 +430,6 @@ pub async fn run(app: AppHandle) {
                     }
                 }
             }
-        } else {
-            live_clock = None;
         }
         if tick % 5 == 0 {
             let root = settings.clips_dir;
