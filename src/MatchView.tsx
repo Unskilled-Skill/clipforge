@@ -12,6 +12,8 @@ import { ChampionIcon } from "./champion-icon";
 import { matchesHighlightSearch } from "./clip-presentation";
 import { killEvents, playingHighlightIndex, alignGeneratedHighlights } from "./kill-overview";
 import { KillOverview } from "./KillOverview";
+import { TrackAudio } from "./TrackAudio";
+import { keepTrack, trackLabels, type TrackRole } from "./audio-tracks";
 import type { ClipInfo, PlayerStats } from "./types";
 
 export type MatchClip = {
@@ -76,6 +78,31 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
   // A full match recording, when there is one, is what plays.
   const full = clips.find((c) => c.full);
   const source = full ?? current;
+
+  // Audio tracks of what's playing (game, voice, mic...): pick which to hear.
+  // The choice is remembered by role, so it carries over to other matches.
+  const [roles, setRoles] = useState<TrackRole[]>([]);
+  const [heard, setHeard] = useState<TrackRole[]>(() => {
+    try { return JSON.parse(localStorage.getItem("clipforge.matchAudio") ?? "null") ?? ["mix"]; } catch { return ["mix"]; }
+  });
+  const [mixerReady, setMixerReady] = useState(false);
+  useEffect(() => {
+    setRoles([]); setMixerReady(false);
+    if (!source) return;
+    let cancelled = false;
+    invoke<TrackRole[]>("audio_track_roles", { input: source.clip.path })
+      .then((r) => { if (!cancelled) setRoles(r ?? []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [source?.clip.path]);
+  const keep = new Set(roles.map((r, i) => (heard.includes(r) ? i : -1)).filter((i) => i >= 0));
+  if (roles.length > 1 && keep.size === 0 && heard.length) keep.add(0); // none of the remembered roles here: the mix
+  function toggleTrack(i: number) {
+    const next = keep.has(i) ? new Set([...keep].filter((t) => t !== i)) : keepTrack(keep, i, roles);
+    const chosen = [...next].map((t) => roles[t]);
+    setHeard(chosen);
+    try { localStorage.setItem("clipforge.matchAudio", JSON.stringify(chosen)); } catch { /* per-session only */ }
+  }
 
   useEffect(() => {
     setPicked(0);
@@ -325,6 +352,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
             if (!full && picked < clips.length - 1) choose(picked + 1, 0, true);
           }}
         />
+        {roles.length > 1 && <TrackAudio key={source.clip.path} video={video} path={source.clip.path} tracks={roles.length} keep={keep} onReady={() => setMixerReady(true)} />}
       </div>
 
       {/* Beside the video: rounds for round games, otherwise the kill feed
@@ -403,6 +431,15 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
           </button>
           <button type="button" className="tx-btn" aria-label="Next clip" title="Next clip (])" disabled={!full && picked >= clips.length - 1} onClick={() => jump(1)}><SkipForward size={14} weight="fill" /></button>
         </div>
+        {roles.length > 1 && mixerReady && (
+          <div className="mv-tracks" role="group" aria-label="Audio tracks">
+            {trackLabels(roles).map(({ i, label, Icon }) => (
+              <button key={i} type="button" className="mv-track" aria-pressed={keep.has(i)} title={keep.has(i) ? `Mute ${label}` : `Hear ${label}`} onClick={() => toggleTrack(i)}>
+                <Icon size={13} weight={keep.has(i) ? "fill" : "regular"} /><span>{label}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {rounds.length > 0 && (
           <div className="mv-round-step" role="group" aria-label="Rounds">
             <button type="button" className="tx-btn" aria-label="Previous round" title="Previous round ([)" onClick={() => stepRound(-1)}><CaretLeft size={13} weight="bold" /></button>

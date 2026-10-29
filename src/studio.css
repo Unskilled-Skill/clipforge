@@ -1184,6 +1184,12 @@ input, textarea { caret-color: var(--st-accent); }
 .st-mv-now { min-width: 0; padding-left: 12px; border-left: 1px solid #26262b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-mv-now strong { color: var(--st-text); font-weight: 500; }
 /* Round games: step through rounds from the toolbar. */
+.mv-tracks { display: flex; align-items: center; gap: 2px; padding: 0 6px; border-left: 1px solid #26262b; }
+.mv-track { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--st-muted); font: inherit; font-size: 11.5px; cursor: pointer; }
+.mv-track:hover { background: #25252a; color: var(--st-text); }
+.mv-track[aria-pressed="true"] { color: var(--st-accent); background: #1c2f2c; border-color: #23463f; }
+.mv-track:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
+@media (max-width: 1400px) { .mv-track span { display: none; } }
 .mv-round-step { display: flex; align-items: center; gap: 2px; padding: 0 6px; border-left: 1px solid #26262b; border-right: 1px solid #26262b; }
 .mv-round-step > span { min-width: 92px; text-align: center; color: var(--st-text); font-size: 12px; }
 .mv-round-step small { font-size: inherit; color: var(--st-muted); }
