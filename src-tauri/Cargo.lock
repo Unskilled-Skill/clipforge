@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "clipforge"
-version = "0.1.51"
+version = "0.1.52"
 dependencies = [
  "futures-util",
  "libobs-bootstrapper",
