@@ -80,3 +80,14 @@ export function zoomWindow(min: number, max: number, start: number, end: number,
   const left = Math.max(min, Math.min(max - length, anchor - length / 2));
   return { start: left, end: left + length };
 }
+
+/** Clock ticks for the visible stretch: whole minutes (or finer, zoomed in)
+ * counted from `zero`, spaced at least `minGap` px apart. */
+export function clockTicks(start: number, end: number, zero: number, width: number, minGap = 64): number[] {
+  if (width <= 0 || end <= start) return [];
+  const steps = [10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].map(s => s * 1000);
+  const step = steps.find(s => s / (end - start) * width >= minGap) ?? steps[steps.length - 1];
+  const ticks: number[] = [];
+  for (let at = zero + Math.ceil((start - zero) / step) * step; at <= end; at += step) ticks.push(at);
+  return ticks;
+}

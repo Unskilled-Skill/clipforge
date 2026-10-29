@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { killEvents, clusterKills, adjacentKill, zoomWindow, playingHighlightIndex, alignGeneratedHighlights } from '../src/kill-overview.ts';
+import { killEvents, clusterKills, adjacentKill, zoomWindow, playingHighlightIndex, alignGeneratedHighlights, clockTicks } from '../src/kill-overview.ts';
 
 const full={clip:{path:'full'},start:100000,end:2500000,full:true};
 const first={clip:{path:'first'},start:150000,end:190000};
@@ -49,4 +49,13 @@ test('legacy generated highlight timestamps are aligned using their complete sou
  assert.equal(clips[1].start,450000,'original data is not changed');
  delete markers['D:/Clips/2.mp4'];
  assert.equal(alignGeneratedHighlights(clips,markers),clips,'incomplete data must not guess an alignment');
+});
+
+test('clock ticks land on whole minutes of the game clock and never crowd', () => {
+  // A 20 minute game whose clock started 45 s into the recording, 1000 px wide.
+  const ticks = clockTicks(0, 20 * 60_000, 45_000, 1000);
+  assert.deepEqual(ticks.slice(0, 2), [45_000, 165_000]);
+  assert.ok(ticks.every((t, i) => i === 0 || (t - ticks[i - 1]) / (20 * 60_000) * 1000 >= 64));
+  // Zoomed into 60 s: ticks every 10 s.
+  assert.equal(clockTicks(0, 60_000, 0, 1000)[1], 10_000);
 });

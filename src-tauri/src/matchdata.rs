@@ -24,6 +24,12 @@ pub struct PlayerStats {
     pub vision_score: Option<u32>,
     #[serde(default)]
     pub finalized: bool,
+    /// When the player died / assisted, in seconds on the game's clock
+    /// (League's live events). Places them on the match timeline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deaths_at: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assists_at: Vec<f64>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MatchInfo {

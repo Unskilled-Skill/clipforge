@@ -125,6 +125,11 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
   // game. Others count minutes from the first clip.
   const zero = run?.clockStart ?? span.start;
   const gameClock = (ms: number) => mmss(Math.max(0, (ms - zero) / 1000));
+  // Deaths and assists come on the game's clock; without one they can't be placed.
+  const moments = run?.clockStart == null ? [] : [
+    ...(run.playerStats?.deaths_at ?? []).map((t) => ({ at: zero + t * 1000, kind: "death" as const })),
+    ...(run.playerStats?.assists_at ?? []).map((t) => ({ at: zero + t * 1000, kind: "assist" as const })),
+  ].sort((a, b) => a.at - b.at);
 
   function choose(index: number, at = 0, play = false) {
     if (!clips[index]) return;
@@ -411,7 +416,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
       </div>
 
       <KillOverview key={`overview-${run.key}`} clips={clips} events={overviewKills} allCount={kills.length}
-        start={span.start} end={span.end} nowAt={nowAt} activeIndex={activeIdx} visibleIndices={visibleIndices} rounds={rounds}
+        start={span.start} end={span.end} zero={zero} moments={moments} nowAt={nowAt} activeIndex={activeIdx} visibleIndices={visibleIndices} rounds={rounds}
         onChoose={event => {
           const index = event.highlightIndex ?? event.i;
           const offset = (event.at - clips[index].start) / 1000 - 3;

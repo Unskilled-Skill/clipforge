@@ -110,8 +110,8 @@ function mockRecordingMetadata(input: string): RecordingMetadata | null {
     const clip = mockClips.find((c) => c.path === input);
     const info: MatchInfo = { id: `demo-lol-${m}`, game: "League of Legends.exe", source: "league-live", map: "Howling Abyss", mode: "Kiwi", score: null, result: m ? "won" : "lost", round_results: {},
       clock_start: clip && lol[2] === "session" ? Math.round((clip.modified_ms - 18 * 60_000) / 1000) : null,
-      player_stats: m ? { champion: "Kai'Sa", kills: 14, deaths: 6, assists: 21, cs: 48, gold: 17_210, champion_damage: 41_877, vision_score: 0, finalized: true }
-        : { champion: "Lissandra", kills: 6, deaths: 14, assists: 18, cs: 39, gold: 15_966, champion_damage: 30_186, vision_score: 0, finalized: true } };
+      player_stats: m ? { champion: "Kai'Sa", kills: 14, deaths: 6, assists: 21, cs: 48, gold: 17_210, champion_damage: 41_877, vision_score: 0, finalized: true, deaths_at: [95, 301, 488, 640, 851, 1002], assists_at: [140, 222, 415, 660, 905, 1012] }
+        : { champion: "Lissandra", kills: 6, deaths: 14, assists: 18, cs: 39, gold: 15_966, champion_damage: 30_186, vision_score: 0, finalized: true, deaths_at: [212, 420, 506, 615, 790, 830, 1001], assists_at: [180, 260, 418, 650, 700, 912, 1050] } };
     return { version: 1, is_session: lol[2] === "session", matches: [{ start: 0, end: 30, info }], rounds: [] };
   }
   const run = input.match(/mock-run-(\d+)/);

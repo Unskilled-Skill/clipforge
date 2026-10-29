@@ -117,6 +117,8 @@ export interface PlayerStats {
   champion?: string | null; kills?: number | null; deaths?: number | null; assists?: number | null;
   cs?: number | null; gold?: number | null; champion_damage?: number | null; vision_score?: number | null;
   finalized?: boolean;
+  /** Game-clock seconds of our deaths and assists (League). */
+  deaths_at?: number[]; assists_at?: number[];
 }
 export interface MatchInfo {
   id: string; game: string; source: string; map: string | null; mode: string | null;

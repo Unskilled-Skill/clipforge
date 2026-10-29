@@ -66,6 +66,7 @@ fn completed(game: &Value, puuid: &str) -> Option<CompletedMatch> {
                 champion_damage: number(stats, "totalDamageDealtToChampions"),
                 vision_score: number(stats, "visionScore"),
                 finalized: true,
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -102,7 +103,27 @@ fn live_stats(data: &Value) -> Option<PlayerStats> {
     }
     let player = players[0];
     let scores = &player["scores"];
+    // Events name players by their Riot ID's game name ("Name", not "Name#TAG").
+    let name = player["riotIdGameName"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| id.split('#').next().unwrap_or(id));
+    let mut deaths_at = Vec::new();
+    let mut assists_at = Vec::new();
+    for event in data["events"]["Events"].as_array().into_iter().flatten() {
+        let (Some("ChampionKill"), Some(at)) = (event["EventName"].as_str(), event["EventTime"].as_f64()) else { continue };
+        if !at.is_finite() || at < 0.0 {
+            continue;
+        }
+        if event["VictimName"].as_str() == Some(name) {
+            deaths_at.push(at);
+        } else if event["Assisters"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str() == Some(name))) {
+            assists_at.push(at);
+        }
+    }
     Some(PlayerStats {
+        deaths_at,
+        assists_at,
         champion: player["championName"].as_str().map(String::from),
         kills: number(scores, "kills"),
         deaths: number(scores, "deaths"),
@@ -245,6 +266,12 @@ fn save_link(
     let mut resolved = info.clone();
     if let Some(old) = previous.as_ref().and_then(|data| data.matches.first()) {
         resolved.clock_start = old.info.clock_start;
+        // Match history has the final numbers but not when things happened:
+        // keep the death and assist times seen live.
+        if let (Some(new), Some(live)) = (resolved.player_stats.as_mut(), old.info.player_stats.as_ref()) {
+            if new.deaths_at.is_empty() { new.deaths_at = live.deaths_at.clone(); }
+            if new.assists_at.is_empty() { new.assists_at = live.assists_at.clone(); }
+        }
     }
     let data = RecordingMetadata {
         version: 1,
@@ -506,6 +533,21 @@ mod tests {
         assert_eq!(stats.champion.as_deref(), Some("Lissandra"));
         assert!(!stats.finalized);
         assert!(live_stats(&json!({"allPlayers":[{"scores":{"kills":99}}]})).is_none());
+    }
+    #[test]
+    fn live_stats_place_our_deaths_and_assists_on_the_game_clock() {
+        let data = json!({"activePlayer":{"riotId":"Me#NA1"},"allPlayers":[
+            {"riotId":"Me#NA1","riotIdGameName":"Me","championName":"Lissandra","scores":{}}
+        ],"events":{"Events":[
+            {"EventName":"ChampionKill","EventTime":95.5,"KillerName":"Other","VictimName":"Me","Assisters":[]},
+            {"EventName":"ChampionKill","EventTime":140.0,"KillerName":"Ally","VictimName":"Foe","Assisters":["Me","Ally2"]},
+            {"EventName":"ChampionKill","EventTime":150.0,"KillerName":"Me","VictimName":"Foe","Assisters":[]},
+            {"EventName":"ChampionKill","EventTime":160.0,"KillerName":"Ally","VictimName":"Foe","Assisters":["Meow"]},
+            {"EventName":"DragonKill","EventTime":170.0,"KillerName":"Ally","Assisters":["Me"]}
+        ]}});
+        let stats = live_stats(&data).unwrap();
+        assert_eq!(stats.deaths_at, vec![95.5]);
+        assert_eq!(stats.assists_at, vec![140.0]);
     }
     #[test]
     fn repaired_sidecars_survive_restart_and_unchanged_data_is_not_rewritten() {

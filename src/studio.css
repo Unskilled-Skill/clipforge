@@ -1194,14 +1194,20 @@ input, textarea { caret-color: var(--st-accent); }
 .ko-label { display: flex; align-items: center; gap: 6px; color: var(--st-text); font-size: 12px; font-weight: 500; }
 .ko-label small { color: var(--st-muted); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
 .ko-kill-nav, .ko-zoom { display: flex; gap: 3px; }
-.ko-zoom { margin-left: auto; }
+.ko-zoom { margin-left: 8px; }
+.ko-hint { margin-left: auto; color: var(--st-muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ko-legend { display: flex; gap: 12px; font-size: 11px; color: var(--st-text-2); }
+.ko-legend > span { display: inline-flex; align-items: center; gap: 4px; }
+.ko-legend small { color: var(--st-muted); font-variant-numeric: tabular-nums; }
+.ko-legend .death svg { color: #f08a7a; }
+.ko-legend .assist svg { color: #9db8f0; }
 .ko button { display: inline-flex; justify-content: center; align-items: center; gap: 4px; min-height: 25px; padding: 3px 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--st-text-2); font: inherit; font-size: 11px; cursor: pointer; }
 .ko button:hover:not(:disabled) { background: #25252a; color: var(--st-text); }
 .ko button:disabled { opacity: 0.4; cursor: default; }
 .ko button:focus-visible, .ko input:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
-.ko-track { position: relative; height: 48px; margin-top: 4px; }
+.ko-track { position: relative; height: 62px; margin-top: 4px; }
 .ko .ko-pin { position: absolute; top: 0; z-index: 3; translate: -50% 0; height: 24px; min-width: 24px; padding: 3px 5px; border: 1px solid #44444c; background: #202025; color: #d7d7dd; }
-.ko .ko-pin::after { content: ""; position: absolute; top: 23px; width: 1px; height: 10px; background: #7f7f89; pointer-events: none; }
+.ko .ko-pin::after { content: ""; position: absolute; top: 23px; width: 1px; height: 24px; background: #7f7f89; pointer-events: none; }
 .ko .ko-pin.active { border-color: #3b8b80; background: #17312d; color: #a6ebdf; }
 .ko .ko-pin.active::after { background: var(--st-accent); }
 .ko .ko-pin:hover, .ko .ko-pin[aria-expanded="true"] { border-color: var(--st-text-2); }
@@ -1214,9 +1220,16 @@ input, textarea { caret-color: var(--st-accent); }
 .ko-ranges > span { position: absolute; height: 4px; background: #8e9a9d; opacity: 0.8; }
 .ko-ranges > span.active { background: var(--st-accent); opacity: 1; }
 .ko-round { position: absolute; top: 26px; bottom: 1px; border-left: 1px solid #5c5c66; pointer-events: none; }
+/* Deaths and assists: a lane of small marks between the kill pins and the bar. */
+.ko .ko-moment { position: absolute; top: 28px; z-index: 2; translate: -50% 0; width: 18px; min-height: 0; height: 18px; padding: 0; border-radius: 4px; background: #18181c; }
+.ko .ko-moment.death { color: #f08a7a; }
+.ko .ko-moment.assist { color: #9db8f0; }
+.ko .ko-moment:hover { background: #25252a; color: var(--st-text); }
+.ko-ticks { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; pointer-events: none; }
+.ko-ticks > span { position: absolute; bottom: 0; width: 1px; height: 5px; background: #4a4a52; }
 .ko-round small { position: absolute; left: 4px; top: -1px; font-size: 9px; color: var(--st-muted); }
-.ko-times { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--st-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
-.ko-times small { font-size: 10px; text-align: center; }
+.ko-times { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 12px; height: 13px; color: var(--st-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.ko-times small { position: absolute; translate: -50% 0; font-size: 10px; }
 .ko-preview, .ko-chooser { position: absolute; z-index: 20; bottom: calc(100% + 8px); translate: -50% 0; border: 1px solid #45454e; border-radius: 6px; background: #18181c; color: var(--st-text); box-shadow: 0 8px 24px #0009; }
 .ko-preview { width: 200px; overflow: hidden; pointer-events: none; }
 .ko-preview > img, .ko-preview-frame, .ko-preview-empty { display: flex; align-items: center; justify-content: center; width: 100%; height: 112px; object-fit: cover; background-color: #24242b; background-repeat: no-repeat; color: var(--st-muted); }

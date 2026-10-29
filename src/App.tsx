@@ -2192,7 +2192,8 @@ function App() {
         result: (recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.result : undefined) as "won" | "lost" | "draw" | undefined,
         playerStats: recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.player_stats : undefined,
         clockStart: (() => {
-          const s = recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.clock_start : null;
+          // Any file of the match may carry the clock (a clip saved live, the recording after repair).
+          const s = g.items.map(({ c }) => recordingMetadata[c.path]).find((m) => m?.matches.length === 1 && m.matches[0].info.clock_start)?.matches[0].info.clock_start;
           return s ? s * 1000 : undefined;
         })(),
         clips: (() => {
