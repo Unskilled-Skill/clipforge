@@ -7,6 +7,7 @@ mod highlights;
 mod session;
 mod valmatch;
 mod matchdata;
+mod league;
 mod backup;
 mod clips;
 mod elevation;
@@ -357,6 +358,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::run(handle));
             tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));
+            tauri::async_runtime::spawn(league::run(app.handle().clone()));
             gameicons::seed(app.handle().clone(), clips::load_settings_inner(app.handle()).game_exes);
             {
                 // Finish sessions a crash left half-done.

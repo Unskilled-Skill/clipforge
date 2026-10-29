@@ -14,6 +14,26 @@ const DAY_MS = 86_400_000;
 /** A pause in clipping longer than this starts a new play session. */
 export const SESSION_GAP_MS = 2 * 60 * 60 * 1000;
 
+/** Recorder-generated session and highlight names carry the same source stamp. */
+export function recordingSessionKey(name: string): string | null {
+  const match = name.match(/^(\S+) (?:(?:Session|ACE|[2-9]\d*K) )?(\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})(?: \(\d+\))?\.(?:mp4|mkv)$/i);
+  return match ? `${match[1].toLowerCase()}|${match[2]}` : null;
+}
+
+/** Reported identity keeps a match together independently of save order. */
+export function libraryRunKey(game: string, matchId: string | null, fallbackPath: string): string {
+  return matchId ? `match:${JSON.stringify([game, matchId])}` : `run:${fallbackPath}`;
+}
+
+/** Discovery order follows playback; the source recording is a secondary entry. */
+export function orderRunItems<T extends { c: { modified_ms: number } }>(items: T[], isRecording: (clip: T["c"]) => boolean): T[] {
+  return [...items].sort((a, b) => Number(isRecording(a.c)) - Number(isRecording(b.c)) || a.c.modified_ms - b.c.modified_ms);
+}
+
+export function runContentsLabel(recordings: number, highlights: number): string {
+  return [recordings ? `${recordings} recording${recordings === 1 ? "" : "s"}` : "", highlights ? `${highlights} highlight${highlights === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+}
+
 function startOfDay(ms: number): number {
   const d = new Date(ms);
   d.setHours(0, 0, 0, 0);

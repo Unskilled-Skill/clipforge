@@ -740,9 +740,8 @@ fn handle_event_invoke(app: &AppHandle, json: &serde_json::Value) {
 /// Poll League's local live-client API for ChampionKill events by us.
 /// The League game being played: (game clock 0:00 as Unix seconds, last
 /// game clock seen). A clock that runs backwards is a new game.
-static LOL_GAME: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
-fn lol_map(number: i64) -> Option<&'static str> {
+pub(crate) fn lol_map(number: i64) -> Option<&'static str> {
     match number {
         11 => Some("Summoner's Rift"),
         12 => Some("Howling Abyss"),
@@ -752,7 +751,7 @@ fn lol_map(number: i64) -> Option<&'static str> {
     }
 }
 
-fn lol_mode(mode: &str) -> String {
+pub(crate) fn lol_mode(mode: &str) -> String {
     match mode {
         "CLASSIC" => "Classic".into(),
         "ARAM" => "ARAM".into(),
@@ -780,8 +779,9 @@ fn lol_mode(mode: &str) -> String {
 /// mode, the game clock's start (which also names the game) and, once the
 /// game-end event arrives, the result. `game` is the previous (clock
 /// start, clock) for this game, if any; returns the new one.
-fn lol_update(stats: &serde_json::Value, events: &[serde_json::Value], now: f64, game: Option<(f64, f64)>) -> Option<(crate::matchdata::Update, (f64, f64))> {
+pub(crate) fn lol_update(stats: &serde_json::Value, events: &[serde_json::Value], now: f64, game: Option<(f64, f64)>) -> Option<(crate::matchdata::Update, (f64, f64))> {
     let clock = stats["gameTime"].as_f64()?;
+    if !clock.is_finite() || clock <= 0.0 { return None; }
     // Same game while its clock keeps going forward; keep the first start
     // so the id doesn't wobble with polling jitter.
     let start = match game {
@@ -792,7 +792,11 @@ fn lol_update(stats: &serde_json::Value, events: &[serde_json::Value], now: f64,
         .iter()
         .find(|e| e["EventName"] == "GameEnd")
         .and_then(|e| e["Result"].as_str())
-        .map(|r| if r.eq_ignore_ascii_case("win") { "won" } else { "lost" }.to_string());
+        .and_then(|r| {
+            if r.eq_ignore_ascii_case("win") { Some("won".to_string()) }
+            else if r.eq_ignore_ascii_case("lose") || r.eq_ignore_ascii_case("loss") { Some("lost".to_string()) }
+            else { None }
+        });
     let update = crate::matchdata::Update {
         external_id: Some(format!("lol-{}", start.round() as i64)),
         map: stats["mapNumber"].as_i64().and_then(lol_map).map(String::from),
@@ -806,7 +810,7 @@ fn lol_update(stats: &serde_json::Value, events: &[serde_json::Value], now: f64,
     Some((update, (start, clock)))
 }
 
-async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64, game_exe: &str) {
+async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64, _game_exe: &str) {
     let Ok(resp) = client
         .get("https://127.0.0.1:2999/liveclientdata/activeplayername")
         .send()
@@ -833,18 +837,6 @@ async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64, game_
     let Some(events) = data["Events"].as_array() else {
         return;
     };
-    // Bind this game's clips to the match: map, mode, clock, result.
-    if let Ok(stats) = client.get("https://127.0.0.1:2999/liveclientdata/gamestats").send().await {
-        if let Ok(stats) = stats.json::<serde_json::Value>().await {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            let previous = *LOL_GAME.lock().unwrap();
-            if let Some((update, game)) = lol_update(&stats, events, now, previous) {
-                *LOL_GAME.lock().unwrap() = Some(game);
-                crate::matchdata::ingest(app, game_exe, "lol-live-client", update);
-            }
-        }
-    }
-
     let last = LOL_LAST_EVENT.load(Ordering::Relaxed);
     let mut newest = last;
     let mut kill = false;
@@ -937,6 +929,9 @@ mod tests {
         assert_ne!(u3.external_id, u.external_id);
         assert_eq!((u3.map.as_deref(), u3.mode.as_deref()), (Some("Howling Abyss"), Some("ARAM")));
         assert!(lol_update(&json!({}), &[], 0.0, None).is_none());
+        assert!(lol_update(&json!({"gameTime":0.0}), &[], 100.0, None).is_none());
+        let unknown=[json!({"EventName":"GameEnd","Result":"Unknown"})];
+        assert!(lol_update(&stats,&unknown,10_000.0,None).unwrap().0.result.is_none());
     }
 
     /// The 2026-10-26 21:17 fight: a 2K clip saved, a third kill 9.75 s

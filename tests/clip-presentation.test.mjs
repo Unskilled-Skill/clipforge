@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gameName, momentTitle, killBadge, clipKillCount, matchesClipSearch } from '../src/clip-presentation.ts';
+import { gameName, momentTitle, killBadge, clipKillCount, matchesClipSearch, matchesHighlightSearch } from '../src/clip-presentation.ts';
+
+test('highlight filters combine search with actual multikill counts', () => {
+  const name = 'LoL 3K 2026-10-28 01-35-00.mp4';
+  assert.equal(matchesHighlightSearch(name, 'League of Legends · 3 kills', 0, '3 KILLS', true), true);
+  assert.equal(matchesHighlightSearch(name, 'League of Legends · 3 kills', 0, '01-35', true), true);
+  assert.equal(matchesHighlightSearch('custom.mp4', 'Nice play', 2, 'nice', true), true);
+  assert.equal(matchesHighlightSearch('custom.mp4', 'Nice play', 1, 'nice', true), false);
+  assert.equal(matchesHighlightSearch(name, '3 kills', 0, 'missing', false), false);
+  assert.equal(matchesHighlightSearch(name, '3 kills', 0, '1:35', false, '1:35 AM'), true);
+});
 
 test('game names use their familiar spelling', () => {
   assert.equal(gameName('Cs2'), 'Counter-Strike 2');

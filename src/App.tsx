@@ -6,6 +6,7 @@ import { useMediaQuery } from "./use-media-query";
 import { SetupCheck } from "./SetupCheck";
 import { StudioCommands, type StudioCommand } from "./StudioCommands";
 import { isSessionRecording, recentSessions, latestClipForExport } from "./studio-data";
+import { sessionPlaybackClips } from "./session-playback";
 import { matchLabel, recordingMatchLabel, roundLabel } from "./match-presentation";
 import { isDiscordApp } from "./app-blacklist";
 import { confirmDialog, convertFileSrc, getVersion, invoke, isTauri, listen, openDialog } from "./tauri-shim";
@@ -52,7 +53,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { AppPickerModal, Modal, OnboardingModal, SegRadios, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
-import { dateBucket, sessionIndices, sessionLabel } from "./library-groups";
+import { dateBucket, sessionIndices, sessionLabel, libraryRunKey, orderRunItems, runContentsLabel, recordingSessionKey } from "./library-groups";
 import { TimelineController } from "./timeline/controller";
 import { Filmstrip, KillMarkers, Ruler } from "./timeline/parts";
 import type {
@@ -1138,7 +1139,7 @@ function App() {
 
   function openClip(clip: ClipInfo) {
     setShowSettings(false);
-    if (isSession(clip.name) || recordingMetadata[clip.path]?.is_session) { setSelected(null); setSessionClip(clip); }
+    if (isSession(clip.name) || recordingMetadata[clip.path]?.is_session) { setSelected(null); setMatchView(null); setSessionClip(clip); }
     else selectClip(clip);
   }
 
@@ -1599,10 +1600,9 @@ function App() {
         // Rows in folded days aren't drawn: step over them, and find the
         // row by its clip rather than its position on screen.
         const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
-        const folded = (i: number) => foldedPaths.has(visibleClips[i].path);
-        let next = focusIdx === -1 ? 0 : focusIdx + delta;
-        while (next >= 0 && next < visibleClips.length && folded(next)) next += delta;
-        if (next < 0 || next >= visibleClips.length) next = focusIdx === -1 ? -1 : focusIdx;
+        const drawn = clipGroups.flatMap((g) => g.items).filter(({ c }) => !foldedPaths.has(c.path)).map(({ i }) => i);
+        const position = drawn.indexOf(focusIdx);
+        const next = drawn[position < 0 ? 0 : Math.max(0, Math.min(drawn.length - 1, position + delta))] ?? -1;
         if (next < 0) return;
         setFocusIdx(next);
         document.querySelector<HTMLElement>(`.st-table .st-row[data-clip-path="${CSS.escape(visibleClips[next].path)}"]`)?.focus();
@@ -2076,31 +2076,54 @@ function App() {
       return { key: `s:${start}`, label: sessionLabel(start, now), recent: now - items[k].c.modified_ms < 7 * 86400000 };
     };
     const matchOf = (c: ClipInfo) => (recordingMetadata[c.path]?.matches.length === 1 ? recordingMetadata[c.path].matches[0].info : null);
+    const sessionFamilies = new Set(clips.filter(c => isSession(c.name) || recordingMetadata[c.path]?.is_session).map(c => recordingSessionKey(c.name)).filter(Boolean));
+    const familyOf = (c: ClipInfo) => {
+      const key = recordingSessionKey(c.name);
+      return key && sessionFamilies.has(key) ? key : null;
+    };
+    const matchIdentity = (c: ClipInfo) => {
+      const match = matchOf(c);
+      return match ? libraryRunKey(gameOf(c), match.id, c.path) : familyOf(c);
+    };
+    const isRecording = (c: ClipInfo) => isSession(c.name) || !!recordingMetadata[c.path]?.is_session;
     // A match stays whole: all its clips go where its latest clip falls,
     // even if the game ran past midnight or into a new week.
     const latestOfMatch = new Map<string, number>();
     items.forEach((it, k) => {
-      const id = matchOf(it.c)?.id;
+      const id = matchIdentity(it.c);
       const best = id ? latestOfMatch.get(id) : undefined;
       if (id && (best === undefined || it.c.modified_ms > items[best].c.modified_ms)) latestOfMatch.set(id, k);
     });
     const matchBucket = new Map([...latestOfMatch].map(([id, k]) => [id, bucketOf(k)]));
     const groups: Group[] = [];
+    const knownMatches = new Map<string, Group>();
     let lastAt = 0;
     items.forEach((it, k) => {
       const match = matchOf(it.c);
-      const bucket = (match && matchBucket.get(match.id)) || bucketOf(k);
+      const identity = matchIdentity(it.c);
+      const bucket = (identity && matchBucket.get(identity)) || bucketOf(k);
       const game = gameOf(it.c);
+      const matchKey = identity ? `${bucket.key}:${identity}` : null;
+      const existing = matchKey ? knownMatches.get(matchKey) : undefined;
+      if (existing) {
+        existing.items.push(it);
+        // Do not join an unknown recording across an intervening known match.
+        lastAt = 0;
+        return;
+      }
       let g: Group | undefined = groups[groups.length - 1];
       const prevMatch = g ? matchOf(g.items[0].c) : null;
+      const family = familyOf(it.c);
+      const prevFamily = g ? familyOf(g.items[0].c) : null;
       const sameRun =
         !!g &&
         g.date === bucket.key &&
         g.runGame === game &&
-        (match || prevMatch ? match?.id === prevMatch?.id : Math.abs(lastAt - it.c.modified_ms) <= RUN_GAP_MS);
+        (match || prevMatch ? match?.id === prevMatch?.id : family || prevFamily ? family === prevFamily : Math.abs(lastAt - it.c.modified_ms) <= RUN_GAP_MS);
       if (!sameRun) {
         g = { key: `${bucket.key}:${groups.length}`, date: bucket.key, recent: bucket.recent, label: bucket.label, meta: "", dayItems: [], runKey: "", runRecent: false, runGame: game, runLabel: "", runMeta: "", items: [] };
         groups.push(g);
+        if (matchKey) knownMatches.set(matchKey, g);
       }
       g!.items.push(it);
       lastAt = it.c.modified_ms;
@@ -2108,11 +2131,11 @@ function App() {
     const summary = (list: Items) => {
       const names = [...new Set(list.map(({ c }) => gameName(gameOf(c))))];
       const gamesText = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
-      const n = list.length;
+      const recordings = list.filter(({ c }) => isRecording(c)).length;
       const size = formatSize(list.reduce((a, { c }) => a + c.size_bytes, 0));
       const matches = new Set(list.map(({ c }) => matchOf(c)?.id ?? "").filter(Boolean)).size;
       const matchesText = matches > 1 ? ` · ${matches} matches` : "";
-      return `${gamesText}${matchesText} · ${n} ${n === 1 ? "clip" : "clips"} · ${size}`;
+      return `${gamesText}${matchesText} · ${runContentsLabel(recordings, list.length - recordings)} · ${size}`;
     };
     const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
     for (const g of groups) {
@@ -2124,14 +2147,20 @@ function App() {
       // Days and sessions already say which day; coarser buckets don't.
       const day = g.date.startsWith("d:") || g.date.startsWith("s:") ? "" : `${new Date(first).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, `;
       const span = first === last ? clock(first) : `${clock(first)} – ${clock(last)}`;
-      g.runKey = `run:${oldest.path}`;
-      g.runRecent = now - last < 2 * 60 * 60 * 1000;
+      g.runKey = libraryRunKey(g.runGame, match?.id ?? familyOf(oldest), oldest.path);
+      // Match rows start compact, including recordings saved just now.
+      g.runRecent = false;
       g.runLabel = `${gameName(g.runGame)} · ${match ? matchLabel(match) : `${day}${span}`}`;
       const killsOf = (list: Items) => list.reduce((a, { c }) => a + clipKillCount(c.name, markerCounts[c.path] ?? 0), 0);
-      const full = g.items.filter(({ c }) => isSession(c.name) || recordingMetadata[c.path]?.is_session);
+      const full = g.items.filter(({ c }) => isRecording(c));
       const kills = full.length ? Math.max(killsOf(full), killsOf(g.items.filter((it) => !full.includes(it)))) : killsOf(g.items);
       const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
-      g.runMeta = `${g.items.length} clips${kills ? ` · ${kills} kills` : ""} · ${size}`;
+      g.runMeta = `${runContentsLabel(full.length, g.items.length - full.length)}${kills ? ` · ${kills} kills` : ""} · ${size}`;
+      const player = match?.player_stats;
+      if (player?.champion && player.kills != null && player.deaths != null && player.assists != null) {
+        g.runMeta = `${runContentsLabel(full.length, g.items.length - full.length)} · ${player.champion} · ${player.kills}/${player.deaths}/${player.assists} · ${size}`;
+      }
+      g.items = orderRunItems(g.items, isRecording);
     }
     for (const date of new Set(groups.map((g) => g.date))) {
       const bucket = groups.filter((g) => g.date === date);
@@ -2141,8 +2170,9 @@ function App() {
     }
     return groups;
   })();
-  // A match or stretch of play with several clips gets its own fold.
-  const runFolded = (g: (typeof clipGroups)[number]) => !!g.runKey && g.items.length > 1 && isFolded(g.runKey, g.runRecent);
+  // Opening a match watches it; individual source files are a secondary view.
+  const isMatchGroup = (g: (typeof clipGroups)[number]) => !!g.runKey && (g.items.length > 1 || g.items.some(({ c }) => isSession(c.name) || recordingMetadata[c.path]?.is_session || recordingMetadata[c.path]?.matches.length === 1));
+  const runFolded = (g: (typeof clipGroups)[number]) => isMatchGroup(g) && isFolded(`files:${g.runKey}`, false);
   // Clips in folded groups: not drawn, so keyboard focus steps over them.
   const foldedPaths = new Set(
     clipGroups
@@ -2160,11 +2190,15 @@ function App() {
         label: g.runLabel,
         meta: g.runMeta,
         result: (recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.result : undefined) as "won" | "lost" | "draw" | undefined,
+        playerStats: recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.player_stats : undefined,
         clockStart: (() => {
           const s = recordingMetadata[g.items[0].c.path]?.matches.length === 1 ? recordingMetadata[g.items[0].c.path].matches[0].info.clock_start : null;
           return s ? s * 1000 : undefined;
         })(),
-        clips: [...g.items]
+        clips: (() => {
+          const source = g.items.find(({ c }) => isSession(c.name) || recordingMetadata[c.path]?.is_session)?.c;
+          if (source) return sessionPlaybackClips(source, g.items.map(({ c }) => c), thumbs, recordingMetadata, markerCounts, thumbs[source.path]?.duration ?? 30, []);
+          return [...g.items]
           .sort((a, b) => a.c.modified_ms - b.c.modified_ms)
           .map(({ c }) => ({
             clip: c,
@@ -2174,7 +2208,8 @@ function App() {
             thumb: thumbs[c.path]?.thumb ?? null,
             rounds: recordingMetadata[c.path]?.rounds,
             full: isSession(c.name) || !!recordingMetadata[c.path]?.is_session,
-          })),
+          }));
+        })(),
       }));
     return { game: gameName(opened.runGame), gameKey: opened.runGame, runs, initial: Math.max(0, runs.findIndex((r) => r.key === matchView.runKey)) };
   })();
@@ -2725,7 +2760,7 @@ function App() {
             </span>
           </div>
         )}
-        {showSettings ? null : sessionClip ? <Suspense fallback={<p className="st-session-note" role="status">Opening full session…</p>}><SessionView key={sessionClip.path} clip={sessionClip} game={gameName(gameOf(sessionClip))} metadata={recordingMetadata[sessionClip.path]} durationHint={thumbs[sessionClip.path]?.duration ?? 0} starred={favorites.includes(sessionClip.path)} onStar={() => toggleFavorite(sessionClip)} onBack={() => setSessionClip(null)} onEdit={range => selectClip(sessionClip, range)} /></Suspense> : matchView && matchRuns && !selected ? (
+        {showSettings ? null : sessionClip ? <Suspense fallback={<p className="st-session-note" role="status">Opening full session…</p>}><SessionView key={sessionClip.path} clip={sessionClip} game={gameName(gameOf(sessionClip))} metadata={recordingMetadata[sessionClip.path]} clips={clips} thumbnails={thumbs} allMetadata={recordingMetadata} markerCounts={markerCounts} durationHint={thumbs[sessionClip.path]?.duration ?? 0} starred={(path) => favorites.includes(path)} onStar={(clip) => void toggleFavorite(clip)} onBack={() => setSessionClip(null)} onEdit={(clip, range) => selectClip(clip, range)} /></Suspense> : matchView && matchRuns && !selected ? (
           <Suspense fallback={<p className="st-session-note" role="status">Opening match…</p>}>
             <MatchView
               key={matchView.runKey}
@@ -2735,7 +2770,7 @@ function App() {
               icon={<GameMark game={matchRuns.gameKey} icons={gameIcons} />}
               starred={(path) => favorites.includes(path)}
               onStar={(clip) => void toggleFavorite(clip)}
-              onEdit={(clip) => selectClip(clip)}
+              onEdit={(clip, range) => selectClip(clip, range)}
               onBack={() => setMatchView(null)}
             />
           </Suspense>
@@ -2897,30 +2932,31 @@ function App() {
                             </td>
                           </tr>
                         )}
-                        {!folded && g.runKey && g.items.length > 1 && (
+                        {!folded && isMatchGroup(g) && (
                           <tr className={`st-group st-group-run ${runFolded(g) ? "folded" : ""}`}>
                             <td colSpan={compactLibrary ? 4 : 7}>
                               <div className="st-group-inner">
                                 <button
                                   type="button"
                                   className="st-group-toggle st-run-toggle"
-                                  aria-expanded={!runFolded(g)}
-                                  title={runFolded(g) ? "Show these clips" : "Hide these clips"}
-                                  onClick={() => toggleGroup(g.runKey, g.runRecent)}
+                                  aria-label={`Watch ${g.runLabel}`}
+                                  title="Open match highlights"
+                                  onClick={() => setMatchView({ bucket: g.date, runKey: g.runKey })}
                                 >
-                                  <CaretRight size={11} weight="bold" className="st-group-caret" />
+                                  <Play size={12} weight="fill" />
                                   <GameMark game={g.runGame} icons={gameIcons} />
                                   <span className="st-run-label">{g.runLabel}</span>
                                 </button>
                                 <span className="st-group-meta">{g.runMeta}</span>
                                 <button
                                   type="button"
-                                  className="st-run-open"
-                                  title="Watch this match as one timeline"
-                                  onClick={() => setMatchView({ bucket: g.date, runKey: g.runKey })}
+                                  className="st-run-open st-run-files"
+                                  aria-expanded={!runFolded(g)}
+                                  aria-label={`${runFolded(g) ? "Show" : "Hide"} files for ${g.runLabel}`}
+                                  onClick={() => toggleGroup(`files:${g.runKey}`, false)}
                                 >
-                                  <Play size={11} weight="fill" />
-                                  Watch
+                                  <CaretRight size={11} weight="bold" className="st-group-caret" />
+                                  {runFolded(g) ? "Show files" : "Hide files"}
                                 </button>
                               </div>
                             </td>
@@ -2936,7 +2972,7 @@ function App() {
                             <tr
                               key={c.path}
                               data-clip-path={c.path}
-                              className={`st-row ${i === focusIdx ? "kb-focus" : ""} ${montageSel.has(c.path) ? "picked" : ""} ${g.runKey && g.items.length > 1 ? "in-run" : ""}`}
+                              className={`st-row ${i === focusIdx ? "kb-focus" : ""} ${montageSel.has(c.path) ? "picked" : ""} ${isMatchGroup(g) ? "in-run" : ""}`}
                               // Roving tabindex: Tab lands on one row, arrows walk
                               // the table (library shortcuts), Enter opens it.
                               tabIndex={i === Math.max(0, focusIdx) ? 0 : -1}
@@ -3110,7 +3146,7 @@ function App() {
                   </tbody>
                 </table>
               </div>
-              {inspector}
+              {inspected && !foldedPaths.has(inspected.path) && inspector}
               </div>
             )}
 

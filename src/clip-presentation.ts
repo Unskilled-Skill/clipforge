@@ -63,3 +63,9 @@ export function matchesClipSearch(name: string, game: string, markers: number, s
   const text = `${name} ${gameName(game)} ${momentTitle(name, markers)} ${killBadge(markers, name) ?? ""}`;
   return text.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
 }
+
+export function matchesHighlightSearch(name: string, title: string, markers: number, search: string, multikillsOnly: boolean, time = ""): boolean {
+  if (multikillsOnly && clipKillCount(name, markers) < 2) return false;
+  const text = `${name} ${title} ${time}`.toLocaleLowerCase();
+  return search.trim().toLocaleLowerCase().split(/\s+/).every((word) => text.includes(word));
+}

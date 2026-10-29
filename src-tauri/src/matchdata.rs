@@ -13,6 +13,19 @@ pub struct Score {
     pub lost: u32,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlayerStats {
+    pub champion: Option<String>,
+    pub kills: Option<u32>,
+    pub deaths: Option<u32>,
+    pub assists: Option<u32>,
+    pub cs: Option<u32>,
+    pub gold: Option<u32>,
+    pub champion_damage: Option<u32>,
+    pub vision_score: Option<u32>,
+    #[serde(default)]
+    pub finalized: bool,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MatchInfo {
     pub id: String,
     pub game: String,
@@ -27,6 +40,8 @@ pub struct MatchInfo {
     /// have one (League): places clips at their in-game time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock_start: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player_stats: Option<PlayerStats>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordedMatch {
@@ -60,6 +75,7 @@ pub struct Update {
     pub result: Option<String>,
     pub round_result: Option<String>,
     pub clock_start: Option<f64>,
+    pub player_stats: Option<PlayerStats>,
     pub active: bool,
     pub ended: bool,
 }
@@ -232,6 +248,9 @@ impl Tracker {
             if update.result.is_some() {
                 info.result = update.result;
             }
+            if update.player_stats.is_some() {
+                info.player_stats = update.player_stats;
+            }
             if let Some((round, result)) = update.round.zip(update.round_result) {
                 info.round_results.insert(round, result);
             }
@@ -348,7 +367,7 @@ pub fn path(clip: &str) -> Option<PathBuf> {
 fn record_path(root: &Path, id: &str) -> Option<PathBuf> {
     (!id.is_empty() && safe_id(id) == id).then(|| root.join(".matches").join(format!("{id}.json")))
 }
-fn write_json<T: Serialize>(path: &Path, data: &T) -> Result<(), String> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, data: &T) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
