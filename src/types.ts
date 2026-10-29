@@ -43,6 +43,8 @@ export interface Settings {
   max_storage_gb: number;
   /** Full match recordings older than this go to the Recycle Bin (0 = keep). */
   session_keep_days?: number;
+  /** Keep the window drawn while covered (no dark flash on switch-back); applies at launch. */
+  keep_window_drawn?: boolean;
   backup_dir: string;
   catbox_userhash: string;
   auto_clip: boolean;

@@ -3,6 +3,7 @@
 // the player runs through the saved clips in sequence.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { formatDate } from "./format-date";
 import { ArrowLeft, CaretLeft, CaretRight, Crosshair, FilmStrip, Pause, Play, Scissors, SkipBack, SkipForward, Star } from "@phosphor-icons/react";
 import { convertFileSrc, invoke } from "./tauri-shim";
 import { HighlightStrip } from "./HighlightStrip";
@@ -42,7 +43,7 @@ export type MatchRun = {
   clips: MatchClip[];
 };
 
-const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+const clock = (ms: number) => formatDate(ms, { hour: "numeric", minute: "2-digit" });
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const RESULT = { won: "Won", lost: "Lost", draw: "Draw" } as const;
 
@@ -275,7 +276,7 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
           {/* K / D / A already counts the kills. */}
           {!playerFacts.some((f) => f.label === "K / D / A") && <div><dt>Kills</dt><dd>{kills.length}</dd></div>}
           <div><dt>Length</dt><dd>{span.total >= 3_600_000 ? `${(span.total / 3_600_000).toFixed(1)} h` : `${Math.max(1, Math.round(span.total / 60_000))} min`}</dd></div>
-          <div className="st-mv-played"><dt>{run.playerStats && !run.playerStats.finalized ? "Last live snapshot" : "Played"}</dt><dd>{new Date(span.start).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, {clock(span.start)}</dd></div>
+          <div className="st-mv-played"><dt>{run.playerStats && !run.playerStats.finalized ? "Last live snapshot" : "Played"}</dt><dd>{formatDate(span.start, { month: "short", day: "numeric" })}, {clock(span.start)}</dd></div>
         </dl>
       </header>
 

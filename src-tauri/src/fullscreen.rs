@@ -323,8 +323,9 @@ pub fn running_windowed_apps() -> Vec<RunningApp> {
         );
     }
 
-    let mut system = sysinfo::System::new_all();
-    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    // Process names only: new_all() would also scan disks, networks and sensors.
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, sysinfo::ProcessRefreshKind::nothing());
 
     let mut out: Vec<RunningApp> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();

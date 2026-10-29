@@ -197,6 +197,10 @@ pub struct Settings {
     /// Bin; their highlight clips stay. 0 keeps them for good.
     #[serde(default)]
     pub session_keep_days: u32,
+    /// Keep the window drawn while another window covers it (no dark
+    /// flash when switching back). Applies at the next launch.
+    #[serde(default)]
+    pub keep_window_drawn: bool,
     /// Folder favorited clips are copied to after games (e.g. a Google
     /// Drive folder). Empty = backups off. See `backup.rs`.
     #[serde(default)]
@@ -362,6 +366,7 @@ impl Default for Settings {
             short_clip_seconds: default_short_secs(),
             max_storage_gb: default_max_storage_gb(),
             session_keep_days: 0,
+            keep_window_drawn: false,
             backup_dir: String::new(),
             catbox_userhash: String::new(),
             auto_clip: false,
@@ -1410,10 +1415,36 @@ pub async fn gen_thumbnails(dir: String) -> Result<std::collections::HashMap<Str
     blocking(move || gen_thumbnails_blocking(dir)).await
 }
 
+/// Durations survive restarts in `.thumbs/durations.json`: without it every
+/// launch probed every clip again (one ffprobe process each).
+fn load_duration_cache(thumbs_dir: &std::path::Path) {
+    let mut cache = DURATION_CACHE.lock().unwrap();
+    if cache.is_none() {
+        *cache = Some(
+            std::fs::read(thumbs_dir.join("durations.json"))
+                .ok()
+                .and_then(|raw| serde_json::from_slice(&raw).ok())
+                .unwrap_or_default(),
+        );
+    }
+}
+
+fn save_duration_cache(thumbs_dir: &std::path::Path, clips: &[ClipInfo]) {
+    let cache = DURATION_CACHE.lock().unwrap();
+    let Some(map) = cache.as_ref() else { return };
+    // Only this folder's clips: deleted ones drop out.
+    let kept: std::collections::HashMap<&String, &(u64, f64)> =
+        clips.iter().filter_map(|c| map.get_key_value(&c.path)).collect();
+    if let Ok(raw) = serde_json::to_vec(&kept) {
+        let _ = std::fs::write(thumbs_dir.join("durations.json"), raw);
+    }
+}
+
 fn gen_thumbnails_blocking(dir: String) -> Result<std::collections::HashMap<String, ThumbInfo>, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let thumbs_dir = PathBuf::from(&dir).join(".thumbs");
     std::fs::create_dir_all(&thumbs_dir).map_err(|e| e.to_string())?;
+    load_duration_cache(&thumbs_dir);
 
     // Per-clip work (duration probe + thumbnail render) runs in parallel
     // batches — a cold library of N clips costs ~N/8 probe round-trips
@@ -1421,7 +1452,34 @@ fn gen_thumbnails_blocking(dir: String) -> Result<std::collections::HashMap<Stri
     // so a warm refresh spawns almost nothing.
     let clips = list_clips(dir.clone())?;
     let mut map = std::collections::HashMap::new();
-    for batch in clips.chunks(8) {
+    let thumb_of = |clip: &ClipInfo| {
+        thumbs_dir.join(format!(
+            "{}.jpg",
+            PathBuf::from(&clip.name).file_stem().unwrap_or_default().to_string_lossy()
+        ))
+    };
+    // Warm clips (duration cached, thumbnail on disk) need no thread or process.
+    let mut cold = Vec::new();
+    {
+        let cache = DURATION_CACHE.lock().unwrap();
+        for clip in &clips {
+            let thumb = thumb_of(clip);
+            let cached = cache.as_ref().and_then(|m| m.get(&clip.path)).filter(|(mtime, _)| {
+                std::fs::metadata(&clip.path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .is_some_and(|d| d.as_millis() as u64 == *mtime)
+            });
+            match cached {
+                Some((_, duration)) if thumb.exists() => {
+                    map.insert(clip.path.clone(), ThumbInfo { thumb: thumb.to_string_lossy().replace('\\', "/"), duration: *duration });
+                }
+                _ => cold.push(clip.clone()),
+            }
+        }
+    }
+    for batch in cold.chunks(8) {
         let handles: Vec<_> = batch
             .iter()
             .map(|clip| {
@@ -1473,6 +1531,9 @@ fn gen_thumbnails_blocking(dir: String) -> Result<std::collections::HashMap<Stri
                 map.insert(path, info);
             }
         }
+    }
+    if !cold.is_empty() {
+        save_duration_cache(&thumbs_dir, &clips);
     }
     Ok(map)
 }

@@ -383,6 +383,17 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, data: &T) -> Result<(), Stri
         .and_then(|_| std::fs::rename(tmp, path))
         .map_err(|e| e.to_string())
 }
+/// Live player stats (League CS, gold) change every few seconds. Saving the
+/// record each time made the window re-read every clip's match data
+/// mid-game, so a change to the stats alone is saved at most this often.
+/// Anything else (map, result, a round) still saves at once.
+const STATS_EVERY: Duration = Duration::from_secs(30);
+static LAST_SAVED: LazyLock<Mutex<HashMap<String, (MatchInfo, Instant)>>> = LazyLock::new(Default::default);
+
+fn only_stats_changed(previous: &MatchInfo, record: &MatchInfo) -> bool {
+    &MatchInfo { player_stats: record.player_stats.clone(), ..previous.clone() } == record
+}
+
 pub fn ingest(app: &AppHandle, game: &str, source: &str, update: Update) {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -391,6 +402,16 @@ pub fn ingest(app: &AppHandle, game: &str, source: &str, update: Update) {
     // Keep event order and canonical file writes in the same critical section.
     let mut tracker = TRACKER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(record) = tracker.observe(game, source, update, Instant::now(), stamp) {
+        {
+            let now = Instant::now();
+            let mut saved = LAST_SAVED.lock().unwrap_or_else(|e| e.into_inner());
+            if saved.get(&record.id).is_some_and(|(previous, at)| {
+                only_stats_changed(previous, &record) && now.duration_since(*at) < STATS_EVERY
+            }) {
+                return;
+            }
+            saved.insert(record.id.clone(), (record.clone(), now));
+        }
         let root = crate::clips::load_settings_inner(app).clips_dir;
         if let Some(path) = record_path(Path::new(&root), &record.id) {
             if let Err(e) = write_json(&path, &record) {
@@ -590,6 +611,14 @@ mod tests {
             .unwrap();
         assert_eq!(final_info.id, first.id);
         assert_eq!(final_info.result.as_deref(), Some("won"));
+    }
+    #[test]
+    fn only_live_stat_changes_count_as_stats_only() {
+        let base = MatchInfo { id: "m".into(), game: "lol".into(), ..Default::default() };
+        let stats = MatchInfo { player_stats: Some(PlayerStats { cs: Some(40), ..Default::default() }), ..base.clone() };
+        assert!(only_stats_changed(&base, &stats));
+        let ended = MatchInfo { result: Some("won".into()), ..stats.clone() };
+        assert!(!only_stats_changed(&stats, &ended));
     }
     #[test]
     fn timeline_keeps_match_and_round_boundaries_and_does_not_invent_a_round_start() {

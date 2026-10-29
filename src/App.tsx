@@ -1,4 +1,5 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { formatDate } from "./format-date";
 import { gameName, momentTitle, killBadge, clipKillCount, matchesClipSearch } from "./clip-presentation";
 import { moveItem } from "./clip-selection";
 import { createSettingsWriter } from "./settings-save";
@@ -265,7 +266,12 @@ function App() {
   const [clips, setClips] = useState<ClipInfo[]>([]);
   const [recordingMetadata, setRecordingMetadata] = useState<Record<string,RecordingMetadata>>({});
   const [metadataRevision,setMetadataRevision] = useState(0);
+  // Re-reading every clip's match data is skipped while a game runs and the
+  // window is hidden; it happens when the window is shown or the game ends.
+  const metadataPendingRef = useRef(false);
   useEffect(()=> {
+    if (gameRunningRef.current && document.hidden) { metadataPendingRef.current = true; return; }
+    metadataPendingRef.current = false;
     let cancelled=false;
     const timer=setTimeout(()=> { invoke<Record<string,RecordingMetadata>>("list_recording_metadata",{inputs:clips.map(c=>c.path)}).then(data=>{if(!cancelled)setRecordingMetadata(data??{});}).catch(()=>{}); },150);
     return ()=>{cancelled=true;clearTimeout(timer);};
@@ -605,10 +611,12 @@ function App() {
   useEffect(() => {
     gameRunningRef.current = !!sup?.game;
     if (!sup?.game && thumbsPendingRef.current) refreshClips();
+    if (!sup?.game && metadataPendingRef.current) setMetadataRevision((n) => n + 1);
   }, [sup?.game, refreshClips]);
   useEffect(() => {
     const onVisible = () => {
       if (!document.hidden && thumbsPendingRef.current) refreshClips();
+      if (!document.hidden && metadataPendingRef.current) setMetadataRevision((n) => n + 1);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
@@ -2150,7 +2158,7 @@ function App() {
       const matchesText = matches > 1 ? ` · ${matches} matches` : "";
       return `${gamesText}${matchesText} · ${runContentsLabel(recordings, list.length - recordings)} · ${size}`;
     };
-    const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const clock = (ms: number) => formatDate(ms, { hour: "numeric", minute: "2-digit" });
     for (const g of groups) {
       const times = g.items.map(({ c }) => c.modified_ms);
       const first = Math.min(...times);
@@ -2158,7 +2166,7 @@ function App() {
       const oldest = g.items.find(({ c }) => c.modified_ms === first)!.c;
       const match = matchOf(g.items[0].c);
       // Days and sessions already say which day; coarser buckets don't.
-      const day = g.date.startsWith("d:") || g.date.startsWith("s:") ? "" : `${new Date(first).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, `;
+      const day = g.date.startsWith("d:") || g.date.startsWith("s:") ? "" : `${formatDate(first, { month: "short", day: "numeric" })}, `;
       const span = first === last ? clock(first) : `${clock(first)} – ${clock(last)}`;
       g.runKey = libraryRunKey(g.runGame, match?.id ?? familyOf(oldest), oldest.path);
       // Match rows start compact, including recordings saved just now.
@@ -2308,7 +2316,7 @@ function App() {
             <span>{title}</span>
             <span className="st-sub st-insp-game">
               <GameMark game={gameOf(c)} icons={gameIcons} />
-              {gameName(gameOf(c))} · {new Date(c.modified_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}
+              {gameName(gameOf(c))} · {formatDate(c.modified_ms, { weekday: "short", hour: "2-digit", minute: "2-digit" })}
             </span>
             {recordingMetadata[c.path] && <span className="st-match-context">{recordingMatchLabel(recordingMetadata[c.path])}{roundLabel(recordingMetadata[c.path]) && ` · ${roundLabel(recordingMetadata[c.path])}`}</span>}
           </div>
@@ -2530,7 +2538,7 @@ function App() {
         {sessions.length > 0 && <>
           <div className="st-section">Recent sessions</div>
           <nav className="st-recent-sessions" aria-label="Recent sessions">{sessions.map(c => <button key={c.path} className={sessionClip?.path === c.path ? "active" : ""} aria-current={sessionClip?.path === c.path ? "page" : undefined} onClick={() => openClip(c)}>
-            <span>{gameName(gameOf(c))}<small>{new Date(c.modified_ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</small></span>
+            <span>{gameName(gameOf(c))}<small>{formatDate(c.modified_ms, { weekday: "short", month: "short", day: "numeric" })}</small></span>
             <small>{thumbs[c.path]?.duration ? formatDuration(thumbs[c.path].duration) : "Full session"}</small>
           </button>)}</nav>
         </>}
@@ -3122,7 +3130,7 @@ function App() {
                               <td className="num c-len">{thumbs[c.path]?.duration ? formatDuration(thumbs[c.path].duration) : "–"}</td>
                               <td className="num c-size" style={{ color: "var(--st-muted)" }}>{formatSize(c.size_bytes)}</td>
                               <td className="num c-saved">
-                                {new Date(c.modified_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                {formatDate(c.modified_ms, { hour: "2-digit", minute: "2-digit" })}
                               
                                   <div className="st-row-actions" onClick={(e) => e.stopPropagation()}>
                                     <button className="st-icon-btn" title="Rename" aria-label={`Rename ${title}`} onClick={() => startLibRename(c)}>

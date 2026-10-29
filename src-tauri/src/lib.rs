@@ -30,6 +30,27 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+/// The main window, built here rather than in tauri.conf.json because its
+/// WebView2 flags depend on a setting (and only apply at launch).
+fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+    // WebView2 drops what it drew while another window fully covers it,
+    // so switching back shows a dark frame first. Opt-in: covered, it keeps
+    // drawing (Settings > Advanced > Keep window drawn when covered).
+    if clips::load_settings_inner(app).keep_window_drawn {
+        args.push_str(",CalculateNativeWinOcclusion");
+    }
+    args.push_str(" --enable-blink-features=AudioVideoTracks");
+    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+        .title("ClipForge")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(960.0, 620.0)
+        .decorations(false)
+        .additional_browser_args(&args)
+        .build()?;
+    Ok(())
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -241,10 +262,11 @@ fn spawn_dir_watcher(app: AppHandle) {
                 move |event: Result<notify::Event, notify::Error>| {
                     if let Ok(event) = event {
                         // Thumbnail writes would loop refresh -> gen -> refresh;
-                        // a session recording writes constantly.
+                        // a session recording writes constantly, and match
+                        // records change all game.
                         let relevant = event.paths.iter().any(|p| {
                             let p = p.to_string_lossy();
-                            !p.contains(".thumbs") && !p.contains(".sessions")
+                            !p.contains(".thumbs") && !p.contains(".sessions") && !p.contains(".matches")
                         });
                         if relevant {
                             let _ = tx.send(());
@@ -355,6 +377,7 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .setup(move |app| {
+            build_main_window(app.handle())?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::run(handle));
             tauri::async_runtime::spawn(autoclip::run(app.handle().clone()));

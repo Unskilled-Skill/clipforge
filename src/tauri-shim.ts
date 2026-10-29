@@ -58,9 +58,10 @@ let mockFavorites: string[] = [];
 const mockDeleted = new Map<string, (typeof mockClips)[number]>();
 
 const games = ["Valorant", "Rainbowsix", "Marathon", "Cs2", "Apex"];
-// Browser-only fixtures for checking the first-run and capture-problem boards.
+// Browser-only fixtures for checking the first-run and capture-problem boards,
+// and ?preview=big: a 600-clip library for checking render speed.
 const mockPreview = new URLSearchParams(location.search).get("preview");
-const mockClips = Array.from({ length: mockPreview === "empty" ? 0 : 14 }, (_, i) => ({
+const mockClips = Array.from({ length: mockPreview === "empty" ? 0 : mockPreview === "big" ? 600 : 14 }, (_, i) => ({
   path: `D:/RECORDINGS/Clips/mock-${i}.mp4`,
   name: `${i === 12 ? "Valorant" : games[i % games.length]} ${i >= 12 ? "Session " : ""}2026-07-0${(i % 7) + 1} 2${i % 10}-1${i % 6}-0${i % 9}.mp4`,
   modified_ms: Date.now() - i * 3600_000 * 5,

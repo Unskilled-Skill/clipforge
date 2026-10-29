@@ -384,6 +384,9 @@ pub async fn run(app: AppHandle) {
     let mut live_clock = None;
     let mut names = HashMap::new();
     let mut durations = HashMap::new();
+    // What the last repair saw: (match ids, clip count, newest clip). Repair
+    // reads every clip's match data, so it only runs when one of these moves.
+    let mut repaired: Option<(Vec<String>, usize, u64)> = None;
     let mut cached_root = String::new();
     let mut summaries: Vec<CompletedMatch> = Vec::new();
     loop {
@@ -395,7 +398,9 @@ pub async fn run(app: AppHandle) {
             .ok()
             .and_then(|g| g.clone())
             .unwrap_or_default();
-        if game.to_ascii_lowercase().contains("league of legends") {
+        // Every 6 s: the live API is served by the game itself, and the
+        // stats and clock it gives don't need more.
+        if tick % 3 == 0 && game.to_ascii_lowercase().contains("league of legends") {
             if let Ok(response) = client
                 .get("https://127.0.0.1:2999/liveclientdata/allgamedata")
                 .send()
@@ -441,7 +446,12 @@ pub async fn run(app: AppHandle) {
                     }
                 }
             }
-            if !summaries.is_empty() {
+            let seen = crate::clips::list_clips(root.clone()).ok().map(|clips| {
+                let ids = summaries.iter().map(|g| g.info.id.clone()).collect::<Vec<_>>();
+                (ids, clips.len(), clips.iter().map(|c| c.modified_ms).max().unwrap_or(0))
+            });
+            if !summaries.is_empty() && (seen.is_none() || seen != repaired) {
+                repaired = seen;
                 let snapshots = summaries.clone();
                 let prior_cache = std::mem::take(&mut durations);
                 let result = tokio::task::spawn_blocking(move || {
@@ -459,9 +469,12 @@ pub async fn run(app: AppHandle) {
                             ));
                             let _ = app.emit("match-metadata-changed", ());
                         }
-                        Err(e) => crate::logs::line(&format!(
-                            "league match data: could not link recordings ({e})"
-                        )),
+                        Err(e) => {
+                            repaired = None; // try again next pass
+                            crate::logs::line(&format!(
+                                "league match data: could not link recordings ({e})"
+                            ))
+                        }
                         _ => {}
                     }
                 }

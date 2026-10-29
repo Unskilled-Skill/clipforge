@@ -1669,6 +1669,26 @@ export function SettingsPage(props: {
             </label>
               <p className="field-hint">Keyframe timing is managed automatically. See Health for its current value.</p>
             </section>
+            <section className="advanced-section" aria-label="Window">
+              <h2 className="set-head-title">Window</h2>
+              <div className="toggle-card">
+                <div className="toggle-text">
+                  <span className="toggle-title">Keep window drawn when covered</span>
+                  <span className="toggle-desc">
+                    Stops a brief dark flash when switching back to ClipForge from another window. Uses a little more power while it's covered. Takes effect after restarting ClipForge.
+                  </span>
+                </div>
+                <button
+                  className={`switch ${settings.keep_window_drawn ? "on" : ""}`}
+                  role="switch"
+                  aria-checked={!!settings.keep_window_drawn}
+                  aria-label="Keep window drawn when covered"
+                  onClick={() => saveSettings({ ...settings, keep_window_drawn: !settings.keep_window_drawn })}
+                >
+                  <span className="knob" />
+                </button>
+              </div>
+            </section>
         <section id="settings-blacklist" className="advanced-section" aria-labelledby="blacklist-title">
           <div className="set-head">
             <div className="set-head-icon"><GameController size={16} weight="fill" /></div>

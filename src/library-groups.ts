@@ -2,6 +2,7 @@
 // (days), older ones coarser (weeks, then months, then years), so the list
 // stays short however long you've been clipping. Sessions split on gaps in
 // play instead of on the calendar.
+import { formatDate } from "./format-date.ts";
 
 export type Bucket = {
   key: string;
@@ -49,7 +50,7 @@ function dayLabel(ms: number, now: number): string {
   const ago = daysAgo(ms, now);
   if (ago === 0) return "Today";
   if (ago === 1) return "Yesterday";
-  return new Date(ms).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  return formatDate(ms, { weekday: "long", day: "numeric", month: "long" });
 }
 
 /** The time group a clip saved at `ms` falls in, seen from `now`: days for
@@ -66,12 +67,12 @@ export function dateBucket(ms: number, now: number): Bucket {
     monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
     return {
       key: `w:${monday.toDateString()}`,
-      label: `Week of ${monday.toLocaleDateString(undefined, { month: "long", day: "numeric" })}`,
+      label: `Week of ${formatDate(monday, { month: "long", day: "numeric" })}`,
       recent: false,
     };
   }
   if (d.getFullYear() === today.getFullYear()) {
-    return { key: `m:${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString(undefined, { month: "long" }), recent: false };
+    return { key: `m:${d.getFullYear()}-${d.getMonth()}`, label: formatDate(d, { month: "long" }), recent: false };
   }
   return { key: `y:${d.getFullYear()}`, label: String(d.getFullYear()), recent: false };
 }
@@ -95,9 +96,9 @@ export function sessionLabel(startMs: number, now: number): string {
   }
   if (ago === 1) return `Yesterday ${part}`;
   const d = new Date(startMs);
-  if (ago < 7) return `${d.toLocaleDateString(undefined, { weekday: "long" })} ${part}`;
+  if (ago < 7) return `${formatDate(d, { weekday: "long" })} ${part}`;
   const sameYear = d.getFullYear() === new Date(now).getFullYear();
-  const date = d.toLocaleDateString(undefined, sameYear ? { month: "long", day: "numeric" } : { year: "numeric", month: "long", day: "numeric" });
+  const date = formatDate(d, sameYear ? { month: "long", day: "numeric" } : { year: "numeric", month: "long", day: "numeric" });
   return `${date}, ${part}`;
 }
 
