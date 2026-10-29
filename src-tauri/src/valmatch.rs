@@ -217,6 +217,8 @@ async fn details(m: &LoggedMatch) -> Result<Value, String> {
         .build()
         .map_err(|e| e.to_string())?;
     let (access, entitlement) = tokens(&client).await?;
+    // The certificate exception is only for the loopback API.
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
     let shard = shard(m.region.as_deref().unwrap_or("eu"));
     let res = client
         .get(format!("https://pd.{shard}.a.pvp.net/match-details/v1/matches/{}", m.id))
@@ -289,6 +291,7 @@ async fn apply(app: &AppHandle, game: &str, m: &LoggedMatch, o: &Outcome) {
             continue;
         }
         if inside.is_empty() {
+            if crate::clips::load_favorites(app.clone()).map_or(true, |favorites| favorites.contains(&clip.path)) { continue; }
             let (a, p) = (app.clone(), clip.path.clone());
             if crate::obs::blocking(move || crate::clips::delete_clip(a, p)).await.is_ok() {
                 crate::autoclip::forget_auto_clip(&clip.path);

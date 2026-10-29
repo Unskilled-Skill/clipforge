@@ -367,7 +367,7 @@ pub fn path(clip: &str) -> Option<PathBuf> {
     Some(
         p.parent()?
             .join(".thumbs")
-            .join(format!("{}.match.json", p.file_stem()?.to_string_lossy())),
+            .join(format!("{}.match.json", crate::clips::cache_key(p))),
     )
 }
 fn record_path(root: &Path, id: &str) -> Option<PathBuf> {

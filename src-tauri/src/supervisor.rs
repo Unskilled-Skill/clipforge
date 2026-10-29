@@ -233,7 +233,7 @@ async fn tick(
 ) -> SupervisorState {
     let mut settings = load_settings_inner(app);
     let mut state = SupervisorState::default();
-    crate::setup::localize_settings(app, &mut settings);
+    if !crate::clips::has_saved_settings(app) { crate::setup::localize_settings(app, &mut settings); }
 
     // 1. Engine
     if !ENGINE.is_running() {

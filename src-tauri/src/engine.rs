@@ -159,6 +159,18 @@ fn source(scene: &mut ObsSceneRef, id: &str, name: &str, json: serde_json::Value
     Ok(add_item(scene, id, name, json)?.inner_source().clone())
 }
 
+fn fit_capture(item: &dyn SceneItemTrait, video: VideoConfig) -> Result<(), String> {
+    use libobs_wrapper::{scenes::ObsTransformInfoBuilder, graphics::Vec2, enums::{ObsBoundsType, ObsAlignment}};
+    let info = ObsTransformInfoBuilder::new()
+        .set_pos(Vec2::new(0.0, 0.0))
+        .set_alignment(ObsAlignment::LEFT | ObsAlignment::TOP)
+        .set_bounds(Vec2::new(video.base.0 as f32, video.base.1 as f32))
+        .set_bounds_type(ObsBoundsType::ScaleInner)
+        .set_bounds_alignment(ObsAlignment::CENTER)
+        .build(video.base.0, video.base.1);
+    item.set_transform_info(&info).map_err(err)
+}
+
 fn output_active(replay: &ObsReplayBufferOutputRef) -> bool {
     replay.is_active().unwrap_or(false)
 }
@@ -389,6 +401,7 @@ impl Engine {
         let mut scene = ctx.scene("ClipForge", Some(0)).map_err(err)?;
 
         let game_capture = add_item(&mut scene, "game_capture", "AutoGame", game_capture_settings(None))?;
+        fit_capture(&game_capture, video)?;
         // Hidden until it has a game to hook: an active hook aimed at nothing
         // logs "could not open process" every 2s.
         game_capture.set_visible(false).map_err(err)?;
@@ -486,14 +499,15 @@ impl Engine {
             }
         }
         if let (Some(exe), Some(window)) = (&want_window, &target) {
-            let src = source(&mut inner.scene, "window_capture", "WindowCapture", serde_json::json!({
+            let item = add_item(&mut inner.scene, "window_capture", "WindowCapture", serde_json::json!({
                 "window": window,
                 "priority": PRIORITY_EXE,
                 "cursor": true,
                 // 2 = Windows Graphics Capture; BitBlt black-screens on most games.
                 "method": 2,
             }))?;
-            inner.window_capture = Some((exe.clone(), src));
+            fit_capture(&item, inner.video)?;
+            inner.window_capture = Some((exe.clone(), item.inner_source().clone()));
         }
         inner.game = game.map(str::to_string);
         inner.target = target;
@@ -582,6 +596,12 @@ impl Engine {
         if inner.video != video {
             inner.ctx.reset_video(video_info(video)).map_err(err)?;
             inner.video = video;
+            fit_capture(&inner.game_capture, video)?;
+            if let Some((_, source)) = &inner.window_capture {
+                for item in inner.scene.items_for_source(source).map_err(err)? {
+                    fit_capture(item.as_ref(), video)?;
+                }
+            }
             crate::picture::set_fps(video.fps);
         }
         crate::logs::line(&format!("replay buffer: building ({} @ {} kbps, tracks {:?})", output.encoder, output.bitrate_kbps, output.tracks));

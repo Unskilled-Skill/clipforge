@@ -61,14 +61,27 @@ use tauri::{AppHandle, Emitter, Manager};
 /// blocking context (`spawn_blocking`) — reads the pipe synchronously.
 fn run_ffmpeg_with_progress(
     app: &AppHandle,
-    mut cmd: Command,
+    cmd: Command,
     total_secs: f64,
     label: &str,
 ) -> Result<(), String> {
+    run_command_with_progress(cmd, total_secs, |pct| {
+        let _ = app.emit("export-progress", serde_json::json!({ "label": label, "pct": pct }));
+    })
+}
+
+fn run_command_with_progress(mut cmd: Command, total_secs: f64, mut progress: impl FnMut(f64)) -> Result<(), String> {
     use std::io::BufRead;
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let stderr = child.stderr.take();
+    let errors = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = stderr { let _ = pipe.read_to_end(&mut bytes); }
+        bytes
+    });
     if let Some(stdout) = child.stdout.take() {
         for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
             // ffmpeg quirk: out_time_ms is microseconds too (same as out_time_us).
@@ -78,16 +91,31 @@ fn run_ffmpeg_with_progress(
             if let Some(us) = us {
                 if let Ok(us) = us.trim().parse::<f64>() {
                     let pct = ((us / 1_000_000.0) / total_secs.max(0.1) * 100.0).clamp(0.0, 100.0);
-                    let _ = app.emit("export-progress", serde_json::json!({ "label": label, "pct": pct }));
+                    progress(pct);
                 }
             }
         }
     }
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let stderr = errors.join().map_err(|_| "ffmpeg error reader failed")?;
+    if !status.success() {
+        return Err(String::from_utf8_lossy(&stderr).to_string());
     }
     Ok(())
+}
+
+pub(crate) fn reserve_output(path: PathBuf) -> Result<PathBuf, String> {
+    let stem = path.file_stem().ok_or("bad output path")?.to_string_lossy();
+    let ext = path.extension().unwrap_or_default().to_string_lossy();
+    for i in 0..10000 {
+        let candidate = if i == 0 { path.clone() } else { path.with_file_name(format!("{stem} ({i}).{ext}")) };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("Too many files with this output name".into())
 }
 
 pub const DEFAULT_CLIPS_DIR: &str = "D:/RECORDINGS/Clips";
@@ -666,9 +694,46 @@ pub fn set_footage_end(clip: &str, end: std::time::SystemTime) {
     }
 }
 
+/// Cache entries include the container extension. Adopt unambiguous legacy
+/// entries before use, without overwriting existing per-recording data.
+pub(crate) fn cache_key(p: &std::path::Path) -> String {
+    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+    if p.exists() { if let Some(parent) = p.parent() {
+        let ambiguous = ["mp4", "mkv"].iter().any(|ext| {
+            let sibling = p.with_extension(ext);
+            sibling != p && sibling.exists()
+        });
+        let dir = parent.join(".thumbs");
+        let legacy_exists = ["jpg", "markers.json", "match.json", "wave.png"].iter().any(|suffix| dir.join(format!("{stem}.{suffix}")).exists());
+        if !ambiguous && legacy_exists {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let old = entry.file_name().to_string_lossy().to_string();
+                    if let Some(suffix) = old.strip_prefix(&format!("{stem}.")) {
+                        if suffix == "jpg" || suffix == "markers.json" || suffix == "match.json" || suffix.starts_with("wave") || suffix.starts_with("reel") {
+                            let target = dir.join(format!("{name}.{suffix}"));
+                            // hard_link is atomic and refuses an occupied target.
+                            if std::fs::hard_link(entry.path(), &target).is_ok() {
+                                let _ = std::fs::remove_file(entry.path());
+                            } else if let Ok(mut out) = std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+                                let copied = std::fs::File::open(entry.path()).and_then(|mut input| std::io::copy(&mut input, &mut out)).and_then(|_| out.sync_all());
+                                drop(out);
+                                if copied.is_ok() { let _ = std::fs::remove_file(entry.path()); }
+                                else { let _ = std::fs::remove_file(&target); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }}
+    name
+}
+
 pub fn markers_path(clip: &str) -> Option<PathBuf> {
     let p = PathBuf::from(clip);
-    let stem = p.file_stem()?.to_string_lossy().to_string();
+    let stem = cache_key(&p);
     Some(p.parent()?.join(".thumbs").join(format!("{stem}.markers.json")))
 }
 
@@ -745,6 +810,10 @@ fn expired_sessions<'a>(
 /// Recycle full match recordings older than Settings › Storage › Keep full
 /// matches. Highlights were cut from them as their own files, so those stay.
 pub fn prune_old_sessions(app: &AppHandle) -> Result<u32, String> {
+    prune_old_sessions_preserving(app, &[])
+}
+
+fn prune_old_sessions_preserving(app: &AppHandle, keep: &[PathBuf]) -> Result<u32, String> {
     let settings = load_settings_inner(app);
     if settings.session_keep_days == 0 {
         return Ok(0);
@@ -761,6 +830,7 @@ pub fn prune_old_sessions(app: &AppHandle) -> Result<u32, String> {
     };
     let mut removed = 0;
     for clip in expired_sessions(&clips, now_ms, settings.session_keep_days, &favorites, is_session) {
+        if keep.iter().any(|p| p == std::path::Path::new(&clip.path)) { continue; }
         if trash::delete(&clip.path).is_ok() {
             remove_clip_leftovers(app, &clip.path);
             crate::logs::line(&format!("storage: recycled old full match {}", clip.name));
@@ -771,8 +841,12 @@ pub fn prune_old_sessions(app: &AppHandle) -> Result<u32, String> {
 }
 
 pub fn enforce_storage_cap_preserving(app: &AppHandle, keep: Option<&std::path::Path>) -> Result<u32, String> {
-    // Old full matches go first: they are the bulk, and their highlights stay.
-    let pruned = prune_old_sessions(app)?;
+    enforce_storage_cap_preserving_many(app, &keep.into_iter().map(std::path::Path::to_path_buf).collect::<Vec<_>>())
+}
+
+pub fn enforce_storage_cap_preserving_many(app: &AppHandle, keep: &[PathBuf]) -> Result<u32, String> {
+    // Protect the complete newly saved session and its highlights.
+    let pruned = prune_old_sessions_preserving(app, keep)?;
     let settings = load_settings_inner(app);
     if settings.max_storage_gb <= 0.0 {
         return Ok(pruned);
@@ -792,7 +866,7 @@ pub fn enforce_storage_cap_preserving(app: &AppHandle, keep: Option<&std::path::
         if total <= cap_bytes {
             break;
         }
-        if favorites.contains(&clip.path) || keep.is_some_and(|path| path == std::path::Path::new(&clip.path)) {
+        if favorites.contains(&clip.path) || keep.iter().any(|path| path == std::path::Path::new(&clip.path)) {
             continue;
         }
         if trash::delete(&clip.path).is_ok() {
@@ -928,6 +1002,10 @@ pub fn load_settings_inner(app: &AppHandle) -> Settings {
 /// this machine. Without this, a new user's first frontend boot would
 /// race the backend's own async localization and briefly see bogus defaults
 /// (e.g. a dev machine's leftover clips folder).
+pub(crate) fn has_saved_settings(app: &AppHandle) -> bool {
+    settings_path(app).is_ok_and(|p| p.exists())
+}
+
 #[tauri::command]
 pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
     let path = settings_path(&app)?;
@@ -937,7 +1015,7 @@ pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
     } else {
         Settings::default()
     };
-    crate::setup::localize_settings(&app, &mut settings);
+    if !path.exists() { crate::setup::localize_settings(&app, &mut settings); }
     settings.normalize_capture_apps();
     Ok(settings)
 }
@@ -1243,9 +1321,9 @@ fn remove_clip_leftovers(app: &AppHandle, path: &str) {
         }
     }
     let p = PathBuf::from(path);
-    if let (Some(dir), Some(stem)) = (p.parent(), p.file_stem()) {
+    if let Some(dir) = p.parent() {
         let thumbs = dir.join(".thumbs");
-        let stem = stem.to_string_lossy();
+        let stem = cache_key(&p);
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.jpg")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wave.png")));
         let _ = std::fs::remove_file(thumbs.join(format!("{stem}.wavet.png")));
@@ -1456,7 +1534,7 @@ fn gen_thumbnails_blocking(dir: String) -> Result<std::collections::HashMap<Stri
     let thumb_of = |clip: &ClipInfo| {
         thumbs_dir.join(format!(
             "{}.jpg",
-            PathBuf::from(&clip.name).file_stem().unwrap_or_default().to_string_lossy()
+            cache_key(&PathBuf::from(&clip.path))
         ))
     };
     // Warm clips (duration cached, thumbnail on disk) need no thread or process.
@@ -1488,10 +1566,7 @@ fn gen_thumbnails_blocking(dir: String) -> Result<std::collections::HashMap<Stri
                 let path = clip.path.clone();
                 let thumb = thumbs_dir.join(format!(
                     "{}.jpg",
-                    PathBuf::from(&clip.name)
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
+                    cache_key(&PathBuf::from(&clip.path))
                 ));
                 std::thread::spawn(move || {
                     let duration = clip_duration(&ffmpeg, &path).unwrap_or(0.0);
@@ -1660,7 +1735,7 @@ pub async fn export_discord(
 ) -> Result<String, String> {
     let input_path = PathBuf::from(&input);
     let stem = input_path.file_stem().ok_or("bad input path")?.to_string_lossy().into_owned();
-    let output = input_path.with_file_name(format!("{stem}_discord.mp4"));
+    let output = reserve_output(input_path.with_file_name(format!("{stem}_discord.mp4")))?;
     let out = encode_selection(&app, &input, start, end, audio_tracks, target_mb, None, output, "export").await?;
     // Straight to Ctrl+V in Discord.
     let _ = copy_file_to_clipboard(&out);
@@ -1801,7 +1876,7 @@ fn gen_waveform_blocking(input: String) -> Result<String, String> {
     let input_path = PathBuf::from(&input);
     let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+    let stem = cache_key(&input_path);
     // ".wavet": teal renders; the older blue ".wave" files are dropped.
     let _ = std::fs::remove_file(dir.join(format!("{stem}.wave.png")));
     let out = dir.join(format!("{stem}.wavet.png"));
@@ -1841,7 +1916,7 @@ fn gen_filmstrip_blocking(input: String) -> Result<String, String> {
     let input_path = PathBuf::from(&input);
     let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+    let stem = cache_key(&input_path);
     if let Some(cached) = find_reel(&dir, &stem) {
         return Ok(cached.to_string_lossy().replace('\\', "/"));
     }
@@ -1907,7 +1982,7 @@ fn gen_waveforms_blocking(input: String) -> Result<Vec<TrackWave>, String> {
     let input_path = PathBuf::from(&input);
     let dir = input_path.parent().ok_or("bad path")?.join(".thumbs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+    let stem = cache_key(&input_path);
 
     // All missing tracks render concurrently — each is its own ffmpeg
     // process, so this cuts editor-open latency to the slowest single track
@@ -1985,7 +2060,7 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<S
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let output = PathBuf::from(&settings.clips_dir).join(format!("Montage_{stamp}.mp4"));
+    let output = reserve_output(PathBuf::from(&settings.clips_dir).join(format!("Montage_{stamp}.mp4")))?;
 
     // Total output length for the progress percentage.
     let total_secs: f64 = inputs
@@ -2014,12 +2089,19 @@ pub async fn export_montage(app: AppHandle, inputs: Vec<MontageSeg>) -> Result<S
         cmd.args(["-i", &seg.path]);
     }
     let mut filter = String::new();
-    for i in 0..inputs.len() {
+    for (i, seg) in inputs.iter().enumerate() {
         filter.push_str(&format!(
             "[{i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,\
              pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,setsar=1[v{i}];\
-             [{i}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{i}];"
+             "
         ));
+        if audio_stream_count(&ffmpeg, &seg.path) > 0 {
+            filter.push_str(&format!("[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{i}];"));
+        } else {
+            let full = clip_duration(&ffmpeg, &seg.path)?;
+            let length = if seg.end > seg.start { (seg.end.min(full) - seg.start.max(0.0)).max(0.0) } else { full };
+            filter.push_str(&format!("anullsrc=r=48000:cl=stereo,atrim=duration={length}[a{i}];"));
+        }
     }
     for i in 0..inputs.len() {
         filter.push_str(&format!("[v{i}][a{i}]"));
@@ -2081,7 +2163,7 @@ fn export_gif_blocking(input: String, start: f64, end: f64) -> Result<String, St
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let input_path = PathBuf::from(&input);
     let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy();
-    let output = input_path.with_file_name(format!("{stem}_gif.gif"));
+    let output = reserve_output(input_path.with_file_name(format!("{stem}_gif.gif")))?;
 
     let result = ffmpeg_cmd(&ffmpeg)
         .args([
@@ -2117,7 +2199,7 @@ fn export_frame_blocking(input: String, time: f64) -> Result<String, String> {
     let ffmpeg = find_ffmpeg().ok_or("ffmpeg not found")?;
     let input_path = PathBuf::from(&input);
     let stem = input_path.file_stem().ok_or("bad path")?.to_string_lossy();
-    let output = input_path.with_file_name(format!("{stem}_frame_{}.png", time as u64));
+    let output = reserve_output(input_path.with_file_name(format!("{stem}_frame_{}.png", time as u64)))?;
 
     let result = ffmpeg_cmd(&ffmpeg)
         .args([
@@ -2299,8 +2381,8 @@ fn trim_clip_blocking(input: String, start: f64, end: f64) -> Result<String, Str
         .and_then(|e| e.to_str())
         .unwrap_or("mp4")
         .to_lowercase();
-    let output = input_path
-        .with_file_name(format!("{stem}_trim_{}-{}.{ext}", start as u64, end as u64));
+    let output = reserve_output(input_path
+        .with_file_name(format!("{stem}_trim_{}-{}.{ext}", start as u64, end as u64)))?;
 
     let names = track_name_args(&track_roles(&ffmpeg, &input));
     let mut cmd = ffmpeg_cmd(ffmpeg);
@@ -2390,4 +2472,59 @@ mod recycle_tests {
         std::fs::remove_dir(folder.join(".thumbs")).unwrap();
         std::fs::remove_dir(folder).unwrap();
     }
+}
+
+#[cfg(test)]
+mod audit_regressions {
+    use super::*;
+    fn folder(label: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("clipforge-{label}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&p).unwrap(); p
+    }
+    #[test]
+    fn exporting_twice_preserves_existing_bytes() {
+        let root = folder("collision");
+        let target = root.join("clip_trim_1-5.mp4");
+        std::fs::write(&target, b"starred edit").unwrap();
+        let a = reserve_output(target.clone()).unwrap();
+        let b = reserve_output(target.clone()).unwrap();
+        assert_ne!(a,b); assert_ne!(a,target);
+        assert_eq!(std::fs::read(&target).unwrap(), b"starred edit");
+        for p in [a,b,target] { std::fs::remove_file(p).unwrap(); }
+        std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn containers_have_independent_sidecars_and_adopt_legacy_data() {
+        let root = folder("sidecars");
+        std::fs::create_dir(root.join(".thumbs")).unwrap();
+        let mp4 = root.join("clip.mp4"); let mkv = root.join("clip.mkv");
+        std::fs::write(&mp4, b"video").unwrap();
+        let legacy = root.join(".thumbs/clip.markers.json");
+        std::fs::write(&legacy,b"[1.5]").unwrap();
+        assert_eq!(read_markers(&mp4.to_string_lossy()),vec![1.5]);
+        assert!(!legacy.exists());
+        std::fs::write(&mkv,b"other video").unwrap();
+        write_markers(&mkv.to_string_lossy(), &[3.5]);
+        let a = markers_path(&mp4.to_string_lossy()).unwrap();
+        let b = markers_path(&mkv.to_string_lossy()).unwrap();
+        assert_ne!(a,b);
+        std::fs::remove_file(a).unwrap();
+        assert_eq!(read_markers(&mkv.to_string_lossy()),vec![3.5]);
+        for p in [mp4,mkv,b] { std::fs::remove_file(p).unwrap(); }
+        std::fs::remove_dir(root.join(".thumbs")).unwrap(); std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn progress_reader_drains_stderr_before_stdout_finishes() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cmd = hidden_cmd("powershell.exe");
+            cmd.args(["-NoProfile", "-NonInteractive", "-Command", "[Console]::Error.Write(('x' * 200000)); [Console]::Out.WriteLine('out_time_us=1000000')"]);
+            let mut seen = Vec::new();
+            let result = run_command_with_progress(cmd, 2.0, |pct| seen.push(pct));
+            let _ = tx.send((result,seen));
+        });
+        let (result,seen) = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("child output deadlocked");
+        result.unwrap(); assert_eq!(seen,vec![50.0]);
+    }
+
 }

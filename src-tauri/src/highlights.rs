@@ -82,7 +82,7 @@ pub fn cut(session: &str, highlights: &[Highlight], started: std::time::SystemTi
         let n = h.kills.len() as u32;
         let label = crate::autoclip::kill_label(n, n);
         let Some(name) = clip_name(&file, label.as_deref(), i + 1) else { continue };
-        let out = path.with_file_name(name);
+        let Ok(out) = crate::clips::reserve_output(path.with_file_name(name)) else { continue };
         let ok = crate::clips::ffmpeg_cmd(&ffmpeg)
             .args(["-hide_banner", "-y", "-ss", &format!("{:.3}", h.start), "-to", &format!("{:.3}", h.end), "-i"])
             .arg(path)

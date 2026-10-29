@@ -84,7 +84,7 @@ function clipTime(s: number) {
 // to the placeholder underneath).
 function guessThumb(clipPath: string) {
   const slash = clipPath.lastIndexOf("/");
-  const name = clipPath.slice(slash + 1).replace(/\.[^.]+$/, "");
+  const name = clipPath.slice(slash + 1);
   return `${clipPath.slice(0, slash)}/.thumbs/${name}.jpg`;
 }
 
@@ -264,6 +264,7 @@ function App() {
   const [hkSave, setHkSave] = useState("");
   const [hkShort, setHkShort] = useState("");
   const [booting, setBooting] = useState(true);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [loopPreview, setLoopPreview] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -607,7 +608,7 @@ function App() {
         .then(setThumbs)
         .catch(() => {});
       connect();
-    })();
+    })().catch(e => { setBootError(`Could not load settings: ${String(e)}`); setBooting(false); });
   }, [connect, refreshClips]);
 
   // Apply a changed default immediately, while retaining per-export choices
@@ -861,7 +862,7 @@ function App() {
       v.removeEventListener("pause", onPause);
       v.removeEventListener("seeked", onSeeked);
     };
-  }, [selected, previewing, trimStart, trimEnd, loopPreview]);
+  }, [selected, previewing, trimStart, trimEnd, loopPreview, playerReload]);
 
   // Keep the selection in sync with what actually exists — drop any selected
   // clip that got deleted, so the Montage/Delete count never counts ghosts.
@@ -1040,7 +1041,11 @@ function App() {
     }
   }
 
+  const selectionGeneration = useRef(0);
   function selectClip(clip: ClipInfo, range?: [number, number]) {
+    const generation = ++selectionGeneration.current;
+    const current = () => generation === selectionGeneration.current;
+    setPlayerReload(n => n + 1);
     setSessionClip(null);
     setShowSettings(false);
     pendingTrim.current = range ?? null;
@@ -1061,14 +1066,15 @@ function App() {
     setRenaming(false);
     setKillMarkers([]);
     invoke<number[]>("load_markers", { input: clip.path })
-      .then((m) => setKillMarkers(m ?? []))
+      .then((m) => { if (current()) setKillMarkers(m ?? []); })
       .catch(() => {});
     setClipFps(settings?.video_fps || 30);
     invoke<number>("clip_fps", { input: clip.path })
-      .then((fps) => { if (fps > 0) setClipFps(fps); })
+      .then((fps) => { if (current() && fps > 0) setClipFps(fps); })
       .catch(() => {});
     invoke<TrackRole[]>("audio_track_roles", { input: clip.path })
       .then((roles) => {
+        if (!current()) return;
         setTrackRoles(roles.length ? roles : ["mix"]);
         // New clips start from the default export tracks (Settings › Split
         // audio). A remembered selection from before overlap handling may
@@ -1077,11 +1083,11 @@ function App() {
       })
       .catch(() => {});
     invoke<{ track: number; waveform: string }[]>("gen_waveforms", { input: clip.path })
-      .then(setTrackWaves)
+      .then(waves => { if (current()) setTrackWaves(waves); })
       .catch(() => {});
     setFilmstrip(null);
     invoke<string>("gen_filmstrip", { input: clip.path })
-      .then(setFilmstrip)
+      .then(strip => { if (current()) setFilmstrip(strip); })
       .catch(() => {});
   }
 
@@ -1913,7 +1919,9 @@ function App() {
             <img src={appIcon} alt="" draggable={false} />
           </div>
           <span className="splash-name">ClipForge</span>
-          <span className="splash-hint">loading library…</span>
+          <span className="splash-hint" role={bootError ? "alert" : "status"}>{bootError || "loading library…"}</span>
+          {bootError && <button onClick={() => window.location.reload()}>Retry loading</button>}
+          {bootError && <button onClick={async () => { if (!await confirmDialog("Reset unreadable settings to defaults? Your recordings will be kept.", { title: "Recover settings", kind: "warning" })) return; try { await invoke("reset_settings"); window.location.reload(); } catch (e) { setBootError(String(e)); } }}>Reset settings</button>}
         </div>
       </div>
     );
@@ -1955,6 +1963,8 @@ function App() {
     }, 120);
   };
   const openLibraryView = (view: string) => {
+    ++selectionGeneration.current;
+    setMatchView(null);
     setShowSettings(false);
     setSelected(null);
     setSessionClip(null);

@@ -45,7 +45,7 @@ export function withoutOverlaps(keep: Set<number>, roles: TrackRole[]): Set<numb
   const next = new Set([...keep].filter((t) => t < Math.max(roles.length, 1)));
   if (next.size > 1) for (const t of [...next]) if (roles[t] === "mix") next.delete(t);
   if ([...next].some((t) => ["game", "voice", "other"].includes(roles[t]))) for (const t of [...next]) if (roles[t] === "desktop") next.delete(t);
-  return next.size ? next : new Set([0]);
+  return next;
 }
 
 /// Settings track ids → this clip's stream indices (ids it lacks drop out).

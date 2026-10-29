@@ -402,7 +402,7 @@ pub async fn obs_diagnostics(app: AppHandle) -> Result<Diagnostics, String> {
 /// for clips.
 pub fn localize_settings(app: &AppHandle, settings: &mut crate::clips::Settings) -> bool {
     let mut changed = false;
-    if !std::path::Path::new(&settings.clips_dir).exists() {
+    if settings.clips_dir == crate::clips::DEFAULT_CLIPS_DIR && !std::path::Path::new(&settings.clips_dir).exists() {
         let videos = std::env::var("USERPROFILE")
             .map(|p| format!("{}/Videos/Clips", p.replace('\\', "/")))
             .unwrap_or_else(|_| settings.clips_dir.clone());

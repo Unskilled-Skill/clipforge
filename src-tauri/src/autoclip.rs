@@ -247,7 +247,9 @@ fn wall_now() -> f64 {
 }
 
 fn remember_auto_clip(path: &str, keep: f64) {
-    let end = wall_now();
+    let end = std::fs::metadata(path).and_then(|m| m.modified()).ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or_else(wall_now);
+    let keep = crate::clips::probe_clip_duration(path).unwrap_or(keep);
     let mut clips = AUTO_CLIPS.lock().unwrap();
     clips.retain(|c| end - c.end < 6.0 * 3600.0);
     clips.push(AutoClip { path: path.into(), start: end - keep, end });
@@ -386,10 +388,16 @@ fn open_window(app: &AppHandle, delay_s: f64, counted: Option<(u32, u32)>) {
         Pending { first: now, timing, deadline, kills: 0, round_kills: 0, min_kills: 1 }
     });
     p.deadline = deadline;
+    p.count_event(counted);
+}
+
+impl Pending {
+    fn count_event(&mut self, counted: Option<(u32, u32)>) {
+    self.kills += 1;
     if let Some((round_kills, min_kills)) = counted {
-        p.kills += 1;
-        p.round_kills = p.round_kills.max(round_kills);
-        p.min_kills = min_kills;
+        self.round_kills = self.round_kills.max(round_kills);
+        self.min_kills = min_kills;
+    }
     }
 }
 
@@ -426,8 +434,8 @@ async fn save_window(app: &AppHandle, settings: &crate::clips::Settings, keep: f
     let start = now - Duration::from_secs_f64(keep);
     let limit = settings.replay_seconds.min(max);
     let last = LAST_AUTO.lock().unwrap().clone();
-    let favorites = crate::clips::load_favorites(app.clone()).unwrap_or_default();
-    let merge = last.filter(|l| std::path::Path::new(&l.path).exists() && !favorites.contains(&l.path)).and_then(|l| {
+    let favorites = crate::clips::load_favorites(app.clone());
+    let merge = last.filter(|l| std::path::Path::new(&l.path).exists() && favorites.as_ref().is_ok_and(|f| !f.contains(&l.path))).and_then(|l| {
         let keep = merged_keep(&l, start, now, limit)?;
         Some((l, keep))
     });
@@ -640,7 +648,7 @@ fn from_web_page(request: &[u8]) -> bool {
     };
     head.lines().any(|l| {
         let l = l.to_ascii_lowercase();
-        l.starts_with("origin:") && l["origin:".len()..].trim().starts_with("http")
+        l.starts_with("origin:")
     })
 }
 
@@ -837,7 +845,7 @@ async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64, _game
     };
     let last = LOL_LAST_EVENT.load(Ordering::Relaxed);
     let mut newest = last;
-    let mut kill = false;
+    let mut kills = 0;
     for event in events {
         let id = event["EventID"].as_i64().unwrap_or(-1);
         if id <= last {
@@ -852,13 +860,13 @@ async fn poll_lol(app: &AppHandle, client: &reqwest::Client, delay_s: f64, _game
         );
         if last >= 0 && highlight && event["KillerName"].as_str() == Some(me.as_str())
         {
-            kill = true;
+            kills += 1;
         }
     }
     LOL_LAST_EVENT.store(newest, Ordering::Relaxed);
     let rule = crate::clips::load_settings_inner(app).clip_rule("lol");
-    if kill && rule.enabled {
-        open_window(app, delay_s, Some((0, rule.min_kills)));
+    if rule.enabled {
+        for _ in 0..kills { open_window(app, delay_s, Some((0, rule.min_kills))); }
     }
 }
 
@@ -1006,7 +1014,19 @@ mod tests {
     }
 
     #[test]
+    fn every_event_can_save_and_batched_kills_keep_the_minimum() {
+        let now = Instant::now();
+        let mut p = Pending { first: now, timing: timing("lol", 8.0), deadline: now, kills: 0, round_kills: 0, min_kills: 1 };
+        p.count_event(None);
+        assert!(p.kills >= p.min_kills, "a goal/log/Medal event must be eligible to save");
+        p.kills = 0;
+        p.count_event(Some((0, 2))); p.count_event(Some((0, 2)));
+        assert_eq!(p.kills, 2); assert!(p.kills >= p.min_kills);
+    }
+
+    #[test]
     fn web_pages_are_refused() {
+        assert!(from_web_page(b"POST /api/v1/event/invoke HTTP/1.1\r\nOrigin: null\r\n\r\n{}"));
         assert!(from_web_page(b"POST /api/v1/event/invoke HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n{}"));
         assert!(!from_web_page(b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n{}"));
     }

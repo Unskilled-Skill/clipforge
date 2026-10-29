@@ -52,13 +52,55 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
     // kills are clipped live from the replay buffer instead).
     let want = buffer_active && game.is_some();
 
-    if active && !want {
+    let changed_game = STARTED.lock().unwrap().as_ref().is_some_and(|(_, previous)| Some(previous.as_str()) != game);
+    if active && (!want || changed_game) {
         crate::obs::blocking(|| Ok(ENGINE.stop_session())).await.ok();
     } else if active && free.is_some_and(|f| f < STOP_BELOW_BYTES) {
         crate::logs::line("session recording stopped: clips drive almost full");
         crate::obs::blocking(|| Ok(ENGINE.stop_session())).await.ok();
         crate::obs::notify_failure(app, "Session recording stopped", "Your clips drive is almost full.");
-    } else if !active && want {
+    }
+    if game.is_none() {
+        REFUSED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    for path in ENGINE.finished_sessions() {
+        let started = STARTED.lock().unwrap().take();
+        let kills = crate::autoclip::end_session();
+        let clips_dir = settings.clips_dir.clone();
+        let app=app.clone();
+        tauri::async_runtime::spawn(async move {
+            let markers: Vec<f64> = started
+                .as_ref().map(|(s,_)| kills.iter().map(|k| k.saturating_duration_since(*s).as_secs_f64()).collect())
+                .unwrap_or_default();
+            let bookmarks = markers.clone();
+            match crate::obs::blocking(move || finish(&path, &clips_dir, &bookmarks)).await {
+                Ok(done) => {
+                    let mut keep = vec![PathBuf::from(&done)];
+                    if let Some((start,game))=started {
+                        if let Ok(duration)=crate::clips::probe_clip_duration(&done) {
+                            if duration.is_finite() && duration > 0.0 {
+                                crate::matchdata::write_recording(&done,&game,start,start+Duration::from_secs_f64(duration),true);
+                                // Re-muxing ends well after the game: stamp when the recording does.
+                                let started_wall = std::time::SystemTime::now() - start.elapsed();
+                                crate::clips::set_footage_end(&done, started_wall + Duration::from_secs_f64(duration));
+                            }
+                        }
+                        // After the match info is written: each highlight gets its slice.
+                        keep.extend(save_highlights(&app, &done, &game, start, &markers).await.into_iter().map(PathBuf::from));
+                    }
+                    if let Err(error) = crate::clips::enforce_storage_cap_preserving_many(&app, &keep) {
+                        crate::logs::line(&format!("session cleanup failed: {error}"));
+                    }
+                    crate::logs::line(&format!("session saved: {done}"));
+                    use tauri::Emitter;
+                    let _=app.emit("match-metadata-changed",());
+                },
+                Err(e) => crate::logs::line(&format!("session finish failed (left in .sessions): {e}")),
+            }
+        });
+    }
+    if !ENGINE.session_active() && want {
         let game = game.unwrap_or_default();
         if free.is_some_and(|f| f < START_ABOVE_BYTES) {
             if !REFUSED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -81,52 +123,17 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
             }
         }
     }
-    if game.is_none() {
-        REFUSED.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
 
-    for path in ENGINE.finished_sessions() {
-        let started = STARTED.lock().unwrap().take();
-        let kills = crate::autoclip::end_session();
-        let clips_dir = settings.clips_dir.clone();
-        let app=app.clone();
-        tauri::async_runtime::spawn(async move {
-            let markers: Vec<f64> = started
-                .as_ref().map(|(s,_)| kills.iter().map(|k| k.saturating_duration_since(*s).as_secs_f64()).collect())
-                .unwrap_or_default();
-            let bookmarks = markers.clone();
-            match crate::obs::blocking(move || finish(&path, &clips_dir, &bookmarks)).await {
-                Ok(done) => {
-                    if let Some((start,game))=started {
-                        if let Ok(duration)=crate::clips::probe_clip_duration(&done) {
-                            if duration.is_finite() && duration > 0.0 {
-                                crate::matchdata::write_recording(&done,&game,start,start+Duration::from_secs_f64(duration),true);
-                                // Re-muxing ends well after the game: stamp when the recording does.
-                                let started_wall = std::time::SystemTime::now() - start.elapsed();
-                                crate::clips::set_footage_end(&done, started_wall + Duration::from_secs_f64(duration));
-                            }
-                        }
-                        // After the match info is written: each highlight gets its slice.
-                        save_highlights(&app, &done, &game, start, &markers).await;
-                    }
-                    crate::logs::line(&format!("session saved: {done}"));
-                    use tauri::Emitter;
-                    let _=app.emit("match-metadata-changed",());
-                },
-                Err(e) => crate::logs::line(&format!("session finish failed (left in .sessions): {e}")),
-            }
-        });
-    }
 }
 
 /// Cut the finished session's kills out as highlight clips (Settings ›
 /// Automation › Cut highlights after each match).
-async fn save_highlights(app: &AppHandle, session: &str, game: &str, start: Instant, markers: &[f64]) {
+async fn save_highlights(app: &AppHandle, session: &str, game: &str, start: Instant, markers: &[f64]) -> Vec<String> {
     let settings = crate::clips::load_settings_inner(app);
     let id = crate::clips::auto_clip_game_id(game);
     let rule = settings.clip_rule(&id);
     if !settings.session_highlights || !rule.enabled || markers.is_empty() {
-        return;
+        return Vec::new();
     }
     let timing = crate::autoclip::timing(&id, settings.auto_clip_delay_s);
     let started = std::time::SystemTime::now() - start.elapsed();
@@ -144,6 +151,7 @@ async fn save_highlights(app: &AppHandle, session: &str, game: &str, start: Inst
         let _ = app.emit("clips-changed", ());
         let _ = app.emit("highlights-saved", written.len());
     }
+    written
 }
 
 /// Remux the fragmented recording into a normal, quickly seekable MP4 in
@@ -151,7 +159,7 @@ async fn save_highlights(app: &AppHandle, session: &str, game: &str, start: Inst
 /// write its kill markers, and drop the fragmented original.
 fn finish(path: &Path, clips_dir: &str, markers: &[f64]) -> Result<String, String> {
     let name = path.file_name().ok_or("bad session path")?;
-    let target = Path::new(clips_dir).join(name);
+    let target = crate::clips::reserve_output(Path::new(clips_dir).join(name))?;
     let ffmpeg = crate::clips::find_ffmpeg();
     let remuxed = ffmpeg.is_some_and(|ffmpeg| {
         crate::clips::ffmpeg_cmd(&ffmpeg)
