@@ -76,6 +76,8 @@ if (mockPreview !== "empty") {
       size_bytes: 84_000_000 + j * 6_000_000,
     });
   }
+  // A Discord export of one of them, made later: it files under the match.
+  mockClips.push({ path: "D:/RECORDINGS/Clips/Bf6 2026-10-27 20-42-01_discord.mp4", name: "Bf6 2026-10-27 20-42-01_discord.mp4", modified_ms: Date.now() - 5 * 60_000, size_bytes: 9_800_000 });
   // ...and the whole match recorded alongside (Whole match mode).
   mockClips.push({
     path: "D:/RECORDINGS/Clips/mock-run-session.mp4",

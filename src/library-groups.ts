@@ -30,8 +30,8 @@ export function orderRunItems<T extends { c: { modified_ms: number } }>(items: T
   return [...items].sort((a, b) => Number(isRecording(a.c)) - Number(isRecording(b.c)) || a.c.modified_ms - b.c.modified_ms);
 }
 
-export function runContentsLabel(recordings: number, highlights: number): string {
-  return [recordings ? `${recordings} recording${recordings === 1 ? "" : "s"}` : "", highlights ? `${highlights} highlight${highlights === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+export function runContentsLabel(recordings: number, highlights: number, edits = 0): string {
+  return [recordings ? `${recordings} recording${recordings === 1 ? "" : "s"}` : "", highlights ? `${highlights} highlight${highlights === 1 ? "" : "s"}` : "", edits ? `${edits} edit${edits === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
 }
 
 function startOfDay(ms: number): number {
@@ -109,4 +109,32 @@ export function sessionIndices(timesNewestFirst: number[], gapMs = SESSION_GAP_M
     if (i > 0 && timesNewestFirst[i - 1] - t > gapMs) session++;
     return session;
   });
+}
+
+/** The file an edit was made from, by name ("X_trim_3-9_discord.mp4" ->
+ * "X"), or null for anything that isn't an edit of one clip (Montages). */
+export function editSourceStem(name: string): string | null {
+  const full = name.replace(/\.[^.]+$/, "");
+  let stem = full;
+  for (;;) {
+    const next = stem.replace(/(?:_discord|_trim_\d+-\d+|_gif|_frame_\d+)$/, "");
+    if (next === stem) break;
+    stem = next;
+  }
+  return stem === full || !stem ? null : stem;
+}
+
+/** Edits sit right after the clip they were made from. */
+export function placeEditsAfterSources<T extends { c: { name: string } }>(items: T[]): T[] {
+  const stem = (n: string) => n.replace(/\.[^.]+$/, "");
+  const edits = items.filter(({ c }) => editSourceStem(c.name) != null);
+  const out = items.filter((it) => !edits.includes(it));
+  for (const edit of edits) {
+    const source = editSourceStem(edit.c.name);
+    // After the source and any edit of it already placed.
+    let at = -1;
+    out.forEach(({ c }, k) => { const s = stem(c.name); if (s === source || editSourceStem(c.name) === source) at = k; });
+    out.splice(at < 0 ? out.length : at + 1, 0, edit);
+  }
+  return out;
 }

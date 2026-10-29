@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dateBucket, sessionIndices, sessionLabel, libraryRunKey, orderRunItems, runContentsLabel, recordingSessionKey } from '../src/library-groups.ts';
+import { dateBucket, sessionIndices, sessionLabel, libraryRunKey, orderRunItems, runContentsLabel, recordingSessionKey, editSourceStem, placeEditsAfterSources } from '../src/library-groups.ts';
 
 test('generated highlights share the exact source session identity without match metadata', () => {
   const source = recordingSessionKey('LoL Session 2026-10-28 02-26-19.mp4');
@@ -70,4 +70,15 @@ test('match summaries distinguish source recordings from highlights', () => {
   assert.equal(runContentsLabel(1, 3), '1 recording · 3 highlights');
   assert.equal(runContentsLabel(0, 1), '1 highlight');
   assert.equal(runContentsLabel(2, 0), '2 recordings');
+});
+
+test('edits are traced to their source clip and sit right after it', () => {
+  assert.equal(editSourceStem('Valorant 2026-10-23 02-17-14_discord.mp4'), 'Valorant 2026-10-23 02-17-14');
+  assert.equal(editSourceStem('Valorant 2026-10-23 02-17-14_trim_3-9_discord.mp4'), 'Valorant 2026-10-23 02-17-14');
+  assert.equal(editSourceStem('Apex 2026-10-23 02-17-14_frame_12.png'), 'Apex 2026-10-23 02-17-14');
+  assert.equal(editSourceStem('Montage_2026-10-23.mp4'), null);
+  assert.equal(editSourceStem('Valorant 2026-10-23 02-17-14.mp4'), null);
+  const it = (name) => ({ c: { name } });
+  const order = placeEditsAfterSources([it('A_discord.mp4'), it('A.mp4'), it('B.mp4'), it('A_gif.gif')]).map(({ c }) => c.name);
+  assert.deepEqual(order, ['A.mp4', 'A_discord.mp4', 'A_gif.gif', 'B.mp4']);
 });

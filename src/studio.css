@@ -332,6 +332,7 @@
 }
 .st-tag.warn { background: var(--st-warn-bg); color: var(--st-warn-text); }
 .st-tag.new { background: var(--st-accent-soft); color: var(--st-accent-text); }
+.st-tag.edit { background: #2a2140; color: #c9b6f5; }
 /* Overlaid on the end of the clip cell so hidden actions take no width. */
 .st-row-actions {
   position: absolute;

@@ -53,7 +53,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { AppPickerModal, Modal, OnboardingModal, SegRadios, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
-import { dateBucket, sessionIndices, sessionLabel, libraryRunKey, orderRunItems, runContentsLabel, recordingSessionKey } from "./library-groups";
+import { dateBucket, sessionIndices, sessionLabel, libraryRunKey, orderRunItems, runContentsLabel, recordingSessionKey, editSourceStem, placeEditsAfterSources } from "./library-groups";
 import { TimelineController } from "./timeline/controller";
 import { Filmstrip, KillMarkers, Ruler } from "./timeline/parts";
 import type {
@@ -2097,8 +2097,15 @@ function App() {
     const matchBucket = new Map([...latestOfMatch].map(([id, k]) => [id, bucketOf(k)]));
     const groups: Group[] = [];
     const knownMatches = new Map<string, Group>();
+    // Your edits and exports go with the clip they were made from, in its
+    // match, not loose on the day they were exported.
+    const byStem = new Map(items.map((it) => [it.c.name.replace(/\.[^.]+$/, ""), it]));
+    const sourceOf = (c: ClipInfo) => { const stem = editSourceStem(c.name); return stem ? byStem.get(stem) : undefined; };
+    const groupOf = new Map<string, Group>();
+    const placed: Items = [];
     let lastAt = 0;
     items.forEach((it, k) => {
+      if (sourceOf(it.c)) { placed.push(it); return; }
       const match = matchOf(it.c);
       const identity = matchIdentity(it.c);
       const bucket = (identity && matchBucket.get(identity)) || bucketOf(k);
@@ -2107,6 +2114,7 @@ function App() {
       const existing = matchKey ? knownMatches.get(matchKey) : undefined;
       if (existing) {
         existing.items.push(it);
+        groupOf.set(it.c.path, existing);
         // Do not join an unknown recording across an intervening known match.
         lastAt = 0;
         return;
@@ -2126,8 +2134,13 @@ function App() {
         if (matchKey) knownMatches.set(matchKey, g);
       }
       g!.items.push(it);
+      groupOf.set(it.c.path, g!);
       lastAt = it.c.modified_ms;
     });
+    for (const it of placed) {
+      const home = groupOf.get(sourceOf(it.c)!.c.path);
+      if (home) { home.items.push(it); groupOf.set(it.c.path, home); }
+    }
     const summary = (list: Items) => {
       const names = [...new Set(list.map(({ c }) => gameName(gameOf(c))))];
       const gamesText = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
@@ -2155,12 +2168,13 @@ function App() {
       const full = g.items.filter(({ c }) => isRecording(c));
       const kills = full.length ? Math.max(killsOf(full), killsOf(g.items.filter((it) => !full.includes(it)))) : killsOf(g.items);
       const size = formatSize(g.items.reduce((a, { c }) => a + c.size_bytes, 0));
-      g.runMeta = `${runContentsLabel(full.length, g.items.length - full.length)}${kills ? ` · ${kills} kills` : ""} · ${size}`;
+      const edits = g.items.filter(({ c }) => isEdit(c.name)).length;
+      g.runMeta = `${runContentsLabel(full.length, g.items.length - full.length - edits, edits)}${kills ? ` · ${kills} kills` : ""} · ${size}`;
       const player = match?.player_stats;
       if (player?.champion && player.kills != null && player.deaths != null && player.assists != null) {
-        g.runMeta = `${runContentsLabel(full.length, g.items.length - full.length)} · ${player.champion} · ${player.kills}/${player.deaths}/${player.assists} · ${size}`;
+        g.runMeta = `${runContentsLabel(full.length, g.items.length - full.length - edits, edits)} · ${player.champion} · ${player.kills}/${player.deaths}/${player.assists} · ${size}`;
       }
-      g.items = orderRunItems(g.items, isRecording);
+      g.items = placeEditsAfterSources(orderRunItems(g.items, isRecording));
     }
     for (const date of new Set(groups.map((g) => g.date))) {
       const bucket = groups.filter((g) => g.date === date);
@@ -3074,6 +3088,7 @@ function App() {
                                         <span title={c.name}>{title}</span>
                                         {fav && <Star size={12} weight="fill" color="#f5c518" aria-label="Starred" style={{ flex: "0 0 auto" }} />}
                                         {isSession(c.name) && <span className="st-tag">Full match</span>}
+                                        {isEdit(c.name) && <span className="st-tag edit" title="Made by you in the editor">Your edit</span>}
                                         {blackMap[c.path] === true && <span className="st-tag warn">Black</span>}
                                         {trimRanges[c.path] && (
                                           <span className="st-tag" title={`Saved trim ${clipTime(trimRanges[c.path][0])} → ${clipTime(trimRanges[c.path][1])}. Montage uses this cut`}>Trimmed</span>
