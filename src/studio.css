@@ -1277,14 +1277,8 @@ input, textarea { caret-color: var(--st-accent); }
 .mv-highlight-events button { position: absolute; top: 0; width: 16px; height: 16px; padding: 0; translate: -50% 0; border: 0; background: transparent; cursor: pointer; }
 .mv-highlight-events button::after { content: ""; display: block; width: 3px; height: 7px; margin: auto; border-radius: 1px; background: #a1a1aa; }
 .mv-highlight-events button:hover::after { background: var(--st-text); height: 11px; }
-/* Cards grow a little to close the gap at the row's end... */
-.mv-highlight-strip:not(.wide) .mv-highlight { flex-grow: 1; max-width: calc(var(--mv-thumb) * 1.4); }
-/* ...and when there are only a few, share the row with details beside the thumbnail. */
-.mv-highlight-strip.wide .mv-highlight { position: relative; flex: 1 1 0; }
-.mv-highlight-strip.wide .mv-highlight-select { display: grid; grid-template-columns: var(--mv-thumb) minmax(0, 1fr); column-gap: 14px; }
-.mv-highlight-strip.wide .mv-highlight-caption { flex-direction: column; justify-content: flex-start; gap: 4px; padding-top: 2px; }
-.mv-highlight-strip.wide .mv-highlight-caption strong { font-size: 13px; white-space: normal; }
-.mv-highlight-strip.wide .mv-highlight-events { position: absolute; left: calc(var(--mv-thumb) + 14px); right: 4px; bottom: 6px; margin: 0; }
+/* Cards grow a little to close the gap at the row's end. */
+.mv-highlight-strip .mv-highlight { flex-grow: 1; max-width: calc(var(--mv-thumb) * 1.4); }
 .mv-highlights button:focus-visible, .mv-scrub input:focus-visible, .mv-highlights input:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
 @media (max-width: 800px) {
   .st-mv-player { flex: 1; max-width: none; aspect-ratio: auto; }
@@ -1302,9 +1296,7 @@ input, textarea { caret-color: var(--st-accent); }
 }
 /* Short windows: smaller highlight thumbnails leave the video more height. */
 @media (max-height: 800px) {
-  .mv-highlight-strip:not(.wide) .mv-highlight { max-width: 192px; }
-  .mv-highlight-strip.wide .mv-highlight-select { grid-template-columns: min(var(--mv-thumb), 160px) minmax(0, 1fr); }
-  .mv-highlight-strip.wide .mv-highlight-events { left: calc(min(var(--mv-thumb), 160px) + 14px); }
+  .mv-highlight-strip .mv-highlight { max-width: 192px; }
   .mv-highlights { padding-block: 6px 6px; }
   .mv-highlights-head { margin-bottom: 4px; }
 }
