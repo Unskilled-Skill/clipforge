@@ -43,7 +43,7 @@ const mockSettings = {
   auto_clip_delay_s: 8,
   auto_clip_min_kills: 1,
   auto_clip_games: {},
-  session_recording: false,
+  session_recording: true,
   session_highlights: true,
   valorant_match_check: true,
   replay_seconds: 180,

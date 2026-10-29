@@ -212,7 +212,8 @@ pub struct Settings {
     #[serde(default = "default_auto_clip_delay")]
     pub auto_clip_delay_s: f64,
     /// Also record each whole game session to one file, kills bookmarked.
-    #[serde(default)]
+    /// On by default: nothing is missed, and highlights are cut from it.
+    #[serde(default = "default_true")]
     pub session_recording: bool,
     /// With session recording: cut each match's kills out of the session as
     /// clips when the game closes, instead of auto-clipping during play.
@@ -367,7 +368,7 @@ impl Default for Settings {
             auto_clip_delay_s: default_auto_clip_delay(),
             auto_clip_min_kills: default_min_kills(),
             auto_clip_games: Default::default(),
-            session_recording: false,
+            session_recording: true,
             session_highlights: true,
             valorant_match_check: true,
             replay_seconds: default_replay_seconds(),
