@@ -6,7 +6,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, CaretLeft, CaretRight, Crosshair, FilmStrip, Pause, Play, Scissors, SkipBack, SkipForward, Star } from "@phosphor-icons/react";
 import { convertFileSrc, invoke } from "./tauri-shim";
 import { HighlightStrip } from "./HighlightStrip";
-import { matchPlayerFacts } from "./match-presentation";
+import { matchPlayerFacts, withoutResult } from "./match-presentation";
+import { ChampionIcon } from "./champion-icon";
 import { matchesHighlightSearch } from "./clip-presentation";
 import { killEvents, playingHighlightIndex, alignGeneratedHighlights } from "./kill-overview";
 import { KillOverview } from "./KillOverview";
@@ -221,16 +222,18 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
   }
 
   const nowAt = source.start + now * 1000;
-  const title = run.label.split(" · ").slice(1).join(" · ") || run.label;
+  const title = withoutResult(run.label.split(" · ").slice(1).join(" · ") || run.label);
+  const champion = run.playerStats?.champion ?? undefined;
   const playerFacts = matchPlayerFacts(run.playerStats);
   // What's on screen: over a full recording, the clip the playhead is in
   // (or the recording itself between clips).
   const activeIdx = playingHighlightIndex(clips, picked, nowAt);
   const active = clips[activeIdx] ?? current;
-  const partCount = clips.filter((c) => c !== full).length;
   const currentRound = rounds.find((r) => nowAt >= r.start && nowAt < r.end) ?? [...rounds].reverse().find((r) => r.start <= nowAt);
   // Keep the playing round (or clip) in view in the sidebar as play moves on.
-  const sideNow = `${runIndex}:${rounds.length ? currentRound?.number : activeIdx}`;
+  // The kill playing now: from 3 s before it until 3 s before the next.
+  const currentKill = kills.findIndex((k, n) => nowAt >= k.at - 3000 && nowAt < (kills[n + 1]?.at ?? k.at + 8000) - 3000);
+  const sideNow = `${runIndex}:${rounds.length ? currentRound?.number : kills.length ? currentKill : activeIdx}`;
   if (sideKey.current !== sideNow) {
     sideKey.current = sideNow;
     requestAnimationFrame(() => side.current?.querySelector<HTMLElement>(".current")?.scrollIntoView({ block: "nearest" }));
@@ -244,15 +247,16 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
 
   return (
     <section className="st-session-view st-mv" aria-label={`${game} match`}>
+      {/* One band: who you played, how it went, and the match facts. */}
       <header className="st-mv-head">
         <button className="st-ghost" onClick={onBack}><ArrowLeft size={14} /> Library</button>
         <div className="st-mv-title">
-          {icon}
-          <h1>{game}<span>{title}</span></h1>
+          {champion ? <ChampionIcon name={champion} size={36} fallback={icon} /> : icon}
+          <h1>{champion ?? game}<span>{champion ? `${game} · ${title}` : title}</span></h1>
+          {run.result && <span className={`mv-result-chip ${run.result}`}>{RESULT[run.result]}</span>}
         </div>
         <dl className="st-mv-stats">
-          {run.result && <div className={`st-mv-result ${run.result}`}><dt>Result</dt><dd>{RESULT[run.result]}</dd></div>}
-          <div><dt>Length</dt><dd>{span.total >= 3_600_000 ? `${(span.total / 3_600_000).toFixed(1)} h` : `${Math.max(1, Math.round(span.total / 60_000))} min`}</dd></div>
+          {playerFacts.map(({ label, value }) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
           {rounds.length > 0 && (
             <div>
               <dt>Rounds</dt>
@@ -263,29 +267,34 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
               </dd>
             </div>
           )}
-          <div><dt>Highlights</dt><dd>{partCount}</dd></div>
-          <div><dt>Kills</dt><dd>{kills.length}</dd></div>
-          <div><dt>Played</dt><dd>{new Date(span.start).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, {clock(span.start)}</dd></div>
+          {/* K / D / A already counts the kills. */}
+          {!playerFacts.some((f) => f.label === "K / D / A") && <div><dt>Kills</dt><dd>{kills.length}</dd></div>}
+          <div><dt>Length</dt><dd>{span.total >= 3_600_000 ? `${(span.total / 3_600_000).toFixed(1)} h` : `${Math.max(1, Math.round(span.total / 60_000))} min`}</dd></div>
+          <div className="st-mv-played"><dt>{run.playerStats && !run.playerStats.finalized ? "Last live snapshot" : "Played"}</dt><dd>{new Date(span.start).toLocaleDateString(undefined, { month: "short", day: "numeric" })}, {clock(span.start)}</dd></div>
         </dl>
       </header>
 
-      {playerFacts.length > 0 && <dl className="mv-player-facts" aria-label="Match player stats">
-        {playerFacts.map(({ label, value }) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
-        {!run.playerStats?.finalized && <span className="mv-stats-live">Last live snapshot</span>}
-      </dl>}
-
       {runs.length > 1 && (
         <nav className="st-mv-tabs" aria-label={`${game} matches`}>
-          {runs.map((r, i) => (
-            <button key={r.key} className={i === runIndex ? "active" : ""} aria-current={i === runIndex ? "true" : undefined} onClick={() => setRunIndex(i)}>
-              <strong>{r.label.split(" · ").slice(1).join(" · ") || r.label}</strong>
-              <small>{r.meta}</small>
-            </button>
-          ))}
+          {runs.map((r, i) => {
+            // Matches of one mode read alike; lead with what differs.
+            const p = r.playerStats;
+            const kda = p && p.kills != null && p.deaths != null && p.assists != null ? `${p.kills} / ${p.deaths} / ${p.assists}` : null;
+            const started = r.clips.length ? clock(Math.min(...r.clips.map((c) => c.start))) : "";
+            return (
+              <button key={r.key} className={i === runIndex ? "active" : ""} aria-current={i === runIndex ? "true" : undefined} onClick={() => setRunIndex(i)}>
+                {p?.champion && <ChampionIcon name={p.champion} size={28} />}
+                <span>
+                  <strong>{p?.champion ?? withoutResult(r.label.split(" · ").slice(1).join(" · ") || r.label)}{r.result && <em className={r.result}>{RESULT[r.result]}</em>}</strong>
+                  <small>{[kda, started, kda ? null : r.meta].filter(Boolean).join(" · ")}</small>
+                </span>
+              </button>
+            );
+          })}
         </nav>
       )}
 
-      <div className={`st-mv-stage ${rounds.length ? "" : "st-mv-stage-wide"}`}>
+      <div className="st-mv-stage">
       <div className="st-mv-player">
         <video
           ref={video}
@@ -312,8 +321,10 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
         />
       </div>
 
-      {/* Keep reported rounds available alongside highlight navigation. */}
-      {rounds.length > 0 && <aside className="mv-side" ref={side} aria-label="Rounds">
+      {/* Beside the video: rounds for round games, otherwise the kill feed
+          (or the clips, when no kills were marked). */}
+      <aside className="mv-side" ref={side} aria-label={rounds.length ? "Rounds" : kills.length ? "Kills" : "Clips"}>
+        {rounds.length > 0 ? (
           <>
             <div className="mv-side-head">
               <span>Rounds</span>
@@ -333,7 +344,42 @@ export function MatchView({ runs, initialRun, game, icon, starred, onStar, onEdi
               );
             })}
           </>
-      </aside>}
+        ) : kills.length > 0 ? (
+          <>
+            <div className="mv-side-head">
+              <span>Kill feed</span>
+              <span className="mono">{kills.length}</span>
+            </div>
+            {kills.map((k, n) => {
+              const index = k.highlightIndex ?? k.i;
+              const owner = clips[index];
+              const isCurrent = n === currentKill;
+              return (
+                <button key={`${k.at}-${n}`} type="button" className={`mv-kill-row ${isCurrent ? "current" : ""}`} aria-current={isCurrent ? "true" : undefined}
+                  onClick={() => { const offset = (k.at - owner.start) / 1000 - 3; choose(index, full ? offset : Math.max(0, offset), playing); }}>
+                  <span className="mono mv-kill-time">{gameClock(k.at)}</span>
+                  <Crosshair size={12} weight="bold" className="mv-kill-mark" />
+                  <span className="mv-kill-text">Kill {n + 1}</span>
+                  {k.highlightIndex != null && owner !== full && <span className="mv-kill-clip"><FilmStrip size={12} />{owner.title.split(" · ").slice(1).join(" · ") || owner.title}</span>}
+                </button>
+              );
+            })}
+          </>
+        ) : (
+          <>
+            <div className="mv-side-head">
+              <span>Clips</span>
+              <span className="mono">{browsable.length}</span>
+            </div>
+            {browsable.map(({ c, i }) => (
+              <button key={c.id ?? c.clip.path} type="button" className={`mv-clip-row ${i === activeIdx ? "current" : ""}`} aria-current={i === activeIdx ? "true" : undefined} onClick={() => choose(i, 0, true)}>
+                {c.thumb ? <img src={convertFileSrc(c.thumb)} alt="" draggable={false} /> : <span className="mv-clip-blank" />}
+                <span className="mv-clip-text"><strong>{c.full ? "Full match" : c.title}</strong><small>{run.clockStart ? `${gameClock(c.start)} in game` : clock(c.start)}</small></span>
+              </button>
+            ))}
+          </>
+        )}
+      </aside>
       </div>
 
       {/* Same toolbar as the editor: clock, what's playing, transport, actions. */}

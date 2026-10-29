@@ -1111,10 +1111,6 @@ input, textarea { caret-color: var(--st-accent); }
 .st-run-open:hover { background: #1c2f2c; border-color: #23463f; color: #9fe9dd; }
 .st-mv { background: var(--st-bg); overflow-y: auto; }
 .st-mv-empty { padding: 20px; }
-.mv-player-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 32px; flex-shrink: 0; margin: 0; padding: 10px 18px; border-bottom: 1px solid var(--st-line); }
-.mv-player-facts dt { color: var(--st-muted); font-size: 11px; }
-.mv-player-facts dd { margin: 3px 0 0; color: var(--st-text); font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.mv-stats-live { margin-left: auto; color: var(--st-muted); font-size: 11px; }
 @media (max-height: 720px) {
   .st-mv .st-mv-stage { min-height: 100px; }
 }
@@ -1122,27 +1118,35 @@ input, textarea { caret-color: var(--st-accent); }
 .st-mv-head { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--st-line); flex-shrink: 0; min-width: 0; }
 .st-mv-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .st-mv-title .st-game-icon, .st-mv-title .st-game-dot { flex: 0 0 28px; width: 28px; height: 28px; }
+.mv-champ { flex-shrink: 0; display: block; border-radius: 6px; outline: 1px solid #303036; outline-offset: -1px; background: #202025; object-fit: cover; }
+.mv-champ-blank { display: grid; place-items: center; color: var(--st-muted); font-size: 12px; font-weight: 600; }
+.mv-result-chip { flex-shrink: 0; padding: 2px 8px; border-radius: 6px; border: 1px solid #3a3a41; color: var(--st-text-2); font-size: 11.5px; font-weight: 500; }
+.mv-result-chip.won { color: #8deadc; border-color: #23463f; background: #1c2f2c; }
+.mv-result-chip.lost { color: #f0be6a; border-color: #4a3a22; background: #2a2218; }
 .st-mv-title h1 { margin: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 15px; font-weight: 600; }
 .st-mv-title h1 span { font-size: 12px; font-weight: 400; color: var(--st-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-mv-stats { margin: 0 0 0 auto; display: flex; gap: 24px; flex-shrink: 0; }
+.st-mv-stats { margin: 0 0 0 auto; display: flex; gap: 24px; flex-shrink: 0; padding-left: 20px; border-left: 1px solid #1a1a1d; }
 .st-mv-stats div { display: flex; flex-direction: column; gap: 3px; }
 .st-mv-stats dt { font-size: 11px; color: var(--st-muted); }
 .st-mv-stats dd { margin: 0; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.st-mv-result.won dd { color: #8deadc; }
-.st-mv-result.lost dd { color: #f0be6a; }
 
 .st-mv-tabs { display: flex; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--st-line); overflow-x: auto; flex-shrink: 0; scrollbar-width: thin; }
-.st-mv-tabs > button { flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px; min-width: 150px; max-width: 240px; padding: 6px 10px; border: 1px solid #26262b; border-radius: 6px; background: var(--st-panel); color: var(--st-text); font: inherit; text-align: left; cursor: pointer; }
+.st-mv-tabs > button { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; min-width: 150px; max-width: 260px; padding: 5px 10px 5px 6px; border: 1px solid #26262b; border-radius: 6px; background: var(--st-panel); color: var(--st-text); font: inherit; text-align: left; cursor: pointer; }
 .st-mv-tabs > button:hover { border-color: #3a3a41; }
 .st-mv-tabs > button.active { background: #1c2f2c; border-color: #23463f; }
+.st-mv-tabs > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .st-mv-tabs strong { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-mv-tabs small { font-size: 11px; color: var(--st-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-mv-tabs strong em { margin-left: 6px; font-style: normal; font-size: 11px; font-weight: 500; color: var(--st-muted); }
+.st-mv-tabs strong em.won { color: #8deadc; }
+.st-mv-tabs strong em.lost { color: #f0be6a; }
+.st-mv-tabs small { font-size: 11px; color: var(--st-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 
-.st-mv-stage { flex: 1; min-height: 160px; display: grid; grid-template-columns: minmax(0, 1fr) 260px; }
-.st-mv-player { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; background: #070708; }
+/* The video fills the stage's height at 16:9; the width it leaves goes to the side panel. */
+.st-mv-stage { flex: 1; min-height: 160px; display: flex; }
+.st-mv-player { flex: 0 0 auto; height: 100%; aspect-ratio: 16 / 9; max-width: calc(100% - 260px); min-height: 0; display: flex; align-items: center; justify-content: center; background: #070708; }
 
 /* Sidebar: the match's rounds (round games) or clips (one-game titles). */
-.mv-side { min-height: 0; overflow-y: auto; border-left: 1px solid var(--st-line); background: var(--st-panel); scrollbar-width: thin; }
+.mv-side { flex: 1; min-width: 260px; min-height: 0; overflow-y: auto; border-left: 1px solid var(--st-line); background: var(--st-panel); scrollbar-width: thin; }
 .mv-side-head { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--st-line); background: var(--st-panel); font-size: 11.5px; color: var(--st-muted); }
 .mv-round-row { width: 100%; display: grid; grid-template-columns: 34px 1fr 40px 18px; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 10px; border: 0; border-left: 3px solid #3a3a41; border-bottom: 1px solid #1a1a1d; background: transparent; color: var(--st-text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .mv-round-row:hover { background: #151518; }
@@ -1156,6 +1160,13 @@ input, textarea { caret-color: var(--st-accent); }
 .mv-round-row.lost .mv-round-result { color: #f0be6a; }
 .mv-round-kills { display: flex; align-items: center; gap: 3px; color: #8deadc; font-variant-numeric: tabular-nums; }
 .mv-round-clip { color: var(--st-muted); display: grid; place-items: center; }
+.mv-kill-row { width: 100%; display: grid; grid-template-columns: 52px 14px 1fr auto; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 0; border-bottom: 1px solid #1a1a1d; background: transparent; color: var(--st-text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.mv-kill-row:hover { background: #151518; }
+.mv-kill-row.current { background: #1c2f2c; box-shadow: inset 3px 0 0 var(--st-accent); }
+.mv-kill-time { color: var(--st-muted); font-variant-numeric: tabular-nums; }
+.mv-kill-row.current .mv-kill-time { color: var(--st-text); }
+.mv-kill-mark { color: #8deadc; }
+.mv-kill-clip { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--st-muted); font-size: 11.5px; white-space: nowrap; }
 .mv-clip-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 0; border-bottom: 1px solid #1a1a1d; background: transparent; color: var(--st-text); font: inherit; text-align: left; cursor: pointer; }
 .mv-clip-row:hover { background: #151518; }
 .mv-clip-row.current { background: #1c2f2c; box-shadow: inset 3px 0 0 var(--st-accent); }
@@ -1178,7 +1189,6 @@ input, textarea { caret-color: var(--st-accent); }
 .mv-round-step .tx-btn { width: 26px; }
 
 /* Watching highlights: one thumbnail sequence, with editing in the editor. */
-.st-mv-stage-wide { grid-template-columns: minmax(0, 1fr); }
 .ko { padding: 8px 18px 7px; background: var(--st-panel); flex-shrink: 0; min-width: 0; }
 .ko-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; min-height: 26px; }
 .ko-label { display: flex; align-items: center; gap: 6px; color: var(--st-text); font-size: 12px; font-weight: 500; }
@@ -1253,9 +1263,17 @@ input, textarea { caret-color: var(--st-accent); }
 .mv-highlight-events button { position: absolute; top: 0; width: 16px; height: 16px; padding: 0; translate: -50% 0; border: 0; background: transparent; cursor: pointer; }
 .mv-highlight-events button::after { content: ""; display: block; width: 3px; height: 7px; margin: auto; border-radius: 1px; background: #a1a1aa; }
 .mv-highlight-events button:hover::after { background: var(--st-text); height: 11px; }
+/* Cards grow a little to close the gap at the row's end... */
+.mv-highlight-strip:not(.wide) .mv-highlight { flex-grow: 1; max-width: calc(var(--mv-thumb) * 1.4); }
+/* ...and when there are only a few, share the row with details beside the thumbnail. */
+.mv-highlight-strip.wide .mv-highlight { position: relative; flex: 1 1 0; }
+.mv-highlight-strip.wide .mv-highlight-select { display: grid; grid-template-columns: var(--mv-thumb) minmax(0, 1fr); column-gap: 14px; }
+.mv-highlight-strip.wide .mv-highlight-caption { flex-direction: column; justify-content: flex-start; gap: 4px; padding-top: 2px; }
+.mv-highlight-strip.wide .mv-highlight-caption strong { font-size: 13px; white-space: normal; }
+.mv-highlight-strip.wide .mv-highlight-events { position: absolute; left: calc(var(--mv-thumb) + 14px); right: 4px; bottom: 6px; margin: 0; }
 .mv-highlights button:focus-visible, .mv-scrub input:focus-visible, .mv-highlights input:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
 @media (max-width: 800px) {
-  .st-mv-stage { grid-template-columns: minmax(0, 1fr); }
+  .st-mv-player { flex: 1; max-width: none; aspect-ratio: auto; }
   .st-mv-stage .mv-side { display: none; }
   .mv-round-step { display: none; }
   .mv-highlights { padding-inline: 12px; }
@@ -1266,5 +1284,13 @@ input, textarea { caret-color: var(--st-accent); }
 }
 @media (max-width: 1100px) {
   .st-mv-stats { gap: 16px; }
-  .st-mv-stats div:last-child { display: none; }
+  .st-mv-played { display: none !important; }
+}
+/* Short windows: smaller highlight thumbnails leave the video more height. */
+@media (max-height: 800px) {
+  .mv-highlight-strip:not(.wide) .mv-highlight { max-width: 192px; }
+  .mv-highlight-strip.wide .mv-highlight-select { grid-template-columns: min(var(--mv-thumb), 160px) minmax(0, 1fr); }
+  .mv-highlight-strip.wide .mv-highlight-events { left: calc(min(var(--mv-thumb), 160px) + 14px); }
+  .mv-highlights { padding-block: 6px 6px; }
+  .mv-highlights-head { margin-bottom: 4px; }
 }

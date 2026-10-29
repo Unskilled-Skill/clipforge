@@ -1,16 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { matchLabel, recordingMatchLabel, roundLabel, matchPlayerFacts } from '../src/match-presentation.ts';
+import { matchLabel, recordingMatchLabel, roundLabel, matchPlayerFacts, withoutResult } from '../src/match-presentation.ts';
 import { sessionEntries, recentSessions, latestClipForExport } from '../src/studio-data.ts';
 const info={id:'match',game:'cs2.exe',source:'cs2-gsi',map:'de_nuke',mode:'competitive',score:{won:13,lost:9},result:'won',round_results:{}};
 
 test('match player facts show source stats and keep missing values absent',()=>{
   assert.deepEqual(matchPlayerFacts(undefined),[]);
   const facts=matchPlayerFacts({champion:'Lissandra',kills:6,deaths:14,assists:18,cs:39,gold:15966,champion_damage:30186,vision_score:0,finalized:true});
-  assert.equal(facts.find(f=>f.label==='Champion').value,'Lissandra');
+  assert.equal(facts.find(f=>f.label==='Champion'),undefined);
   assert.equal(facts.find(f=>f.label==='K / D / A').value,'6 / 14 / 18');
-  assert.equal(facts.find(f=>f.label==='Vision').value,'0');
+  assert.equal(facts.find(f=>f.label==='Damage').value,(30186).toLocaleString());
+  // ARAM tracks no vision: a 0 is left out, a real score is kept.
+  assert.equal(facts.find(f=>f.label==='Vision'),undefined);
+  assert.equal(matchPlayerFacts({vision_score:12}).find(f=>f.label==='Vision').value,'12');
   assert.deepEqual(matchPlayerFacts({kills:0,deaths:null,assists:null}),[]);
+});
+test('a label without its result keeps the score',()=>{
+  assert.equal(withoutResult('Nuke · competitive · Won 13–9'),'Nuke · competitive · 13–9');
+  assert.equal(withoutResult('Howling Abyss · ARAM: Mayhem · Lost'),'Howling Abyss · ARAM: Mayhem');
+  assert.equal(withoutResult('Wonderland · Draw'),'Wonderland');
 });
 test('match labels display reported outcomes and never infer a win from a partial score',()=>{
   assert.equal(matchLabel(info),'Nuke · competitive · Won 13–9');

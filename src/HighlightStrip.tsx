@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { CaretLeft, CaretRight, FilmStrip, Play } from "@phosphor-icons/react";
 import { convertFileSrc, invoke } from "./tauri-shim";
 import type { MatchClip } from "./MatchView";
@@ -22,6 +22,14 @@ export function HighlightStrip({ clips, activeIndex, nowAt, markers, timeLabel, 
   const strip = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(208);
   const [reels, setReels] = useState<Record<string, string>>({});
+  const [rowWidth, setRowWidth] = useState(0);
+  useEffect(() => {
+    const el = strip.current;
+    if (!el) return;
+    const watch = new ResizeObserver(() => setRowWidth(el.clientWidth));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
   const visible = clips.filter(({ c }) => matchesHighlightSearch(c.clip.name, c.title, (c.markerTimes ?? markers[c.clip.path])?.length ?? 0, search, multikillsOnly, timeLabel(c.start)));
   const filtering = search.trim().length > 0 || multikillsOnly;
   const visiblePaths = JSON.stringify(visible.map(({ c }) => c.id ?? c.clip.path));
@@ -49,6 +57,9 @@ export function HighlightStrip({ clips, activeIndex, nowAt, markers, timeLabel, 
     if (el) el.scrollBy({ left: direction * Math.max(size + 12, el.clientWidth * 0.8) });
   };
   const position = visible.findIndex(({ i }) => i === activeIndex);
+  // Too few to fill the row: cards stretch, with their details beside the
+  // thumbnail, so the row is used without growing taller.
+  const wide = visible.length > 0 && visible.length * (size * 1.8 + 12) <= rowWidth;
   return (
     <section className="mv-highlights" aria-label="Highlights">
       <div className="mv-highlights-head">
@@ -63,7 +74,7 @@ export function HighlightStrip({ clips, activeIndex, nowAt, markers, timeLabel, 
           <button type="button" className="tx-btn" aria-label="Scroll highlights right" onClick={() => move(1)}><CaretRight size={15} /></button>
         </div>
       </div>
-      <div className="mv-highlight-strip" ref={strip}>
+      <div className={`mv-highlight-strip ${wide ? "wide" : ""}`} ref={strip} style={{ "--mv-thumb": `${size}px` } as CSSProperties}>
         {visible.map(({ c, i }) => {
           const ordinal = clips.findIndex((entry) => entry.i === i);
           const selected = activeIndex === i;
@@ -74,7 +85,7 @@ export function HighlightStrip({ clips, activeIndex, nowAt, markers, timeLabel, 
           const frameCount = Number(reel?.match(/\.reel(\d+)\.jpg/)?.[1] ?? 10);
           const title = c.full ? "Full match" : c.title.split(" · ").slice(1).join(" · ") || c.title;
           return (
-            <article className={`mv-highlight ${selected ? "active" : ""}`} key={c.id ?? c.clip.path} style={{ width: size }}>
+            <article className={`mv-highlight ${selected ? "active" : ""}`} key={c.id ?? c.clip.path} style={wide ? undefined : { width: size }}>
               <button type="button" className="mv-highlight-select" aria-label={`Play ${c.full ? "full match" : `highlight ${ordinal + 1}`}: ${title}`} aria-current={selected ? "true" : undefined} onClick={() => onChoose(i)}>
                 <span className="mv-highlight-image">
                   {c.thumb ? <img src={convertFileSrc(c.thumb)} alt="" draggable={false} /> : reel ? <span className="mv-highlight-reel" style={{ backgroundImage: `url("${convertFileSrc(reel)}")`, backgroundSize: `${frameCount * 100}% 100%`, backgroundPositionX: `${Math.min(frameCount - 1, Math.floor((c.posterAt ?? 0) * frameCount)) / Math.max(1, frameCount - 1) * 100}%` }} /> : <FilmStrip size={26} className="mv-highlight-placeholder" />}

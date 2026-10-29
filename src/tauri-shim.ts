@@ -83,12 +83,19 @@ if (mockPreview !== "empty") {
     modified_ms: Date.now() - 74 * 60_000,
     size_bytes: 2_100_000_000,
   });
+  // Two League ARAM games back to back, each recorded whole with two clips.
+  for (let m = 0; m < 2; m++) {
+    const end = Date.now() - (150 + m * 30) * 60_000;
+    mockClips.push({ path: `D:/RECORDINGS/Clips/mock-lol-${m}-session.mp4`, name: `lol Session 2026-10-27 1${8 - m}-10-00.mp4`, modified_ms: end, size_bytes: 1_400_000_000 });
+    for (let j = 0; j < 2; j++) mockClips.push({ path: `D:/RECORDINGS/Clips/mock-lol-${m}-${j}.mp4`, name: `lol 2026-10-27 1${8 - m}-${15 + j * 6}-00.mp4`, modified_ms: end - (12 - j * 6) * 60_000, size_bytes: 70_000_000 });
+  }
 }
 
 const mockThumbs = Object.fromEntries(
   mockClips.map((c, i) => [c.path, { thumb: `mock://thumb-${i}`, duration: 34 + i * 11 }])
 );
 if (mockThumbs["D:/RECORDINGS/Clips/mock-run-session.mp4"]) mockThumbs["D:/RECORDINGS/Clips/mock-run-session.mp4"].duration = 25 * 60;
+for (const m of [0, 1]) if (mockThumbs[`D:/RECORDINGS/Clips/mock-lol-${m}-session.mp4`]) mockThumbs[`D:/RECORDINGS/Clips/mock-lol-${m}-session.mp4`].duration = 18 * 60;
 
 // Sample context for visual verification only; native builds read persisted sources.
 function mockRecordingMetadata(input: string): RecordingMetadata | null {
@@ -96,6 +103,16 @@ function mockRecordingMetadata(input: string): RecordingMetadata | null {
   if (input.includes("mock-run-session")) {
     const info: MatchInfo = { id: "demo-run", game: "bf6.exe", source: "demo", map: "Siege of Cairo", mode: "Conquest", score: { won: 3, lost: 2 }, result: "won", round_results: {} };
     return { version: 1, is_session: true, matches: [{ start: 0, end: 1500, info }], rounds: [] };
+  }
+  const lol = input.match(/mock-lol-(\d)-(\w+)/);
+  if (lol) {
+    const m = Number(lol[1]);
+    const clip = mockClips.find((c) => c.path === input);
+    const info: MatchInfo = { id: `demo-lol-${m}`, game: "League of Legends.exe", source: "league-live", map: "Howling Abyss", mode: "Kiwi", score: null, result: m ? "won" : "lost", round_results: {},
+      clock_start: clip && lol[2] === "session" ? Math.round((clip.modified_ms - 18 * 60_000) / 1000) : null,
+      player_stats: m ? { champion: "Kai'Sa", kills: 14, deaths: 6, assists: 21, cs: 48, gold: 17_210, champion_damage: 41_877, vision_score: 0, finalized: true }
+        : { champion: "Lissandra", kills: 6, deaths: 14, assists: 18, cs: 39, gold: 15_966, champion_damage: 30_186, vision_score: 0, finalized: true } };
+    return { version: 1, is_session: lol[2] === "session", matches: [{ start: 0, end: 30, info }], rounds: [] };
   }
   const run = input.match(/mock-run-(\d+)/);
   if (run) {
@@ -179,6 +196,7 @@ async function mockInvoke(cmd: string, _args?: Record<string, unknown>): Promise
       // Two clips of the sample Bf6 run have kills, for the match view.
       if (/mock-run-[13]\./.test((_args as { input: string }).input)) return [6.5, 21.2];
       if ((_args as { input: string }).input.includes("mock-run-session")) return [320, 335, 700, 1012, 1027];
+      if ((_args as { input: string }).input.includes("mock-lol-")) return (_args as { input: string }).input.includes("session") ? [140, 412, 418, 655, 902, 1010] : [8.5, 14.2];
       // Every third mock clip has kill markers, for editor design work.
       return (_args as { input: string }).input.match(/mock-(\d+)/)?.[1] &&
         Number((_args as { input: string }).input.match(/mock-(\d+)/)![1]) % 3 === 0
