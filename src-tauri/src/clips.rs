@@ -209,14 +209,15 @@ pub struct Settings {
     /// when catbox refuses anonymous uploads). Empty = anonymous.
     #[serde(default)]
     pub catbox_userhash: String,
-    /// Off by default — only useful for CS2/LoL or log-trigger setups.
+    /// No longer read: kill detection always runs (per-game rules remain).
+    /// Kept so older settings files still load and round-trip.
     #[serde(default)]
     pub auto_clip: bool,
     /// Seconds to wait after the last kill before saving (multikill window).
     #[serde(default = "default_auto_clip_delay")]
     pub auto_clip_delay_s: f64,
-    /// Also record each whole game session to one file, kills bookmarked.
-    /// On by default: nothing is missed, and highlights are cut from it.
+    /// No longer read: every game is recorded whole when the drive has room.
+    /// Kept so older settings files still load and round-trip.
     #[serde(default = "default_true")]
     pub session_recording: bool,
     /// With session recording: cut each match's kills out of the session as

@@ -899,7 +899,7 @@ input, textarea { caret-color: var(--st-accent); }
 .st-insp-game { display: flex; align-items: center; gap: 6px; }
 .st-insp-game .st-game-icon, .st-insp-game .st-game-dot { flex-basis: 16px; width: 16px; height: 16px; }
 
-/* Settings › Auto-clip: one row per game with built-in auto-clip. */
+/* Settings › Kill detection: one row per game that reports kills. */
 .auto-clip-games { display: flex; flex-direction: column; padding-bottom: 4px; }
 .auto-clip-games > .field-hint { padding: 0 0 6px; }
 .auto-clip-game { display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 8px 0; border-top: 1px solid var(--st-line); }
@@ -1001,9 +1001,6 @@ input, textarea { caret-color: var(--st-accent); }
 /* A setting that only applies when the one above is on. */
 .toggle-card.toggle-sub { padding-left: 20px; border-left: 2px solid var(--st-line); margin-left: 2px; }
 
-/* Sidebar recording mode: clips vs whole match. */
-.st-mode .seg { padding: 3px; gap: 3px; border-radius: 9px; }
-.st-mode .seg button { min-height: 28px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
 
 /* ---- Editor timeline: one flat panel, lanes edge to edge, thin rules,
    monospace numbers (design: StudioEditor). ---- */

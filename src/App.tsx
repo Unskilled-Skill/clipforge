@@ -47,7 +47,7 @@ import {
   Warning,
   X,
 } from "@phosphor-icons/react";
-import { AppPickerModal, Modal, OnboardingModal, SegRadios, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
+import { AppPickerModal, Modal, OnboardingModal, SettingsPage, VcPickerModal, voiceAppsOf } from "./panels";
 import { dateBucket, sessionIndices, sessionLabel, libraryRunKey, orderRunItems, runContentsLabel, recordingSessionKey, editSourceStem, placeEditsAfterSources } from "./library-groups";
 import { keepTrack, streamsForIds, trackLabels, withoutOverlaps, type TrackRole } from "./audio-tracks";
 import { TimelineController } from "./timeline/controller";
@@ -2196,21 +2196,7 @@ function App() {
     setAudioKeep(next);
     setAudioNotice(`${removed.length ? `${removed.map((track) => track.label).join(" and ")} left out to avoid duplicate sound. ` : ""}Export audio: ${kept.join(", ") || "none (silent video)"}.${next.size === 1 && trackRoles[[...next][0]] === "game" ? " Add voice or mic to keep reactions." : ""}`);
   };
-  // Clips: auto-clips save as you play. Whole match: the session is recorded
-  // too, and its kills become highlight clips when the game closes.
-  const setWholeMatch = (whole: boolean) => {
-    if (whole === settings.session_recording) return;
-    void saveSettings({ ...settings, session_recording: whole });
-    showToast(
-      whole
-        ? settings.session_highlights
-          ? "Recording whole matches. Highlights are cut when the game closes"
-          : "Recording whole matches"
-        : "Back to clips. Auto-clips save as you play",
-    );
-  };
   const commandItems: StudioCommand[] = [
-    { id: "record-mode", group: "Actions", label: settings.session_recording ? "Switch to clips only" : "Switch to recording whole matches", keywords: "session record mode replay buffer highlights", detail: settings.session_recording ? "Now: whole match" : "Now: clips", run: () => setWholeMatch(!settings.session_recording) },
     ...(commandClip && !exporting && !sharing ? [{ id: "export", group: "Actions" as const, label: sessionClip ? "Edit session before exporting" : "Export selected clip for Discord", detail: `${selected ? targetMb : libExportMb} MB`, shortcut: "Ctrl E", keywords: "share copy", run: () => { if (selected) void exportDiscord(); else if (sessionClip) selectClip(sessionClip); else void exportClipForDiscord(commandClip, libExportMb); } }] : []),
     ...(latestClip && !exporting && !sharing ? [{ id: "latest", group: "Actions" as const, label: "Export latest clip for Discord", detail: `${settings.discord_target_mb} MB · ${momentTitle(latestClip.name, markerCounts[latestClip.path] ?? 0)}`, shortcut: "Ctrl Shift E", run: () => void exportClipForDiscord(latestClip, settings.discord_target_mb) }] : []),
     { id: "settings", group: "Actions", label: "Open settings", shortcut: "Ctrl ,", run: () => { setSelected(null); setShowSettings(true); } },
@@ -2507,9 +2493,6 @@ function App() {
                       ? "Live"
                       : "Idle"}
             </button>
-          </div>
-          <div className="st-mode" title="Clips: auto-clips save as you play. Whole match: each match is recorded and cut into highlights when the game closes.">
-            <SegRadios label="Recording mode" value={settings.session_recording ? "match" : "clips"} options={[["clips", "Clips"], ["match", "Whole match"]]} onPick={(v) => setWholeMatch(v === "match")} />
           </div>
           <div className="st-buffer">
             <div className="st-buffer-row">
@@ -2836,7 +2819,7 @@ function App() {
                     </div>
                     <div className={sup?.game ? "now" : "later"}>
                       <span className="st-step-num">3</span>
-                      <span><strong>Save a good play</strong><span>Press <kbd className="st-kbd">{settings.hotkey_save}</kbd> after it happens, or let auto-clip catch your kills. The clip shows up here with its kills marked.</span></span>
+                      <span><strong>Save a good play</strong><span>Every game is recorded and your kills become highlights when it closes. Press <kbd className="st-kbd">{settings.hotkey_save}</kbd> to save a moment right away.</span></span>
                       <button className="st-ghost" onClick={() => openSettingsAt("hotkey-save")}>Change hotkey</button>
                     </div>
                   </div>

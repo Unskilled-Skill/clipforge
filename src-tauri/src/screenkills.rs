@@ -625,7 +625,7 @@ pub fn run(app: AppHandle) {
                 let game = app.state::<crate::obs::CurrentGame>().0.lock().ok().and_then(|g| g.clone());
                 let settings = crate::clips::load_settings_inner(&app);
                 let rule = settings.clip_rule("valorant");
-                enabled = settings.auto_clip && rule.enabled && game.as_ref().is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
+                enabled = rule.enabled && game.as_ref().is_some_and(|g| g.eq_ignore_ascii_case(VALORANT_EXE));
                 if let Some(g) = game {
                     game_exe = g;
                 }

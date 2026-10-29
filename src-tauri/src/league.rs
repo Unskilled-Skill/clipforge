@@ -260,11 +260,20 @@ fn save_link(
     info: &MatchInfo,
 ) -> Result<bool, String> {
     let previous = crate::matchdata::read(path);
-    if previous.as_ref().is_some_and(|data| data.matches.len() > 1) {
+    // A recording spanning several matches is left alone, except when every
+    // one came from League's live data: one League game is never several,
+    // so that is v0.1.51's split (its clock re-derived each poll) to mend.
+    if previous.as_ref().is_some_and(|data| {
+        data.matches.len() > 1 && !data.matches.iter().all(|m| m.info.source == "lol-live-client")
+    }) {
         return Ok(false);
     }
     let mut resolved = info.clone();
-    if let Some(old) = previous.as_ref().and_then(|data| data.matches.first()) {
+    // The longest piece of a split holds the game's live clock and times.
+    if let Some(old) = previous
+        .as_ref()
+        .and_then(|data| data.matches.iter().max_by(|a, b| (a.end - a.start).total_cmp(&(b.end - b.start))))
+    {
         resolved.clock_start = old.info.clock_start;
         // Match history has the final numbers but not when things happened:
         // keep the death and assist times seen live.
@@ -602,6 +611,42 @@ mod tests {
             stamp("LoL Session 2026-10-28 02-26-19.mp4")
         );
         assert!(stamp("LoL Session 2026-10-28 02-26-19_trim_0-5.mp4").is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_league_game_split_by_live_polling_is_mended_but_real_multi_match_files_are_not() {
+        let root = std::env::temp_dir().join(format!(
+            "clipforge-league-split-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let piece = |id: &str, source: &str, start: f64, end: f64, clock: f64| RecordedMatch {
+            start,
+            end,
+            info: MatchInfo { id: id.into(), source: source.into(), clock_start: Some(clock), ..Default::default() },
+        };
+        let write = |name: &str, matches: Vec<RecordedMatch>| {
+            let path = root.join(name).to_string_lossy().into_owned();
+            let data = RecordingMetadata { version: 1, is_session: true, matches, rounds: Vec::new() };
+            crate::matchdata::write_json(&crate::matchdata::path(&path).unwrap(), &data).unwrap();
+            path
+        };
+        let split = write("LoL Session 2026-10-29 03-32-18.mp4", vec![
+            piece("lol-live-client-1", "lol-live-client", 5.0, 11.0, 100.0),
+            piece("lol-live-client-3", "lol-live-client", 17.0, 1457.0, 103.0),
+        ]);
+        let mixed = write("CS2 Session 2026-10-29 03-32-18.mp4", vec![
+            piece("cs2-a", "cs2-gsi", 0.0, 600.0, 0.0),
+            piece("cs2-b", "cs2-gsi", 600.0, 1200.0, 0.0),
+        ]);
+        let info = completed(&game(), "local-player").unwrap().info;
+        assert!(save_link(&split, 1460.0, true, &info).unwrap());
+        let mended = crate::matchdata::read(&split).unwrap();
+        assert_eq!(mended.matches.len(), 1);
+        assert_eq!(mended.matches[0].info.id, info.id);
+        // The game clock comes from the longest piece.
+        assert_eq!(mended.matches[0].info.clock_start, Some(103.0));
+        assert!(!save_link(&mixed, 1200.0, true, &info).unwrap());
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

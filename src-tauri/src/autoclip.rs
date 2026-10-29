@@ -197,7 +197,7 @@ fn current_timing(app: &AppHandle, default_window: f64) -> Timing {
 /// live auto-clips only bookmark their kills, so nothing is saved twice.
 fn highlights_instead(app: &AppHandle) -> bool {
     let s = crate::clips::load_settings_inner(app);
-    s.session_recording && s.session_highlights && crate::engine::ENGINE.session_active()
+    s.session_highlights && crate::engine::ENGINE.session_active()
 }
 
 /// An open event window.
@@ -500,11 +500,9 @@ pub async fn run(app: AppHandle) {
     loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
         tick += 1;
+        // Kill detection always runs (per-game rules can switch a game off):
+        // whole-match recordings need the bookmarks to cut highlights.
         let settings = crate::clips::load_settings_inner(&app);
-        if !settings.auto_clip {
-            *PENDING.lock().unwrap() = None;
-            continue;
-        }
 
         // Fire the pending clip once its window has passed.
         let due = {

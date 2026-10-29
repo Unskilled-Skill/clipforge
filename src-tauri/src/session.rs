@@ -48,7 +48,9 @@ fn session_name(game: &str, stamp: &str) -> String {
 pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Option<&str>, buffer_active: bool) {
     let active = ENGINE.session_active();
     let free = crate::clips::disk_free(settings.clips_dir.clone()).ok();
-    let want = settings.session_recording && buffer_active && game.is_some();
+    // Every game is recorded whole (when the drive has room; otherwise
+    // kills are clipped live from the replay buffer instead).
+    let want = buffer_active && game.is_some();
 
     if active && !want {
         crate::obs::blocking(|| Ok(ENGINE.stop_session())).await.ok();
@@ -118,12 +120,12 @@ pub async fn tick(app: &AppHandle, settings: &crate::clips::Settings, game: Opti
 }
 
 /// Cut the finished session's kills out as highlight clips (Settings ›
-/// Automation › Record whole sessions › Cut highlights).
+/// Automation › Cut highlights after each match).
 async fn save_highlights(app: &AppHandle, session: &str, game: &str, start: Instant, markers: &[f64]) {
     let settings = crate::clips::load_settings_inner(app);
     let id = crate::clips::auto_clip_game_id(game);
     let rule = settings.clip_rule(&id);
-    if !settings.session_highlights || !settings.auto_clip || !rule.enabled || markers.is_empty() {
+    if !settings.session_highlights || !rule.enabled || markers.is_empty() {
         return;
     }
     let timing = crate::autoclip::timing(&id, settings.auto_clip_delay_s);

@@ -1083,40 +1083,21 @@ export function SettingsPage(props: {
           </div>
           <div className="toggle-card">
             <div className="toggle-text">
-              <span className="toggle-title">Record whole sessions</span>
+              <span className="toggle-title">Cut highlights after each match</span>
               <span className="toggle-desc">
-                Save full sessions with kill bookmarks; about 9 GB/hour at 20 Mbps. Pauses below 3 GB free.
+                Every game is recorded whole. When it closes, your kills are cut from the recording as clips, with the whole fight in each. Off: kills are clipped during play instead.
               </span>
             </div>
             <button
-              className={`switch ${settings.session_recording ? "on" : ""}`}
+              className={`switch ${settings.session_highlights ? "on" : ""}`}
               role="switch"
-              aria-checked={settings.session_recording}
-              aria-label="Record whole sessions"
-              onClick={() => saveSettings({ ...settings, session_recording: !settings.session_recording })}
+              aria-checked={settings.session_highlights}
+              aria-label="Cut highlights after each match"
+              onClick={() => saveSettings({ ...settings, session_highlights: !settings.session_highlights })}
             >
               <span className="knob" />
             </button>
           </div>
-          {settings.session_recording && (
-            <div className="toggle-card toggle-sub">
-              <div className="toggle-text">
-                <span className="toggle-title">Cut highlights after each match</span>
-                <span className="toggle-desc">
-                  When the game closes, your kills are cut from the session as clips, with the whole fight in each. Auto-clips aren't saved during play, so nothing is saved twice.
-                </span>
-              </div>
-              <button
-                className={`switch ${settings.session_highlights ? "on" : ""}`}
-                role="switch"
-                aria-checked={settings.session_highlights}
-                aria-label="Cut highlights after each match"
-                onClick={() => saveSettings({ ...settings, session_highlights: !settings.session_highlights })}
-              >
-                <span className="knob" />
-              </button>
-            </div>
-          )}
           <div className="toggle-card">
             <div className="toggle-text">
               <span className="toggle-title">Check Valorant clips after each match</span>
@@ -1215,64 +1196,46 @@ export function SettingsPage(props: {
             </button>
           </div>
           {elevateError && <span className="field-hint" role="alert">{elevateError}</span>}
-          <div className="toggle-card">
-            <div className="toggle-text">
-              <span className="toggle-title">Auto-clip kills</span>
-              <span className="toggle-desc">
-                Save supported game highlights automatically. Restart a running game after enabling.
-              </span>
-            </div>
-            <button
-              className={`switch ${settings.auto_clip ? "on" : ""}`}
-              role="switch"
-              aria-checked={settings.auto_clip}
-              aria-label="Auto-clip kills"
-              onClick={() => saveSettings({ ...settings, auto_clip: !settings.auto_clip })}
-            >
-              <span className="knob" />
-            </button>
-          </div>
-          {settings.auto_clip && (
-            <div className="auto-clip-games" role="group" aria-label="Auto-clip per game">
-              <span className="field-hint">
-                Multikill clips are named 2K, 3K, 4K or ACE. With a round minimum, the whole round is saved as one clip when it ends.
-              </span>
-              {AUTO_CLIP_GAMES.map((g) => {
-                const rule = settings.auto_clip_games[g.id] ?? { enabled: true, min_kills: g.id === "valorant" ? settings.auto_clip_min_kills : 1 };
-                const save = (next: { enabled: boolean; min_kills: number }) =>
-                  saveSettings({ ...settings, auto_clip_games: { ...settings.auto_clip_games, [g.id]: next } });
-                return (
-                  <div className="auto-clip-game" key={g.id}>
-                    <div className="toggle-text">
-                      <span className="toggle-title">{g.name}</span>
-                      <span className="toggle-desc">{g.source}</span>
-                    </div>
-                    {g.minimum && rule.enabled && (
-                      <select
-                        className="audio-select"
-                        aria-label={`${g.name}: what to clip`}
-                        value={Math.min(5, Math.max(1, rule.min_kills))}
-                        onChange={(e) => save({ ...rule, min_kills: Number(e.target.value) })}
-                      >
-                        {(g.minimum === "round" ? ROUND_MINIMUMS : STREAK_MINIMUMS).map(([v, label]) => (
-                          <option key={v} value={v}>{label}</option>
-                        ))}
-                      </select>
-                    )}
-                    <button
-                      className={`switch ${rule.enabled ? "on" : ""}`}
-                      role="switch"
-                      aria-checked={rule.enabled}
-                      aria-label={`Auto-clip ${g.name}`}
-                      onClick={() => save({ ...rule, enabled: !rule.enabled })}
-                    >
-                      <span className="knob" />
-                    </button>
+          <div className="auto-clip-games" role="group" aria-label="Kill detection per game">
+            <span className="field-label">Kill detection</span>
+            <span className="field-hint">
+              Kills are marked on every recording and become highlights. Switch a game off to skip it. Multikill clips are named 2K, 3K, 4K or ACE. With a round minimum, the whole round is saved as one clip when it ends.
+            </span>
+            {AUTO_CLIP_GAMES.map((g) => {
+              const rule = settings.auto_clip_games[g.id] ?? { enabled: true, min_kills: g.id === "valorant" ? settings.auto_clip_min_kills : 1 };
+              const save = (next: { enabled: boolean; min_kills: number }) =>
+                saveSettings({ ...settings, auto_clip_games: { ...settings.auto_clip_games, [g.id]: next } });
+              return (
+                <div className="auto-clip-game" key={g.id}>
+                  <div className="toggle-text">
+                    <span className="toggle-title">{g.name}</span>
+                    <span className="toggle-desc">{g.source}</span>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                  {g.minimum && rule.enabled && (
+                    <select
+                      className="audio-select"
+                      aria-label={`${g.name}: what to clip`}
+                      value={Math.min(5, Math.max(1, rule.min_kills))}
+                      onChange={(e) => save({ ...rule, min_kills: Number(e.target.value) })}
+                    >
+                      {(g.minimum === "round" ? ROUND_MINIMUMS : STREAK_MINIMUMS).map(([v, label]) => (
+                        <option key={v} value={v}>{label}</option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    className={`switch ${rule.enabled ? "on" : ""}`}
+                    role="switch"
+                    aria-checked={rule.enabled}
+                    aria-label={`Detect kills in ${g.name}`}
+                    onClick={() => save({ ...rule, enabled: !rule.enabled })}
+                  >
+                    <span className="knob" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </section>
 
         <section id="settings-export" className="set-group">
@@ -1818,15 +1781,15 @@ export function OnboardingModal(props: {
               <div className="brand-mark onboard-hero-mark">
                 <img src={appIcon} alt="" draggable={false} />
               </div>
-              <span className="onboard-hero-title">Clip first, record never</span>
+              <span className="onboard-hero-title">Play. Your highlights are waiting.</span>
               <span className="onboard-hero-sub">
-                Your gameplay is always buffered — you only keep the good parts
+                Every game is recorded and your kills are cut out for you
               </span>
             </div>
             <p className="onboard-copy">
-              ClipForge keeps a rolling buffer of your gameplay in memory. Hit a hotkey (or
-              let auto-clip catch a kill) and the last stretch of footage saves as a clip —
-              no manual recording, no huge files piling up.
+              ClipForge records every game you play and marks your kills. When the game
+              closes, each fight is cut out as a highlight. Hit the hotkey any time to save
+              the last stretch right away.
             </p>
             <p className="onboard-copy">
               Every clip keeps each sound on its own track (game, voice chat, mic and
